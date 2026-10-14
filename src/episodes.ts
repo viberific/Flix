@@ -45,7 +45,7 @@ export function buildEpisodes(seriesId: number, userId: number): Episode[] {
 }
 
 export function continueWatching(userId: number) {
-  const rows = db.prepare(`SELECT r.series_id AS seriesId, r.series, r.series_poster AS poster, r.season, r.label, i.position, i.duration
+  const rows = db.prepare(`SELECT r.series_id AS seriesId, r.series, CASE WHEN r.series_poster IS NOT NULL AND r.series_poster != '' THEN '/api/art/' || r.series_id || '/poster' END AS poster, r.season, r.label, i.position, i.duration
     FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
     WHERE i.user_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.position > 30 ORDER BY i.updated_at DESC LIMIT 40`).all(userId) as any[]
   const seen = new Set<string>()

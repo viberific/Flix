@@ -15,6 +15,7 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 
 4K is always re-encoded down to 1080p for the browser. HDR is not tone-mapped yet, so HDR sources can look washed out.
 
+- **Artwork** – posters and banners are downloaded by the server on first view and cached in `DATA_DIR/art`; browsers only ever talk to Flix (`/api/art/…`), never to BTN's image host, and BTN's image URLs never reach the client. Fetches refuse internal/private addresses, accept only JPEG/PNG/GIF/WebP (no SVG), and are capped at 8 MB.
 - **Catalog** – BTN JSON-RPC API (rate-limited locally to 100 calls/h; BTN allows 150). The passkey-bearing
   `.torrent` link never leaves the server.
 - **Engine** – [qBittorrent](https://www.qbittorrent.org) via its Web API (BTN only allows whitelisted clients, so

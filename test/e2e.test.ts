@@ -25,11 +25,15 @@ process.env.HOST = '127.0.0.1'
 process.env.LOG_LEVEL = 'warn'
 process.env.PROBE_TIMEOUT_MS = '30000'
 process.env.BTN_API_KEY = 'testkey'
+process.env.ART_ALLOW_PRIVATE_HOSTS = 'true' // test artwork is served from localhost
 process.env.BTN_API_URL = `http://127.0.0.1:${P.btn}/`
 process.env.QB_URL = `http://127.0.0.1:${P.qb}`
 process.env.SWEEP_INTERVAL_SEC = '3600'
 
 let tracker: any, seeder: WebTorrent.Instance, btn: Server, qbProc: ChildProcess
+// 1x1 PNG
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+let posterFetches = 0
 const media: Record<string, { path: string; torrent: Buffer; hash: string; data: Buffer }> = {}
 let cookie = ''
 
@@ -67,11 +71,12 @@ before(async () => {
   // 3. mock BTN
   const torrents = Object.entries(media).map(([k, m], i) => ({
     GroupName: `Test Show - S01E0${i + 1}`, GroupID: String(100 + i), TorrentID: String(1000 + i), SeriesID: '77', Series: 'Test Show',
-    SeriesPoster: '', ReleaseName: m.path.split('/').pop(), Category: 'Episode', Codec: 'H.264', Container: k.split('.')[1].toUpperCase(),
+    SeriesPoster: `http://127.0.0.1:${P.btn}/img/poster.png`, ReleaseName: m.path.split('/').pop(), Category: 'Episode', Codec: 'H.264', Container: k.split('.')[1].toUpperCase(),
     Source: 'WEB-DL', Resolution: '360p', Origin: 'P2P', Size: String(m.data.length), Time: String(1700000000 + i), InfoHash: m.hash.toUpperCase(),
     Seeders: '1', Leechers: '0', Genres: ['Test'], TorrentLink: `http://127.0.0.1:${P.btn}/dl/${1000 + i}?torrent_pass=SECRETPASSKEY`,
   }))
   btn = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/img/poster.png') { posterFetches++; res.setHeader('content-type', 'application/octet-stream'); res.end(PNG); return }
     if (req.method === 'GET' && req.url?.startsWith('/dl/')) {
       const i = Number(req.url.split('/')[2].split('?')[0]) - 1000
       res.end(Object.values(media)[i].torrent); return
@@ -119,6 +124,23 @@ test('catalog: search stores BTN data and never leaks the passkey', async () => 
   assert.equal(s.episodes.length, 2)
   assert.ok(s.episodes.every((e: any) => e.available && e.quality && !('torrent_link' in e)))
   assert.ok(!JSON.stringify(s).includes('SECRETPASSKEY'))
+})
+
+test('artwork: cached on the server, served locally, BTN image URL never reaches the browser', async () => {
+  const list = await jget('/api/series?q=Test')
+  assert.equal(list.series[0].poster, '/api/art/77/poster')
+  assert.equal(list.series[0].banner, null) // BTN gave no banner
+  const s = await jget('/api/series/77')
+  assert.ok(!JSON.stringify([list, s]).includes('127.0.0.1:' + P.btn), 'remote artwork URL leaked')
+  const anon = await fetch(`http://127.0.0.1:${P.app}/api/art/77/poster`)
+  assert.equal(anon.status, 401)
+  const a = await api('/api/art/77/poster'), b = await api('/api/art/77/poster')
+  assert.equal(a.status, 200)
+  assert.equal(a.headers.get('content-type'), 'image/png') // sniffed, not the upstream octet-stream
+  assert.ok(Buffer.from(await a.arrayBuffer()).equals(PNG))
+  assert.equal(b.status, 200); await b.arrayBuffer()
+  assert.equal(posterFetches, 1, 'second view must come from the cache')
+  assert.equal((await api('/api/art/77/banner')).status, 404)
 })
 
 async function playAndFetch(torrentId: number) {

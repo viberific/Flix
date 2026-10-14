@@ -11,6 +11,7 @@ import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
 import { RateLimitError } from './btn/client.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
+import { artPathSql, getArt } from './art.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
@@ -51,7 +52,7 @@ app.post('/api/signup', async (req, reply) => {
 
 // ---- catalog ----------------------------------------------------------------
 const auth = { preHandler: requireUser }
-const seriesCols = `series_id AS id, series AS name, MAX(series_poster) AS poster, MAX(series_banner) AS banner,
+const seriesCols = `series_id AS id, series AS name, ${artPathSql('series_poster', 'poster', 'poster')}, ${artPathSql('series_banner', 'banner', 'banner')},
   COUNT(*) AS releases, MAX(time) AS latest`
 
 app.get('/api/series', auth, async (req) => {
@@ -73,6 +74,15 @@ app.get('/api/series/:id', auth, async (req) => {
 })
 
 app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!.id) }))
+
+/** Artwork is served from our own cache; the browser never talks to BTN's image host. */
+app.get('/api/art/:id/:kind', auth, async (req, reply) => {
+  const { id, kind } = req.params as any
+  if (kind !== 'poster' && kind !== 'banner') return reply.code(404).send({ error: 'unknown artwork' })
+  const art = await getArt(Number(id), kind)
+  if (!art) return reply.code(404).send({ error: 'no artwork' })
+  return reply.type(art.type).header('cache-control', 'private, max-age=86400').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
+})
 
 // ---- playback ---------------------------------------------------------------
 app.post('/api/play', auth, async (req) => {

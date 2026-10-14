@@ -63,3 +63,13 @@ test('youtubeUrl only ever yields a youtube.com watch link', () => {
   assert.equal(youtubeUrl('javascript:alert(1)'), null)
   assert.equal(youtubeUrl(''), null)
 })
+
+const { isPrivateIp, sniffImage } = await import('../src/art.ts')
+test('artwork safety: internal addresses blocked, only raster images accepted', () => {
+  for (const ip of ['127.0.0.1', '10.1.2.3', '192.168.0.9', '172.20.0.1', '169.254.169.254', '100.64.0.1', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1'])
+    assert.equal(isPrivateIp(ip), true, ip)
+  for (const ip of ['8.8.8.8', '172.32.0.1', '93.184.216.34', '2606:4700::1111']) assert.equal(isPrivateIp(ip), false, ip)
+  assert.equal(sniffImage(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>')), null)
+  assert.equal(sniffImage(Buffer.from('<html>not an image at all</html>')), null)
+  assert.equal(sniffImage(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0])), 'image/jpeg')
+})

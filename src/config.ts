@@ -20,6 +20,8 @@ export const config = {
   },
   // BroadcasTheNet's seeding requirement: 130 hours of seeding OR a 1:1 ratio. Fixed on purpose, not configurable.
   seed: { minRatio: 1.0, minHours: 130, mode: 'any' } as { minRatio: number; minHours: number; mode: 'any' | 'all' },
+  // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
+  art: { allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
   abandonDays: num('ABANDON_DAYS', 0),
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
