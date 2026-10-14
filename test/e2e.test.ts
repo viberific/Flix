@@ -116,7 +116,8 @@ test('catalog: search stores BTN data and never leaks the passkey', async () => 
   const { series } = await jget('/api/series?q=Test')
   assert.equal(series.length, 1)
   const s = await jget('/api/series/77')
-  assert.equal(s.releases.length, 2)
+  assert.equal(s.episodes.length, 2)
+  assert.ok(s.episodes.every((e: any) => e.available && e.quality && !('torrent_link' in e)))
   assert.ok(!JSON.stringify(s).includes('SECRETPASSKEY'))
 })
 
@@ -141,6 +142,16 @@ test('direct play: ranged reads of a partly-downloaded file match the original b
   assert.ok(Buffer.from(await res.arrayBuffer()).equals(m.data.subarray(0, 1024)))
   const full = await api(`/api/stream/1000/${play.fileIndex}/raw`)
   assert.equal(sha(Buffer.from(await full.arrayBuffer())), sha(m.data))
+})
+
+test('one tap: /api/watch picks the source and starts playback with no release choice', async () => {
+  const r = await jpost('/api/watch', { seriesId: 77, season: 1, label: 'S01E01' })
+  assert.equal(r.status, 200, await r.clone().text())
+  const j: any = await r.json()
+  assert.equal(j.torrentId, 1000)
+  assert.equal(j.next.label, 'S01E02')
+  const bad = await jpost('/api/watch', { seriesId: 77, season: 1, label: 'S09E99' })
+  assert.equal(bad.status, 404)
 })
 
 test('transcode path: mkv/ac3 is served as HLS', async () => {

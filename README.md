@@ -7,6 +7,14 @@ It is an installable **PWA** (manifest + service worker; add it to your home scr
 
 ## How it works
 
+**For viewers it works like Netflix:** pick a show, tap an episode, it plays. Nobody ever sees a list of releases.
+Behind the tap, Flix picks the source automatically (`src/pick.ts`):
+1. a source that is actually alive (seeded, or already on the server's disk) beats a dead one;
+2. **1080p** is preferred, **4K (2160p)** is the fallback when there is no 1080p, then 720p, then anything else;
+3. ties go to a copy already on disk (instant start), then H.264, then the most seeders.
+
+4K is always re-encoded down to 1080p for the browser. HDR is not tone-mapped yet, so HDR sources can look washed out.
+
 - **Catalog** – BTN JSON-RPC API (rate-limited locally to 100 calls/h; BTN allows 150). The passkey-bearing
   `.torrent` link never leaves the server.
 - **Engine** – [qBittorrent](https://www.qbittorrent.org) via its Web API (BTN only allows whitelisted clients, so
@@ -37,6 +45,8 @@ Requires Node ≥ 22.5, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 - Seeking far beyond the downloaded part waits for the sequential download to reach it (qBittorrent cannot
   prioritise arbitrary pieces).
 - Subtitles are not extracted yet.
+- Season packs: if a season exists only as a pack, it shows as one "Season N" entry that resumes at the next unfinished file.
+- Trailers are a plain link to YouTube (nothing is embedded, so nothing is sent to YouTube until someone taps it).
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set
   `ABANDON_DAYS` to auto-release inactive viewers.
 - Keep Flix behind HTTPS (reverse proxy) when exposing it; a PWA needs a secure context to install.

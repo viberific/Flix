@@ -11,6 +11,7 @@ import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
 import { RateLimitError } from './btn/client.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
+import { buildEpisodes, continueWatching } from './episodes.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 
@@ -65,21 +66,31 @@ app.get('/api/series', auth, async (req) => {
 app.get('/api/series/:id', auth, async (req) => {
   const id = Number((req.params as any).id)
   await syncSeries(id).catch((e) => app.log.warn(`series sync failed: ${e.message}`))
-  const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
+  const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
   if (!info) throw Object.assign(new Error('Series not found'), { statusCode: 404 })
-  // torrent_link (passkey!) deliberately not selected.
-  const releases = db.prepare(`SELECT r.torrent_id, r.group_name, r.season, r.episode, r.label, r.is_pack, r.resolution, r.codec, r.container,
-      r.source, r.origin, r.size, r.seeders, r.time,
-      (SELECT d.state FROM downloads d WHERE d.torrent_id = r.torrent_id) AS download_state
-    FROM releases r WHERE r.series_id = ? ORDER BY r.season DESC, r.episode DESC, r.size DESC`).all(id)
-  const mine = db.prepare(`SELECT torrent_id, file_index, position, duration, watched_at FROM interests WHERE user_id = ?`).all(req.user!.id)
-  return { series: info, releases, progress: mine }
+  // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
+  return { series: info, episodes: buildEpisodes(id, req.user!.id) }
 })
+
+app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!.id) }))
 
 // ---- playback ---------------------------------------------------------------
 app.post('/api/play', auth, async (req) => {
   const { torrentId, fileIndex } = req.body as any
   return startPlayback(req.user!.id, Number(torrentId), fileIndex === undefined ? undefined : Number(fileIndex))
+})
+
+/** The one-tap path: pick the best source (1080p, else 4K) and start playing. */
+app.post('/api/watch', auth, async (req) => {
+  const { seriesId, season, label } = req.body as any
+  const eps = buildEpisodes(Number(seriesId), req.user!.id)
+  const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
+  if (i < 0) throw Object.assign(new Error('That episode is not available'), { statusCode: 404 })
+  const ep = eps[i]
+  if (!ep.available) throw Object.assign(new Error('Nobody is sharing this episode right now. Please try again later.'), { statusCode: 503 })
+  const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack ? undefined : ep.label })
+  const next = eps.slice(i + 1).find((e) => e.available)
+  return { ...play, quality: ep.quality, title: ep.label, next: next ? { season: next.season, label: next.label } : null }
 })
 
 app.get('/api/stream/:t/:f/status', auth, async (req) => {

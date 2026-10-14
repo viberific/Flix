@@ -35,70 +35,85 @@ function authView(needsSetup) {
   }
 }
 
+const poster = (s) => `<a class="card" href="#/series/${s.id ?? s.seriesId}"><img loading="lazy" src="${esc(s.poster || '')}" alt="" onerror="this.style.visibility='hidden'"><div>${esc(s.name ?? s.series)}</div></a>`
+
 async function homeView(q) {
   app.innerHTML = '<p class="dim">Loading…</p>'
-  const { series } = await api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : ''))
-  app.innerHTML = `<h2>${q ? `Results for “${esc(q)}”` : 'Latest on BroadcasTheNet'}</h2>` +
-    (series.length ? `<div class="grid">${series.map((s) => `<a class="card" href="#/series/${s.id}">
-      <img loading="lazy" src="${esc(s.poster || '')}" alt=""><div>${esc(s.name)}</div></a>`).join('')}</div>`
-      : '<p class="dim">Nothing yet. Search for a show above.</p>')
+  const [{ series }, cont] = await Promise.all([api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : '')), q ? { items: [] } : api('/api/continue')])
+  const items = cont.items
+  app.innerHTML =
+    (items.length ? `<h2>Continue watching</h2><div class="grid">${items.map((i) => `<button class="card cw" data-s="${i.seriesId}" data-season="${i.season ?? ''}" data-label="${esc(i.label)}">
+      <img loading="lazy" src="${esc(i.poster || '')}" alt="" onerror="this.style.visibility='hidden'"><div>${esc(i.series)}<br><span class="dim">${esc(i.label)}</span></div>
+      <i class="bar"><b style="width:${Math.min(100, Math.round((i.position / (i.duration || 1)) * 100))}%"></b></i></button>`).join('')}</div>` : '') +
+    `<h2>${q ? `Results for “${esc(q)}”` : 'Latest shows'}</h2>` +
+    (series.length ? `<div class="grid">${series.map(poster).join('')}</div>` : '<p class="dim">Nothing here yet. Try searching for a show.</p>')
+  app.querySelectorAll('.cw').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
 async function seriesView(id) {
-  app.innerHTML = '<p class="dim">Loading from BroadcasTheNet…</p>'
-  const { series, releases, progress } = await api('/api/series/' + id)
-  const prog = new Map(progress.map((p) => [p.torrent_id, p]))
+  app.innerHTML = '<p class="dim">Loading…</p>'
+  const { series, episodes } = await api('/api/series/' + id)
   const seasons = new Map()
-  for (const r of releases) {
-    const k = r.season ?? 'Other'
-    if (!seasons.has(k)) seasons.set(k, new Map())
-    const key = r.label
-    if (!seasons.get(k).has(key)) seasons.get(k).set(key, [])
-    seasons.get(k).get(key).push(r)
-  }
-  app.innerHTML = `<h2>${esc(series.name)}</h2>` + [...seasons].map(([s, eps]) => `<div class="season panel"><h3>${s === 'Other' ? 'Other' : 'Season ' + s}</h3>
-    <table>${[...eps].map(([label, rs]) => `<tr><td style="width:110px"><b>${esc(label)}</b></td><td>${rs.map((r) => {
-      const p = prog.get(r.torrent_id)
-      return `<div class="row" style="margin:3px 0"><button data-play="${r.torrent_id}" class="primary">▶ Play</button>
-        <span>${esc([r.resolution, r.source, r.codec, r.container].filter(Boolean).join(' · '))}</span>
-        <span class="tag">${gb(r.size)}</span><span class="tag">${r.seeders ?? 0} seeders</span>${r.is_pack ? '<span class="tag">season pack</span>' : ''}
-        ${r.download_state === 'active' ? '<span class="tag ok">on server</span>' : ''}
-        ${p?.watched_at ? '<span class="tag ok">watched</span>' : p ? `<span class="tag warn">${Math.round((p.position / (p.duration || 1)) * 100)}%</span>` : ''}</div>`
-    }).join('')}</td></tr>`).join('')}</table></div>`).join('')
-  app.querySelectorAll('[data-play]').forEach((b) => b.onclick = () => go('#/play/' + b.dataset.play))
+  for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
+  const nextUp = episodes.find((e) => !e.watched && e.available)
+  const resume = episodes.find((e) => e.position > 30 && !e.watched)
+  const hero = resume ?? nextUp
+  app.innerHTML = `<div class="hero">${series.poster ? `<img src="${esc(series.poster)}" alt="" onerror="this.style.display='none'">` : ''}<div>
+      <h2>${esc(series.name)}</h2>
+      ${hero ? `<button class="big" data-ep="${esc(hero.label)}" data-season="${hero.season ?? ''}">▶ ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<p class="dim">Nothing is available to play right now.</p>'}
+      ${series.trailer ? `<p><a class="trailer" href="${esc(series.trailer)}" target="_blank" rel="noopener">▶ Watch trailer</a></p>` : ''}
+    </div></div>` +
+    [...seasons].map(([s, eps]) => `<h3 class="sh">${s === 'x' ? 'Episodes' : 'Season ' + s}</h3><div class="eps">${eps.map((e) => `
+      <button class="ep" data-ep="${esc(e.label)}" data-season="${e.season ?? ''}" ${e.available ? '' : 'disabled'}>
+        <span class="en">${esc(e.label)}</span>
+        <span class="et">${e.available ? '' : '<span class="dim">Not available right now</span>'}${e.position > 30 && !e.watched ? `<i class="bar"><b style="width:${Math.min(100, Math.round((e.position / (e.duration || 1)) * 100))}%"></b></i>` : ''}</span>
+        <span class="eq">${e.watched ? '✓ Watched' : e.onServer ? 'Ready' : ''}</span>
+      </button>`).join('')}</div>`).join('')
+  app.querySelectorAll('[data-ep]').forEach((b) => b.onclick = () => go(`#/play/${id}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.ep)}`))
 }
 
-async function playView(torrentId) {
-  app.innerHTML = `<div class="panel"><div id="msg">Contacting tracker and starting download…</div><div class="bar"><i id="pb" style="width:0%"></i></div></div><div id="vw"></div>`
+async function playView(seriesId, season, label) {
+  label = decodeURIComponent(label)
+  app.innerHTML = `<div class="stage"><div id="vw"></div><div class="wait" id="wait"><div class="spin"></div><div id="msg">Getting your show ready…</div><div class="bar big"><b id="pb" style="width:4%"></b></div></div></div>
+    <div class="row" style="justify-content:space-between;margin-top:10px"><a href="#/series/${seriesId}">← Back</a><span id="q" class="dim"></span><span id="nx"></span></div>`
   let alive = true, hls = null, timer = null
   cleanup = () => { alive = false; clearInterval(timer); hls?.destroy() }
+  const t0 = Date.now()
   try {
-    const { fileIndex, name, position: start } = await api('/api/play', { torrentId: +torrentId })
+    const play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label })
+    const { torrentId, fileIndex, position: start } = play
+    $('#q').textContent = play.quality
     const base = `/api/stream/${torrentId}/${fileIndex}`
     timer = setInterval(async () => {
       const s = await api(base + '/status').catch(() => null)
       if (!alive || !s || s.error) return
-      $('#pb').style.width = s.bufferedPct + '%'
-      $('#msg').textContent = `${name.split('/').pop()} — buffered ${s.bufferedPct}% · ${mbps(s.dlspeed)} · ${s.seeds} seeds · downloaded ${(s.fileProgress * 100).toFixed(1)}%`
+      $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
+      const slow = Date.now() - t0 > 25000 && s.bufferedPct < 10
+      $('#msg').textContent = slow ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
     }, 1000)
     const info = await api(base + '/info')
     if (!alive) return
     $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
     const v = $('video')
+    v.addEventListener('playing', () => { $('#wait').hidden = true }, { once: true })
     if (info.mode === 'hls' && window.Hls?.isSupported()) {
       hls = new Hls({ maxBufferLength: 60 })
       hls.loadSource(info.url); hls.attachMedia(v)
-      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); $('#msg').textContent = 'Playback error: ' + d.details } })
+      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); $('#wait').hidden = false; $('#msg').textContent = 'Something went wrong playing this. Go back and try again.' } })
     } else v.src = info.url
+    if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
     let last = 0
     const report = () => {
       if (!isFinite(v.duration) && !info.duration) return
-      api('/api/progress', { torrentId: +torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {})
+      api('/api/progress', { torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {})
     }
     v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); report() } }
-    v.onpause = report; v.onended = report
-    if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
-  } catch (e) { $('#msg').innerHTML = `<span class="bad">${esc(e.message)}</span>` }
+    v.onpause = report
+    v.onended = () => {
+      report()
+      if (play.next) $('#nx').innerHTML = `<button class="big" id="nb">Next: ${esc(play.next.label)} ▶</button>`, $('#nb').onclick = () => go(`#/play/${seriesId}/${play.next.season ?? 'x'}/${encodeURIComponent(play.next.label)}`)
+    }
+  } catch (e) { $('#msg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; $('.spin')?.remove() }
 }
 
 async function adminView() {
@@ -139,7 +154,7 @@ async function route() {
   const parts = path.split('/').filter(Boolean)
   try {
     if (parts[0] === 'series') await seriesView(parts[1])
-    else if (parts[0] === 'play') await playView(parts[1])
+    else if (parts[0] === 'play') await playView(parts[1], parts[2], parts[3])
     else if (parts[0] === 'admin' && me.is_admin) await adminView()
     else await homeView(new URLSearchParams(query).get('q'))
   } catch (e) { app.innerHTML = `<p class="bad">${esc(e.message)}</p>` }
