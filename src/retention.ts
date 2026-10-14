@@ -1,0 +1,68 @@
+import { db, now } from './db.ts'
+import { config } from './config.ts'
+import { qb, type QbTorrent } from './qb.ts'
+import { stopJobsFor } from './transcode.ts'
+
+export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
+
+/** Ratio is measured against the FULL torrent size (conservative when we only fetched part of a pack). */
+export function seedStatus(t: Pick<QbTorrent, 'uploaded' | 'total_size' | 'seeding_time'>, c = config.seed): SeedStatus {
+  const ratio = t.total_size > 0 ? t.uploaded / t.total_size : 0
+  const hours = t.seeding_time / 3600
+  const ratioMet = ratio >= c.minRatio
+  const hoursMet = hours >= c.minHours
+  return { ratio, hours, ratioMet, hoursMet, met: c.mode === 'all' ? ratioMet && hoursMet : ratioMet || hoursMet }
+}
+
+export function pendingViewers(torrentId: number): string[] {
+  const cutoff = config.abandonDays > 0 ? now() - config.abandonDays * 86400 : -1
+  return (db.prepare(`SELECT DISTINCT u.name FROM interests i JOIN users u ON u.id = i.user_id
+    WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.updated_at > ?`).all(torrentId, cutoff) as { name: string }[])
+    .map((r) => r.name)
+}
+
+export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; reasons: string[]; pending: string[]; seed: SeedStatus } {
+  const pending = pendingViewers(torrentId)
+  const seed = seedStatus(t)
+  const reasons: string[] = []
+  if (t.amount_left > 0) reasons.push('still downloading')
+  if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
+  if (!seed.met) {
+    const need: string[] = []
+    if (!seed.ratioMet) need.push(`ratio ${seed.ratio.toFixed(2)}/${config.seed.minRatio}`)
+    if (!seed.hoursMet) need.push(`seed time ${seed.hours.toFixed(1)}h/${config.seed.minHours}h`)
+    reasons.push(`BTN seeding requirement not met: need ${config.seed.minHours}h or ${config.seed.minRatio}:1 (${need.join(', ')})`)
+  }
+  return { deletable: reasons.length === 0, reasons, pending, seed }
+}
+
+export async function removeDownload(torrentId: number, hash: string, reason: string) {
+  stopJobsFor(torrentId)
+  await qb.remove(hash, true)
+  db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason=? WHERE torrent_id=?`).run(now(), reason, torrentId)
+}
+
+/** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled. */
+export async function sweep(): Promise<string[]> {
+  const removed: string[] = []
+  const rows = db.prepare(`SELECT torrent_id, info_hash FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string }[]
+  for (const d of rows) {
+    const t = await qb.info(d.info_hash)
+    if (!t) { // vanished from the engine (manually deleted) -> reflect it
+      db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
+      continue
+    }
+    if (whyKept(t, d.torrent_id).deletable) {
+      await removeDownload(d.torrent_id, d.info_hash, 'all viewers done and seeding requirement met')
+      removed.push(d.info_hash)
+    }
+  }
+  return removed
+}
+
+export function startSweeper() {
+  const run = () => sweep().catch((e) => console.error('[retention] sweep failed:', e.message))
+  const timer = setInterval(run, config.sweepIntervalSec * 1000)
+  timer.unref()
+  return run
+}
