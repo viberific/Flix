@@ -100,7 +100,8 @@ app.post('/api/watch', auth, async (req) => {
   if (!ep.available) throw Object.assign(new Error('Nobody is sharing this episode right now. Please try again later.'), { statusCode: 503 })
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack ? undefined : ep.label })
   const next = eps.slice(i + 1).find((e) => e.available)
-  return { ...play, quality: ep.quality, title: ep.label, next: next ? { season: next.season, label: next.label } : null }
+  const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
+  return { ...play, seriesName, quality: ep.quality, title: ep.label, next: next ? { season: next.season, label: next.label } : null }
 })
 
 app.get('/api/stream/:t/:f/status', auth, async (req) => {

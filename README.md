@@ -31,6 +31,13 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
      (`src/config.ts`) and cannot be overridden – not by config, and not by the admin "force remove" (it returns 409).
      Ratio is measured against the full torrent size.
 
+## Interface
+
+Dark, cinematic design (with a light variant that follows the device): a hero for what you were watching, scrolling rows,
+a backdrop on each show page with season tabs, and a full-screen player with a "next episode" countdown. Page changes use the
+browser's View Transitions API for smooth cross-fades (plain fades elsewhere), and everything respects *reduce motion*.
+System fonts only, so family devices never contact a font CDN.
+
 ## Setup
 
 Requires Node ≥ 22.5, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).

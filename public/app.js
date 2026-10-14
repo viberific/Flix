@@ -1,6 +1,7 @@
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
-let me = null
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+let me = null, cleanup = null, navToken = 0
 
 async function api(path, body, method) {
   const res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
@@ -11,154 +12,288 @@ async function api(path, body, method) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const gb = (n) => (n / 1073741824).toFixed(2) + ' GB'
 const mbps = (n) => (n / 1048576).toFixed(1) + ' MB/s'
-let cleanup = null
 const go = (h) => { location.hash = h }
+const hue = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7)
+const pct = (p, d) => Math.min(100, Math.round((p / (d || 1)) * 100))
 
-function renderTop() {
-  top.innerHTML = `<a class="brand" href="#/">Flix</a>${me ? `<form id="sf" class="row"><input id="q" placeholder="Search BroadcasTheNet…" size="28"></form>
-    <span class="sp"></span>${me.is_admin ? '<a href="#/admin">Admin</a>' : ''}<span class="dim">${esc(me.name)}</span><button id="lo">Log out</button>` : ''}`
-  if (!me) return
-  $('#sf').onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent($('#q').value)) }
-  $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
+const I = {
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
+  next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
+  logo: '<svg viewBox="0 0 32 32"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff6b4a"/><stop offset="1" stop-color="#ff3d71"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#lg)"/><path d="M12 9.5v13l11-6.5z" fill="#fff"/></svg>',
 }
 
+/** A poster-shaped block: generated colour + title underneath, real artwork fades in over it once loaded. */
+const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" src="${esc(url)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
+
+/** Set a hero backdrop: banner if it exists, otherwise a blurred poster. */
+function backdrop(el, banner, poster) {
+  const load = (u, cls) => new Promise((ok, no) => { if (!u) return no(); const i = new Image(); i.onload = () => ok(u); i.onerror = no; i.src = u }).then((u) => { el.style.backgroundImage = `url("${u}")`; el.className = 'bd ' + cls; requestAnimationFrame(() => el.classList.add('in')) })
+  load(banner, '').catch(() => load(poster, 'blur')).catch(() => {})
+}
+
+/** Swap the page with a cross-fade when the browser supports View Transitions. */
+async function swap(fn) {
+  window.scrollTo(0, 0)
+  if (!reduce && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
+  fn()
+}
+
+function skeleton() {
+  return `<div class="pad page-top"><div class="skel" style="height:min(46vh,380px);margin-bottom:28px"></div><div style="display:flex;gap:18px;overflow:hidden">${'<div class="skel" style="flex:none;width:168px;aspect-ratio:2/3"></div>'.repeat(8)}</div></div>`
+}
+
+/* ---------- top bar ---------- */
+function renderTop() {
+  if (!me) { top.hidden = true; return }
+  top.hidden = false
+  top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off"></form>
+    <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
+  const q = $('#q'), sf = $('#sf')
+  const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
+  if (cur) { q.value = cur; sf.classList.add('has') }
+  q.oninput = () => sf.classList.toggle('has', !!q.value)
+  sf.onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent(q.value.trim())); q.blur() }
+  $('#av').onclick = (e) => {
+    e.stopPropagation()
+    const old = $('.menu'); if (old) return old.remove()
+    const m = document.createElement('div'); m.className = 'menu'
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Admin</a>' : ''}<button id="lo">Sign out</button>`
+    top.appendChild(m)
+    $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
+    m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
+  }
+}
+addEventListener('click', () => $('.menu')?.remove())
+addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
+
+/* ---------- auth ---------- */
 function authView(needsSetup) {
-  app.innerHTML = `<form class="auth panel"><h2>${needsSetup ? 'Create the admin account' : 'Sign in'}</h2>
-    <input name="name" placeholder="Username" autocomplete="username" required>
-    <input name="password" type="password" placeholder="Password (8+ chars)" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required>
-    <button class="primary">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="bad" id="err"></div></form>`
-  $('form').onsubmit = async (e) => {
-    e.preventDefault()
-    const f = new FormData(e.target)
-    try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() }
-    catch (err) { $('#err').textContent = err.message }
+  return () => {
+    app.innerHTML = `<div class="auth-wrap"><form class="auth"><div class="brand">${I.logo}<span>Flix</span></div>
+      <h1 style="text-align:center">${needsSetup ? 'Create the admin account' : 'Welcome back'}</h1>
+      <input class="field" name="name" placeholder="Username" autocomplete="username" required>
+      <input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required>
+      <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
+    $('form').onsubmit = async (e) => {
+      e.preventDefault()
+      const f = new FormData(e.target)
+      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message }
+    }
   }
 }
 
-const poster = (s) => `<a class="card" href="#/series/${s.id ?? s.seriesId}"><img loading="lazy" src="${esc(s.poster || '')}" alt="" onerror="this.style.visibility='hidden'"><div>${esc(s.name ?? s.series)}</div></a>`
+/* ---------- home ---------- */
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}<div class="tt">${esc(s.name)}</div></a>`
+const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
+  <div style="position:relative">${art(c.poster, c.series)}<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div></div><div class="tt">${esc(c.series)}</div><div class="ts">${esc(c.label)}</div></button>`
 
-async function homeView(q) {
-  app.innerHTML = '<p class="dim">Loading…</p>'
-  const [{ series }, cont] = await Promise.all([api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : '')), q ? { items: [] } : api('/api/continue')])
-  const items = cont.items
-  app.innerHTML =
-    (items.length ? `<h2>Continue watching</h2><div class="grid">${items.map((i) => `<button class="card cw" data-s="${i.seriesId}" data-season="${i.season ?? ''}" data-label="${esc(i.label)}">
-      <img loading="lazy" src="${esc(i.poster || '')}" alt="" onerror="this.style.visibility='hidden'"><div>${esc(i.series)}<br><span class="dim">${esc(i.label)}</span></div>
-      <i class="bar"><b style="width:${Math.min(100, Math.round((i.position / (i.duration || 1)) * 100))}%"></b></i></button>`).join('')}</div>` : '') +
-    `<h2>${q ? `Results for “${esc(q)}”` : 'Latest shows'}</h2>` +
-    (series.length ? `<div class="grid">${series.map(poster).join('')}</div>` : '<p class="dim">Nothing here yet. Try searching for a show.</p>')
-  app.querySelectorAll('.cw').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
+function rowOf(items, html) {
+  return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
+}
+function wireRows(root) {
+  root.querySelectorAll('.rowwrap').forEach((w) => {
+    const sc = $('.row-scroll', w)
+    $('.arrow.l', w).onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: 'smooth' })
+    $('.arrow.r', w).onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: 'smooth' })
+  })
+  root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
+async function homeView(q) {
+  const [{ series }, cont] = await Promise.all([api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : '')), q ? { items: [] } : api('/api/continue')])
+  const items = cont.items
+  return () => {
+    let html = ''
+    if (!q && (items[0] || series[0])) {
+      const c = items[0], s = c ? { id: c.seriesId, name: c.series } : series[0]
+      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? 'Continue watching' : 'New on BroadcasTheNet'}</div>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched' : 'Tap to see episodes'}</p>
+        <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} Resume</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
+        <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
+    } else html += '<div class="page-top"></div>'
+    html += '<div class="pad">'
+    if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
+    if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
+    else html += `<h2 class="sec">New on BroadcasTheNet</h2>` + (series.length ? rowOf(series, tile) : '<div class="empty">Nothing here yet.</div>')
+    html += '</div>'
+    app.innerHTML = html
+    wireRows(app)
+    const hs = !q && (items[0] ? { id: items[0].seriesId } : series[0])
+    if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
+    const hp = $('#hp'); if (hp) hp.onclick = () => go(`#/play/${items[0].seriesId}/${items[0].season ?? 'x'}/${encodeURIComponent(items[0].label)}`)
+  }
+}
+
+/* ---------- series ---------- */
 async function seriesView(id) {
-  app.innerHTML = '<p class="dim">Loading…</p>'
   const { series, episodes } = await api('/api/series/' + id)
   const seasons = new Map()
   for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
-  const nextUp = episodes.find((e) => !e.watched && e.available)
   const resume = episodes.find((e) => e.position > 30 && !e.watched)
-  const hero = resume ?? nextUp
-  app.innerHTML = `<div class="hero">${series.poster ? `<img src="${esc(series.poster)}" alt="" onerror="this.style.display='none'">` : ''}<div>
-      <h2>${esc(series.name)}</h2>
-      ${hero ? `<button class="big" data-ep="${esc(hero.label)}" data-season="${hero.season ?? ''}">▶ ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<p class="dim">Nothing is available to play right now.</p>'}
-      ${series.trailer ? `<p><a class="trailer" href="${esc(series.trailer)}" target="_blank" rel="noopener">▶ Watch trailer</a></p>` : ''}
-    </div></div>` +
-    [...seasons].map(([s, eps]) => `<h3 class="sh">${s === 'x' ? 'Episodes' : 'Season ' + s}</h3><div class="eps">${eps.map((e) => `
-      <button class="ep" data-ep="${esc(e.label)}" data-season="${e.season ?? ''}" ${e.available ? '' : 'disabled'}>
-        <span class="en">${esc(e.label)}</span>
-        <span class="et">${e.available ? '' : '<span class="dim">Not available right now</span>'}${e.position > 30 && !e.watched ? `<i class="bar"><b style="width:${Math.min(100, Math.round((e.position / (e.duration || 1)) * 100))}%"></b></i>` : ''}</span>
-        <span class="eq">${e.watched ? '✓ Watched' : e.onServer ? 'Ready' : ''}</span>
-      </button>`).join('')}</div>`).join('')
-  app.querySelectorAll('[data-ep]').forEach((b) => b.onclick = () => go(`#/play/${id}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.ep)}`))
-}
-
-async function playView(seriesId, season, label) {
-  label = decodeURIComponent(label)
-  app.innerHTML = `<div class="stage"><div id="vw"></div><div class="wait" id="wait"><div class="spin"></div><div id="msg">Getting your show ready…</div><div class="bar big"><b id="pb" style="width:4%"></b></div></div></div>
-    <div class="row" style="justify-content:space-between;margin-top:10px"><a href="#/series/${seriesId}">← Back</a><span id="q" class="dim"></span><span id="nx"></span></div>`
-  let alive = true, hls = null, timer = null
-  cleanup = () => { alive = false; clearInterval(timer); hls?.destroy() }
-  const t0 = Date.now()
-  try {
-    const play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label })
-    const { torrentId, fileIndex, position: start } = play
-    $('#q').textContent = play.quality
-    const base = `/api/stream/${torrentId}/${fileIndex}`
-    timer = setInterval(async () => {
-      const s = await api(base + '/status').catch(() => null)
-      if (!alive || !s || s.error) return
-      $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
-      const slow = Date.now() - t0 > 25000 && s.bufferedPct < 10
-      $('#msg').textContent = slow ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
-    }, 1000)
-    const info = await api(base + '/info')
-    if (!alive) return
-    $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
-    const v = $('video')
-    v.addEventListener('playing', () => { $('#wait').hidden = true }, { once: true })
-    if (info.mode === 'hls' && window.Hls?.isSupported()) {
-      hls = new Hls({ maxBufferLength: 60 })
-      hls.loadSource(info.url); hls.attachMedia(v)
-      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); $('#wait').hidden = false; $('#msg').textContent = 'Something went wrong playing this. Go back and try again.' } })
-    } else v.src = info.url
-    if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
-    let last = 0
-    const report = () => {
-      if (!isFinite(v.duration) && !info.duration) return
-      api('/api/progress', { torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {})
+  const hero = resume ?? episodes.find((e) => !e.watched && e.available)
+  const keys = [...seasons.keys()]
+  let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
+  const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+  return () => {
+    app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
+      <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
+      <div class="line rise" style="--i:1"><span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}</div>
+      <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
+        ${series.trailer ? `<a class="trailer-link" href="${esc(series.trailer)}" target="_blank" rel="noopener noreferrer">${I.play} Trailer</a>` : ''}</div></div></div></section>
+      <div class="pad"><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+    backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`)
+    const paint = () => {
+      $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
+        <span class="play">${I.play}</span><span><span class="en">${esc(e.label)}</span><br>
+        <span class="es">${e.available ? (e.onServer ? 'Ready to watch' : '') : 'Not available right now'}</span></span>
+        <span>${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</button>`).join('')
+      $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => go1(seasons.get(cur)[+b.dataset.i]))
     }
-    v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); report() } }
-    v.onpause = report
-    v.onended = () => {
-      report()
-      if (play.next) $('#nx').innerHTML = `<button class="big" id="nb">Next: ${esc(play.next.label)} ▶</button>`, $('#nb').onclick = () => go(`#/play/${seriesId}/${play.next.season ?? 'x'}/${encodeURIComponent(play.next.label)}`)
-    }
-  } catch (e) { $('#msg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; $('.spin')?.remove() }
-}
-
-async function adminView() {
-  const render = async () => {
-    const { requirements: r, downloads } = await api('/api/admin/downloads')
-    app.innerHTML = `<h2>Downloads</h2><p class="dim">Kept until every viewer has watched it <b>and</b> seeding is met:
-      ratio ≥ ${r.minRatio} ${r.mode === 'all' ? 'AND' : 'OR'} ${r.minHours} h.</p>
-      <table><tr><th>Release</th><th>State</th><th>Progress</th><th>Ratio</th><th>Seeded</th><th>Why kept</th><th></th></tr>
-      ${downloads.map((d) => `<tr><td>${esc(d.series)}<br><span class="dim">${esc(d.group_name)} ${esc(d.resolution || '')}</span></td>
-        <td>${d.state === 'active' ? (d.deletable ? '<span class="ok">eligible for removal</span>' : 'active') : `<span class="dim">removed</span>`}</td>
-        <td>${d.progress !== undefined ? (d.progress * 100).toFixed(0) + '% · ' + mbps(d.dlspeed) : ''}</td>
-        <td>${d.ratio !== undefined ? d.ratio.toFixed(2) : ''}</td><td>${d.seedHours !== undefined ? d.seedHours.toFixed(1) + ' h' : ''}</td>
-        <td class="dim">${d.state === 'active' ? esc((d.reasons || []).join('; ')) : esc(d.remove_reason || '')}</td>
-        <td>${d.state === 'active' ? `<button data-rm="${d.torrent_id}">Force remove</button>` : ''}</td></tr>`).join('')}</table>
-      <h2>Create user</h2><form id="uf" class="row"><input name="name" placeholder="Username"><input name="password" type="password" placeholder="Password">
-      <label><input type="checkbox" name="isAdmin"> admin</label><button>Create</button><span id="um"></span></form>`
-    app.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
-      if (confirm('Delete this torrent and its files now? (Refused by the server unless the BTN seeding requirement is met.)')) { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); render() }
+    paint()
+    app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
+      cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
+      app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))
+      paint()
     })
+    const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+  }
+}
+
+/* ---------- player ---------- */
+function playView(seriesId, season, label) {
+  label = decodeURIComponent(label)
+  return () => {
+    app.innerHTML = `<div class="player" id="pl"><div class="p-bg" id="pbg"></div>
+      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a><div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span><span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
+      <div id="vw"></div>
+      <div class="p-wait" id="wait"><img class="art" id="wart" alt="" hidden><div class="ring"></div><div id="msg">Getting your show ready…</div><div class="pline"><i id="pb"></i></div></div></div>`
+    top.hidden = true
+    const pl = $('#pl')
+    $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
+    const wa = $('#wart'); wa.onload = () => { wa.hidden = false }; wa.src = `/api/art/${seriesId}/poster`
+    let alive = true, hls = null, timer = null, idleT = null, cdT = null
+    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { const v = $('video'); if (v && !v.paused) pl.classList.add('idle') }, 3000) }
+    pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
+    cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearTimeout(idleT); hls?.destroy(); top.hidden = !me }
+    const t0 = Date.now()
+    ;(async () => {
+      try {
+        const play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label })
+        if (!alive) return
+        const { torrentId, fileIndex, position: start } = play
+        $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label
+        const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
+        const base = `/api/stream/${torrentId}/${fileIndex}`
+        timer = setInterval(async () => {
+          const s = await api(base + '/status').catch(() => null)
+          if (!alive || !s || s.error) return
+          $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
+          $('#msg').textContent = Date.now() - t0 > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
+        }, 1000)
+        const info = await api(base + '/info')
+        if (!alive) return
+        $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
+        const v = $('video')
+        v.addEventListener('playing', () => { $('#wait').classList.add('gone'); wake() }, { once: true })
+        v.addEventListener('pause', () => pl.classList.remove('idle'))
+        v.addEventListener('play', wake)
+        if (info.mode === 'hls' && window.Hls?.isSupported()) {
+          hls = new Hls({ maxBufferLength: 60 })
+          hls.loadSource(info.url); hls.attachMedia(v)
+          hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); fail('Something went wrong playing this. Go back and try again.') } })
+        } else v.src = info.url
+        if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
+        let last = 0
+        const report = () => { if (!isFinite(v.duration) && !info.duration) return; api('/api/progress', { torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {}) }
+        v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); report() } }
+        v.onpause = report
+        v.onended = () => {
+          report()
+          if (!play.next) return go(`#/series/${seriesId}`)
+          const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
+          const box = document.createElement('div'); box.className = 'p-next'
+          box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
+          pl.appendChild(box)
+          const bar = $('#cdb'); let left = 8
+          bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
+          cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
+          $('#nn').onclick = () => go(target)
+          $('#nc').onclick = () => { clearInterval(cdT); box.remove() }
+        }
+      } catch (e) { fail(e.message) }
+    })()
+    function fail(msg) { if (!alive) return; clearInterval(timer); $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('#msg').innerHTML = `<span style="color:#ff8a98">${esc(msg)}</span>`; $('#pb').parentElement.remove() }
+  }
+}
+
+/* ---------- admin ---------- */
+async function adminView() {
+  const data = await api('/api/admin/downloads')
+  return () => {
+    app.innerHTML = `<div class="pad page-top"><h1 style="font-size:32px">Downloads</h1>
+      <p class="dim" style="max-width:62ch">A show stays on the server until everyone has watched it <b style="color:var(--fg)">and</b> BroadcasTheNet's rule is met: ${data.requirements.minHours} hours seeded <b style="color:var(--fg)">or</b> a ${data.requirements.minRatio}:1 ratio. This can't be changed.</p>
+      <div class="card-box" id="adm"></div><h2 class="sec">Add a family member</h2>
+      <form id="uf" class="row-form"><input class="field" name="name" placeholder="Username"><input class="field" name="password" type="password" placeholder="Password (8+ characters)">
+      <label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add</button><span id="um" class="dim"></span></form></div>`
+    const draw = (d) => {
+      const rows = d.downloads.map((x) => {
+        const active = x.state === 'active'
+        return `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)} ${esc(x.resolution || '')}</span></td>
+        <td>${x.progress !== undefined ? Math.round(x.progress * 100) + '%' + (x.dlspeed ? '<br><span class="dim">' + mbps(x.dlspeed) + '</span>' : '') : '—'}</td>
+        <td>${x.ratio !== undefined ? `<div class="meter">Ratio ${x.ratio.toFixed(2)} / ${d.requirements.minRatio}<div class="m"><i style="width:${Math.min(100, x.ratio * 100)}%"></i></div></div>
+          <div class="meter">${x.seedHours.toFixed(1)} h / ${d.requirements.minHours} h<div class="m"><i style="width:${Math.min(100, (x.seedHours / d.requirements.minHours) * 100)}%"></i></div></div>` : ''}</td>
+        <td>${active ? (x.deletable ? '<span class="badge ok">will be removed</span>' : '<span class="badge warn">kept</span>') : '<span class="badge dim">removed</span>'}</td>
+        <td class="dim">${active ? esc((x.reasons || []).join('; ')) : esc(x.remove_reason || '')}</td>
+        <td>${active ? `<button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button>` : ''}</td></tr>`
+      }).join('')
+      $('#adm').innerHTML = `<table><thead><tr><th>Show</th><th>Download</th><th>BTN requirement</th><th>Status</th><th>Why</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nothing downloaded yet.</td></tr>'}</tbody></table>`
+      $('#adm').querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+        try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not yet' : 'Failed'; b.disabled = true }
+      })
+    }
+    draw(data)
+    const t = setInterval(async () => draw(await api('/api/admin/downloads').catch(() => data)), 15000)
+    cleanup = () => clearInterval(t)
     $('#uf').onsubmit = async (e) => {
       e.preventDefault(); const f = new FormData(e.target)
-      try { await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin') }); $('#um').textContent = 'Created'; e.target.reset() }
-      catch (err) { $('#um').textContent = err.message }
+      try { await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin') }); $('#um').textContent = 'Added'; e.target.reset() } catch (err) { $('#um').textContent = err.message }
     }
   }
-  await render()
-  const t = setInterval(render, 15000)
-  cleanup = () => clearInterval(t)
 }
 
+/* ---------- router ---------- */
 async function route() {
   cleanup?.(); cleanup = null
-  const st = await api('/api/me')
+  const token = ++navToken
+  let st
+  try { st = await api('/api/me') } catch { return }
   me = st.user
   renderTop()
-  if (!me) return authView(st.needsSetup)
+  top.classList.toggle('solid', scrollY > 30)
+  if (!me) return swap(authView(st.needsSetup))
   const [path, query] = location.hash.slice(1).split('?')
   const parts = path.split('/').filter(Boolean)
+  const slow = app.innerHTML.trim() ? null : setTimeout(() => { if (token === navToken) app.innerHTML = skeleton() }, 200)
   try {
-    if (parts[0] === 'series') await seriesView(parts[1])
-    else if (parts[0] === 'play') await playView(parts[1], parts[2], parts[3])
-    else if (parts[0] === 'admin' && me.is_admin) await adminView()
-    else await homeView(new URLSearchParams(query).get('q'))
-  } catch (e) { app.innerHTML = `<p class="bad">${esc(e.message)}</p>` }
+    let render
+    if (parts[0] === 'series') render = await seriesView(parts[1])
+    else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
+    else if (parts[0] === 'admin' && me.is_admin) render = await adminView()
+    else render = await homeView(new URLSearchParams(query).get('q'))
+    clearTimeout(slow)
+    if (token !== navToken) return
+    await swap(render)
+  } catch (e) {
+    clearTimeout(slow)
+    if (token === navToken) app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}</div></div>`
+  }
 }
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 addEventListener('hashchange', route)
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 route()
