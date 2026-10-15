@@ -1,5 +1,5 @@
 // App-shell cache only. API responses and video streams are never cached (auth + huge, partially-downloaded files).
-const CACHE = 'flix-shell-v1'
+const CACHE = 'flix-shell-v2'
 const SHELL = ['/', '/app.js', '/style.css', '/icon.svg', '/manifest.webmanifest', '/vendor/hls.min.js']
 
 self.addEventListener('install', (e) => {

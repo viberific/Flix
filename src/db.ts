@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS releases (
   season INTEGER, episode INTEGER, label TEXT, is_pack INTEGER NOT NULL DEFAULT 0,
   resolution TEXT, codec TEXT, container TEXT, source TEXT, origin TEXT,
   size INTEGER, seeders INTEGER, time INTEGER, info_hash TEXT NOT NULL, torrent_link TEXT,
-  genres TEXT, fetched_at INTEGER NOT NULL
+  genres TEXT, youtube_trailer TEXT, fetched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS releases_series ON releases(series_id, season, episode);
 CREATE TABLE IF NOT EXISTS series_sync (series_id INTEGER PRIMARY KEY, synced_at INTEGER NOT NULL);
@@ -57,5 +57,7 @@ CREATE TABLE IF NOT EXISTS interests (
   PRIMARY KEY (user_id, torrent_id, file_index)
 );
 `)
+
+try { db.exec('ALTER TABLE releases ADD COLUMN youtube_trailer TEXT') } catch { /* already present */ }
 
 export const now = () => Math.floor(Date.now() / 1000)

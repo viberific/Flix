@@ -7,7 +7,7 @@ import { config } from './config.ts'
 const execFileP = promisify(execFile)
 const rawUrl = (t: number, f: number) => `http://127.0.0.1:${config.port}/api/stream/${t}/${f}/raw?k=${config.internalKey}`
 
-export interface Probe { direct: boolean; videoCodec?: string; audioCodec?: string; container?: string; duration?: number; copyVideo: boolean }
+export interface Probe { direct: boolean; videoCodec?: string; audioCodec?: string; container?: string; duration?: number; copyVideo: boolean; height?: number }
 const probes = new Map<string, Probe>()
 
 const DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1'])
@@ -26,11 +26,12 @@ export async function probe(torrentId: number, fileIndex: number): Promise<Probe
   const fmt: string = j.format?.format_name ?? ''
   const containerOk = /mp4|webm/.test(fmt)
   const pixOk = !v?.pix_fmt || v.pix_fmt === 'yuv420p'
-  const vOk = !!v && DIRECT_VIDEO.has(v.codec_name) && pixOk
+  const height: number | undefined = v?.height
+  const vOk = !!v && DIRECT_VIDEO.has(v.codec_name) && pixOk && (height ?? 0) <= 1080 // 4K is always re-encoded down to 1080p
   const aOk = !a || DIRECT_AUDIO.has(a.codec_name)
   const p: Probe = {
     direct: containerOk && vOk && aOk, videoCodec: v?.codec_name, audioCodec: a?.codec_name, container: fmt,
-    duration: j.format?.duration ? Number(j.format.duration) : undefined, copyVideo: vOk,
+    duration: j.format?.duration ? Number(j.format.duration) : undefined, copyVideo: vOk, height,
   }
   probes.set(key, p)
   return p
@@ -66,7 +67,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe):
     mkdirSync(dir, { recursive: true })
     const args = ['-hide_banner', '-loglevel', 'error', '-i', rawUrl(torrentId, fileIndex),
       '-map', '0:v:0', '-map', '0:a:0?', '-sn',
-      ...(p.copyVideo ? ['-c:v', 'copy'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-force_key_frames', 'expr:gte(t,n_forced*6)']),
+      ...(p.copyVideo ? ['-c:v', 'copy'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...((p.height ?? 0) > 1080 ? ['-vf', 'scale=-2:1080'] : []), '-force_key_frames', 'expr:gte(t,n_forced*6)']),
       '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
       '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')]

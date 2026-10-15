@@ -10,7 +10,7 @@ import { isVideo } from './btn/parse.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export interface Release { torrent_id: number; info_hash: string; torrent_link: string; series: string; group_name: string }
+export interface Release { is_pack: number; torrent_id: number; info_hash: string; torrent_link: string; series: string; group_name: string }
 export const getRelease = (id: number) => db.prepare('SELECT * FROM releases WHERE torrent_id = ?').get(id) as Release | undefined
 
 const adding = new Map<number, Promise<void>>()
@@ -40,8 +40,16 @@ export function pickVideo(files: QbFile[]): QbFile | undefined {
   return files.filter((f) => isVideo(f.name)).sort((a, b) => b.size - a.size)[0]
 }
 
+/** In a season pack: the requested episode, else the first video this user has not finished (so "Play" resumes the season). */
+function pickFromPack(files: QbFile[], userId: number, torrentId: number, label?: string): QbFile | undefined {
+  const vids = files.filter((f) => isVideo(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  if (label) { const hit = vids.find((f) => f.name.toUpperCase().includes(label.toUpperCase())); if (hit) return hit }
+  const done = new Set((db.prepare('SELECT file_index FROM interests WHERE user_id = ? AND torrent_id = ? AND watched_at IS NOT NULL').all(userId, torrentId) as any[]).map((r) => r.file_index))
+  return vids.find((f) => !done.has(f.index)) ?? vids[0]
+}
+
 /** Start (or join) a download for a user and return the file to play. */
-export async function startPlayback(userId: number, torrentId: number, fileIndex?: number) {
+export async function startPlayback(userId: number, torrentId: number, fileIndex?: number, opts: { episodeLabel?: string } = {}) {
   const rel = getRelease(torrentId)
   if (!rel) throw new Error('Unknown release')
   let p = adding.get(torrentId)
@@ -49,7 +57,7 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
   await p
 
   const files = await qb.files(rel.info_hash)
-  const file = fileIndex !== undefined ? files.find((f) => f.index === fileIndex) : pickVideo(files)
+  const file = fileIndex !== undefined ? files.find((f) => f.index === fileIndex) : rel.is_pack ? pickFromPack(files, userId, torrentId, opts.episodeLabel) : pickVideo(files)
   if (!file) throw new Error('No playable video file in this torrent')
 
   // Only fetch what somebody asked to watch; everything else in a season pack stays at priority 0.

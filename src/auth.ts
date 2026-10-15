@@ -2,8 +2,9 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { db, now } from './db.ts'
 import { config } from './config.ts'
+import { parseAllowed, type Allowed } from './ratings.ts'
 
-export interface User { id: number; name: string; is_admin: number }
+export interface User { id: number; name: string; is_admin: number; allowed: Allowed }
 
 export function hashPassword(pw: string): string {
   const salt = randomBytes(16)
@@ -17,12 +18,13 @@ function verifyPassword(pw: string, stored: string): boolean {
 }
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 
-export function createUser(name: string, pw: string, isAdmin: boolean): User {
+export function createUser(name: string, pw: string, isAdmin: boolean, allowed: Allowed = null): User {
   if (!/^[\w.-]{2,32}$/.test(name)) throw new Error('Username must be 2-32 chars (letters, digits, _ . -)')
   if (pw.length < 8) throw new Error('Password must be at least 8 characters')
-  const r = db.prepare('INSERT INTO users (name, pass_hash, is_admin, created_at) VALUES (?,?,?,?)')
-    .run(name, hashPassword(pw), isAdmin ? 1 : 0, now())
-  return { id: Number(r.lastInsertRowid), name, is_admin: isAdmin ? 1 : 0 }
+  if (db.prepare('SELECT 1 FROM users WHERE name = ?').get(name)) throw Object.assign(new Error('That username is taken'), { statusCode: 409 })
+  const r = db.prepare('INSERT INTO users (name, pass_hash, is_admin, created_at, allowed_ratings) VALUES (?,?,?,?,?)')
+    .run(name, hashPassword(pw), isAdmin ? 1 : 0, now(), allowed ? JSON.stringify(allowed) : null)
+  return { id: Number(r.lastInsertRowid), name, is_admin: isAdmin ? 1 : 0, allowed }
 }
 
 export function login(name: string, pw: string): string | null {
@@ -43,8 +45,9 @@ function cookieToken(req: FastifyRequest): string | null {
 export function userFor(req: FastifyRequest): User | null {
   const t = cookieToken(req)
   if (!t) return null
-  return (db.prepare(`SELECT u.id, u.name, u.is_admin FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND s.expires_at > ?`).get(sha(t), now()) as User | undefined) ?? null
+  const r = db.prepare(`SELECT u.id, u.name, u.is_admin, u.allowed_ratings FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ? AND s.expires_at > ?`).get(sha(t), now()) as any
+  return r ? { id: r.id, name: r.name, is_admin: r.is_admin, allowed: parseAllowed(r.allowed_ratings) } : null
 }
 
 export function logout(req: FastifyRequest) {

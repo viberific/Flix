@@ -1,6 +1,7 @@
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
-let me = null
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+let me = null, cleanup = null, navToken = 0
 
 async function api(path, body, method) {
   const res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
@@ -11,139 +12,357 @@ async function api(path, body, method) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const gb = (n) => (n / 1073741824).toFixed(2) + ' GB'
 const mbps = (n) => (n / 1048576).toFixed(1) + ' MB/s'
-let cleanup = null
 const go = (h) => { location.hash = h }
+const hue = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7)
+const pct = (p, d) => Math.min(100, Math.round((p / (d || 1)) * 100))
 
-function renderTop() {
-  top.innerHTML = `<a class="brand" href="#/">Flix</a>${me ? `<form id="sf" class="row"><input id="q" placeholder="Search BroadcasTheNet…" size="28"></form>
-    <span class="sp"></span>${me.is_admin ? '<a href="#/admin">Admin</a>' : ''}<span class="dim">${esc(me.name)}</span><button id="lo">Log out</button>` : ''}`
-  if (!me) return
-  $('#sf').onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent($('#q').value)) }
-  $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
+const I = {
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
+  next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
+  logo: '<svg viewBox="0 0 32 32"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff6b4a"/><stop offset="1" stop-color="#ff3d71"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#lg)"/><path d="M12 9.5v13l11-6.5z" fill="#fff"/></svg>',
 }
 
-function authView(needsSetup) {
-  app.innerHTML = `<form class="auth panel"><h2>${needsSetup ? 'Create the admin account' : 'Sign in'}</h2>
-    <input name="name" placeholder="Username" autocomplete="username" required>
-    <input name="password" type="password" placeholder="Password (8+ chars)" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required>
-    <button class="primary">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="bad" id="err"></div></form>`
-  $('form').onsubmit = async (e) => {
-    e.preventDefault()
-    const f = new FormData(e.target)
-    try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() }
-    catch (err) { $('#err').textContent = err.message }
+/** A poster-shaped block: generated colour + title underneath, real artwork fades in over it once loaded. */
+const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" src="${esc(url)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
+
+/** Set a hero backdrop: banner if it exists, otherwise a blurred poster. */
+function backdrop(el, banner, poster) {
+  const load = (u, cls) => new Promise((ok, no) => { if (!u) return no(); const i = new Image(); i.onload = () => ok(u); i.onerror = no; i.src = u }).then((u) => { el.style.backgroundImage = `url("${u}")`; el.className = 'bd ' + cls; requestAnimationFrame(() => el.classList.add('in')) })
+  load(banner, '').catch(() => load(poster, 'blur')).catch(() => {})
+}
+
+/** Swap the page with a cross-fade when the browser supports View Transitions. */
+async function swap(fn) {
+  window.scrollTo(0, 0)
+  if (!reduce && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
+  fn()
+}
+
+function skeleton() {
+  return `<div class="pad page-top"><div class="skel" style="height:min(46vh,380px);margin-bottom:28px"></div><div style="display:flex;gap:18px;overflow:hidden">${'<div class="skel" style="flex:none;width:168px;aspect-ratio:2/3"></div>'.repeat(8)}</div></div>`
+}
+
+/* ---------- top bar ---------- */
+function renderTop() {
+  if (!me) { top.hidden = true; return }
+  top.hidden = false
+  top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off"></form>
+    <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
+  const q = $('#q'), sf = $('#sf')
+  const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
+  if (cur) { q.value = cur; sf.classList.add('has') }
+  q.oninput = () => sf.classList.toggle('has', !!q.value)
+  sf.onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent(q.value.trim())); q.blur() }
+  $('#av').onclick = (e) => {
+    e.stopPropagation()
+    const old = $('.menu'); if (old) return old.remove()
+    const m = document.createElement('div'); m.className = 'menu'
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a>' : ''}<button id="lo">Sign out</button>`
+    top.appendChild(m)
+    $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
+    m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
   }
+}
+addEventListener('click', () => $('.menu')?.remove())
+addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
+
+/* ---------- auth ---------- */
+function authView(needsSetup) {
+  return () => {
+    app.innerHTML = `<div class="auth-wrap"><form class="auth"><div class="brand">${I.logo}<span>Flix</span></div>
+      <h1 style="text-align:center">${needsSetup ? 'Create the admin account' : 'Welcome back'}</h1>
+      <input class="field" name="name" placeholder="Username" autocomplete="username" required>
+      <input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required>
+      <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
+    $('form').onsubmit = async (e) => {
+      e.preventDefault()
+      const f = new FormData(e.target)
+      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message }
+    }
+  }
+}
+
+/* ---------- home ---------- */
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}<div class="tt">${esc(s.name)}</div></a>`
+const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
+  <div style="position:relative">${art(c.poster, c.series)}<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div></div><div class="tt">${esc(c.series)}</div><div class="ts">${esc(c.label)}</div></button>`
+
+function rowOf(items, html) {
+  return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
+}
+function wireRows(root) {
+  root.querySelectorAll('.rowwrap').forEach((w) => {
+    const sc = $('.row-scroll', w)
+    $('.arrow.l', w).onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: 'smooth' })
+    $('.arrow.r', w).onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: 'smooth' })
+  })
+  root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
 async function homeView(q) {
-  app.innerHTML = '<p class="dim">Loading…</p>'
-  const { series } = await api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : ''))
-  app.innerHTML = `<h2>${q ? `Results for “${esc(q)}”` : 'Latest on BroadcasTheNet'}</h2>` +
-    (series.length ? `<div class="grid">${series.map((s) => `<a class="card" href="#/series/${s.id}">
-      <img loading="lazy" src="${esc(s.poster || '')}" alt=""><div>${esc(s.name)}</div></a>`).join('')}</div>`
-      : '<p class="dim">Nothing yet. Search for a show above.</p>')
+  const [{ series }, cont] = await Promise.all([api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : '')), q ? { items: [] } : api('/api/continue')])
+  const items = cont.items
+  return () => {
+    let html = ''
+    if (!q && (items[0] || series[0])) {
+      const c = items[0], s = c ? { id: c.seriesId, name: c.series } : series[0]
+      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? 'Continue watching' : 'New on BroadcasTheNet'}</div>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched' : 'Tap to see episodes'}</p>
+        <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} Resume</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
+        <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
+    } else html += '<div class="page-top"></div>'
+    html += '<div class="pad">'
+    if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
+    if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
+    else html += `<h2 class="sec">New on BroadcasTheNet</h2>` + (series.length ? rowOf(series, tile) : '<div class="empty">Nothing here yet.</div>')
+    html += '</div>'
+    app.innerHTML = html
+    wireRows(app)
+    const hs = !q && (items[0] ? { id: items[0].seriesId } : series[0])
+    if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
+    const hp = $('#hp'); if (hp) hp.onclick = () => go(`#/play/${items[0].seriesId}/${items[0].season ?? 'x'}/${encodeURIComponent(items[0].label)}`)
+  }
 }
 
+/* ---------- series ---------- */
 async function seriesView(id) {
-  app.innerHTML = '<p class="dim">Loading from BroadcasTheNet…</p>'
-  const { series, releases, progress } = await api('/api/series/' + id)
-  const prog = new Map(progress.map((p) => [p.torrent_id, p]))
+  const { series, episodes } = await api('/api/series/' + id)
   const seasons = new Map()
-  for (const r of releases) {
-    const k = r.season ?? 'Other'
-    if (!seasons.has(k)) seasons.set(k, new Map())
-    const key = r.label
-    if (!seasons.get(k).has(key)) seasons.get(k).set(key, [])
-    seasons.get(k).get(key).push(r)
-  }
-  app.innerHTML = `<h2>${esc(series.name)}</h2>` + [...seasons].map(([s, eps]) => `<div class="season panel"><h3>${s === 'Other' ? 'Other' : 'Season ' + s}</h3>
-    <table>${[...eps].map(([label, rs]) => `<tr><td style="width:110px"><b>${esc(label)}</b></td><td>${rs.map((r) => {
-      const p = prog.get(r.torrent_id)
-      return `<div class="row" style="margin:3px 0"><button data-play="${r.torrent_id}" class="primary">▶ Play</button>
-        <span>${esc([r.resolution, r.source, r.codec, r.container].filter(Boolean).join(' · '))}</span>
-        <span class="tag">${gb(r.size)}</span><span class="tag">${r.seeders ?? 0} seeders</span>${r.is_pack ? '<span class="tag">season pack</span>' : ''}
-        ${r.download_state === 'active' ? '<span class="tag ok">on server</span>' : ''}
-        ${p?.watched_at ? '<span class="tag ok">watched</span>' : p ? `<span class="tag warn">${Math.round((p.position / (p.duration || 1)) * 100)}%</span>` : ''}</div>`
-    }).join('')}</td></tr>`).join('')}</table></div>`).join('')
-  app.querySelectorAll('[data-play]').forEach((b) => b.onclick = () => go('#/play/' + b.dataset.play))
-}
-
-async function playView(torrentId) {
-  app.innerHTML = `<div class="panel"><div id="msg">Contacting tracker and starting download…</div><div class="bar"><i id="pb" style="width:0%"></i></div></div><div id="vw"></div>`
-  let alive = true, hls = null, timer = null
-  cleanup = () => { alive = false; clearInterval(timer); hls?.destroy() }
-  try {
-    const { fileIndex, name, position: start } = await api('/api/play', { torrentId: +torrentId })
-    const base = `/api/stream/${torrentId}/${fileIndex}`
-    timer = setInterval(async () => {
-      const s = await api(base + '/status').catch(() => null)
-      if (!alive || !s || s.error) return
-      $('#pb').style.width = s.bufferedPct + '%'
-      $('#msg').textContent = `${name.split('/').pop()} — buffered ${s.bufferedPct}% · ${mbps(s.dlspeed)} · ${s.seeds} seeds · downloaded ${(s.fileProgress * 100).toFixed(1)}%`
-    }, 1000)
-    const info = await api(base + '/info')
-    if (!alive) return
-    $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
-    const v = $('video')
-    if (info.mode === 'hls' && window.Hls?.isSupported()) {
-      hls = new Hls({ maxBufferLength: 60 })
-      hls.loadSource(info.url); hls.attachMedia(v)
-      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); $('#msg').textContent = 'Playback error: ' + d.details } })
-    } else v.src = info.url
-    let last = 0
-    const report = () => {
-      if (!isFinite(v.duration) && !info.duration) return
-      api('/api/progress', { torrentId: +torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {})
+  for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
+  const resume = episodes.find((e) => e.position > 30 && !e.watched)
+  const hero = resume ?? episodes.find((e) => !e.watched && e.available)
+  const keys = [...seasons.keys()]
+  let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
+  const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+  return () => {
+    app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
+      <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span><span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}
+        ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
+      <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
+        ${series.trailer ? `<a class="trailer-link" href="${esc(series.trailer)}" target="_blank" rel="noopener noreferrer">${I.play} Trailer</a>` : ''}</div></div></div></section>
+      <div class="pad"><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+    backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`)
+    const paint = () => {
+      $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
+        <span class="play">${I.play}</span><span><span class="en">${esc(e.label)}</span><br>
+        <span class="es">${e.available ? (e.onServer ? 'Ready to watch' : '') : 'Not available right now'}</span></span>
+        <span>${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</button>`).join('')
+      $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => go1(seasons.get(cur)[+b.dataset.i]))
     }
-    v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); report() } }
-    v.onpause = report; v.onended = report
-    if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
-  } catch (e) { $('#msg').innerHTML = `<span class="bad">${esc(e.message)}</span>` }
-}
-
-async function adminView() {
-  const render = async () => {
-    const { requirements: r, downloads } = await api('/api/admin/downloads')
-    app.innerHTML = `<h2>Downloads</h2><p class="dim">Kept until every viewer has watched it <b>and</b> seeding is met:
-      ratio ≥ ${r.minRatio} ${r.mode === 'all' ? 'AND' : 'OR'} ${r.minHours} h.</p>
-      <table><tr><th>Release</th><th>State</th><th>Progress</th><th>Ratio</th><th>Seeded</th><th>Why kept</th><th></th></tr>
-      ${downloads.map((d) => `<tr><td>${esc(d.series)}<br><span class="dim">${esc(d.group_name)} ${esc(d.resolution || '')}</span></td>
-        <td>${d.state === 'active' ? (d.deletable ? '<span class="ok">eligible for removal</span>' : 'active') : `<span class="dim">removed</span>`}</td>
-        <td>${d.progress !== undefined ? (d.progress * 100).toFixed(0) + '% · ' + mbps(d.dlspeed) : ''}</td>
-        <td>${d.ratio !== undefined ? d.ratio.toFixed(2) : ''}</td><td>${d.seedHours !== undefined ? d.seedHours.toFixed(1) + ' h' : ''}</td>
-        <td class="dim">${d.state === 'active' ? esc((d.reasons || []).join('; ')) : esc(d.remove_reason || '')}</td>
-        <td>${d.state === 'active' ? `<button data-rm="${d.torrent_id}">Force remove</button>` : ''}</td></tr>`).join('')}</table>
-      <h2>Create user</h2><form id="uf" class="row"><input name="name" placeholder="Username"><input name="password" type="password" placeholder="Password">
-      <label><input type="checkbox" name="isAdmin"> admin</label><button>Create</button><span id="um"></span></form>`
-    app.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
-      if (confirm('Delete this torrent and its files now? (Refused by the server unless the BTN seeding requirement is met.)')) { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); render() }
+    paint()
+    app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
+      cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
+      app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))
+      paint()
     })
-    $('#uf').onsubmit = async (e) => {
-      e.preventDefault(); const f = new FormData(e.target)
-      try { await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin') }); $('#um').textContent = 'Created'; e.target.reset() }
-      catch (err) { $('#um').textContent = err.message }
+    const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+    const rs = $('#rsel'); if (rs) rs.onchange = async () => {
+      try { const r = await api(`/api/admin/series/${id}/rating`, { rating: rs.value === 'auto' ? null : rs.value }, 'PUT'); $('#rchip').textContent = r.rating } catch (e) { alert(e.message) }
     }
   }
-  await render()
-  const t = setInterval(render, 15000)
+}
+
+/* ---------- player ---------- */
+function playView(seriesId, season, label) {
+  label = decodeURIComponent(label)
+  return () => {
+    app.innerHTML = `<div class="player" id="pl"><div class="p-bg" id="pbg"></div>
+      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a><div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span><span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
+      <div id="vw"></div>
+      <div class="p-wait" id="wait"><img class="art" id="wart" alt="" hidden><div class="ring"></div><div id="msg">Getting your show ready…</div><div class="pline"><i id="pb"></i></div></div></div>`
+    top.hidden = true
+    const pl = $('#pl')
+    $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
+    const wa = $('#wart'); wa.onload = () => { wa.hidden = false }; wa.src = `/api/art/${seriesId}/poster`
+    let alive = true, hls = null, timer = null, idleT = null, cdT = null
+    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { const v = $('video'); if (v && !v.paused) pl.classList.add('idle') }, 3000) }
+    pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
+    cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearTimeout(idleT); hls?.destroy(); top.hidden = !me }
+    const t0 = Date.now()
+    ;(async () => {
+      try {
+        const play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label })
+        if (!alive) return
+        const { torrentId, fileIndex, position: start } = play
+        $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label
+        const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
+        const base = `/api/stream/${torrentId}/${fileIndex}`
+        timer = setInterval(async () => {
+          const s = await api(base + '/status').catch(() => null)
+          if (!alive || !s || s.error) return
+          $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
+          $('#msg').textContent = Date.now() - t0 > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
+        }, 1000)
+        const info = await api(base + '/info')
+        if (!alive) return
+        $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
+        const v = $('video')
+        v.addEventListener('playing', () => { $('#wait').classList.add('gone'); wake() }, { once: true })
+        v.addEventListener('pause', () => pl.classList.remove('idle'))
+        v.addEventListener('play', wake)
+        if (info.mode === 'hls' && window.Hls?.isSupported()) {
+          hls = new Hls({ maxBufferLength: 60 })
+          hls.loadSource(info.url); hls.attachMedia(v)
+          hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); fail('Something went wrong playing this. Go back and try again.') } })
+        } else v.src = info.url
+        if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
+        let last = 0
+        const report = () => { if (!isFinite(v.duration) && !info.duration) return; api('/api/progress', { torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {}) }
+        v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); report() } }
+        v.onpause = report
+        v.onended = () => {
+          report()
+          if (!play.next) return go(`#/series/${seriesId}`)
+          const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
+          const box = document.createElement('div'); box.className = 'p-next'
+          box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
+          pl.appendChild(box)
+          const bar = $('#cdb'); let left = 8
+          bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
+          cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
+          $('#nn').onclick = () => go(target)
+          $('#nc').onclick = () => { clearInterval(cdT); box.remove() }
+        }
+      } catch (e) { fail(e.message) }
+    })()
+    function fail(msg) { if (!alive) return; clearInterval(timer); $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('#msg').innerHTML = `<span style="color:#ff8a98">${esc(msg)}</span>`; $('#pb').parentElement.remove() }
+  }
+}
+
+/* ---------- admin ---------- */
+const PRESETS = { Kids: ['TV-Y', 'TV-Y7', 'TV-G'], Teens: ['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14'], Everything: null }
+const RATING_HELP = { 'TV-Y': 'All children', 'TV-Y7': 'Ages 7+', 'TV-G': 'General audience', 'TV-PG': 'Parental guidance', 'TV-14': 'Ages 14+', 'TV-MA': 'Mature, 17+', Unrated: 'No rating known' }
+
+function ratingPills(all, on, attrs = '') {
+  return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
+}
+
+async function adminView(tab = 'downloads') {
+  const data = tab === 'family' ? await api('/api/admin/users') : await api('/api/admin/downloads')
+  return () => {
+    app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
+      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a></div><div id="adm-body"></div></div>`
+    ;(tab === 'family' ? familyPanel : downloadsPanel)(data, $('#adm-body'))
+  }
+}
+
+function downloadsPanel(data, root) {
+  root.innerHTML = `<h1 style="font-size:32px">Downloads</h1>
+    <p class="dim" style="max-width:62ch">A show stays on the server until everyone has watched it <b style="color:var(--fg)">and</b> BroadcasTheNet's rule is met: ${data.requirements.minHours} hours seeded <b style="color:var(--fg)">or</b> a ${data.requirements.minRatio}:1 ratio. This can't be changed.</p>
+    <div class="card-box" id="adm"></div>`
+  const draw = (d) => {
+    const rows = d.downloads.map((x) => {
+      const active = x.state === 'active'
+      return `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)} ${esc(x.resolution || '')}</span></td>
+      <td>${x.progress !== undefined ? Math.round(x.progress * 100) + '%' + (x.dlspeed ? '<br><span class="dim">' + mbps(x.dlspeed) + '</span>' : '') : '—'}</td>
+      <td>${x.ratio !== undefined ? `<div class="meter">Ratio ${x.ratio.toFixed(2)} / ${d.requirements.minRatio}<div class="m"><i style="width:${Math.min(100, x.ratio * 100)}%"></i></div></div>
+        <div class="meter">${x.seedHours.toFixed(1)} h / ${d.requirements.minHours} h<div class="m"><i style="width:${Math.min(100, (x.seedHours / d.requirements.minHours) * 100)}%"></i></div></div>` : ''}</td>
+      <td>${active ? (x.deletable ? '<span class="badge ok">will be removed</span>' : '<span class="badge warn">kept</span>') : '<span class="badge dim">removed</span>'}</td>
+      <td class="dim">${active ? esc((x.reasons || []).join('; ')) : esc(x.remove_reason || '')}</td>
+      <td>${active ? `<button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button>` : ''}</td></tr>`
+    }).join('')
+    $('#adm').innerHTML = `<table><thead><tr><th>Show</th><th>Download</th><th>BTN requirement</th><th>Status</th><th>Why</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nothing downloaded yet.</td></tr>'}</tbody></table>`
+    $('#adm').querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not yet' : 'Failed'; b.disabled = true }
+    })
+  }
+  draw(data)
+  const t = setInterval(async () => draw(await api('/api/admin/downloads').catch(() => data)), 15000)
   cleanup = () => clearInterval(t)
 }
 
+function familyPanel(data, root) {
+  const all = data.ratings
+  let users = data.users
+  const onList = (u) => u.allowed ?? all
+  const paint = () => {
+    root.innerHTML = `<h1 style="font-size:32px">Family</h1>
+      <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up automatically yet. Set <code>TMDB_API_KEY</code>, or set each show\'s rating yourself on its page.</p>'}
+      <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
+        <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
+        <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
+        <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
+        <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">Reset password</button>
+        ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
+        <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div></div>`).join('')}</div>
+      <h2 class="sec">Add a family member</h2>
+      <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password" required></div>
+        <div><div class="dim" style="font-size:13px;margin-bottom:8px">Can watch:</div>${ratingPills(all, all, 'id="newr"')}
+        <div class="row-form" style="margin-top:10px">${Object.keys(PRESETS).map((k) => `<button type="button" class="btn" data-preset="${k}" style="padding:7px 14px">${k}</button>`).join('')}</div></div>
+        <div class="row-form"><label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add person</button><span id="um" class="dim" role="status"></span></div></form>`
+    wire()
+  }
+  const patch = async (id, body) => { const r = await api('/api/admin/users/' + id, body, 'PATCH'); users = users.map((u) => (u.id === id ? r : u)); return r }
+  const wire = () => {
+    root.querySelectorAll('.person[data-id]').forEach((card) => {
+      const id = +card.dataset.id, u = () => users.find((x) => x.id === id), msg = $('.msg', card)
+      card.querySelectorAll('.rpill').forEach((b) => b.onclick = async () => {
+        const cur = onList(u()), r = b.dataset.r, next = cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]
+        b.setAttribute('aria-pressed', String(next.includes(r)))
+        try { await patch(id, { allowedRatings: all.filter((x) => next.includes(x)) }); const l = $('.who .dim', card); if (l) l.textContent = u().allowed ? 'Limited' : 'Everything' }
+        catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); alert(e.message) }
+      })
+      card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
+        const act = b.dataset.act
+        if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
+        else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = '' } catch (e) { msg.textContent = e.message } }
+        else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { alert(e.message) } }
+        else if (act === 'rm') {
+          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
+          try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { alert(e.message) }
+        }
+      })
+    })
+    const nr = $('#newr')
+    nr.querySelectorAll('.rpill').forEach((b) => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')))
+    root.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => { const set = PRESETS[b.dataset.preset] ?? all; nr.querySelectorAll('.rpill').forEach((p) => p.setAttribute('aria-pressed', String(set.includes(p.dataset.r)))) })
+    $('#uf').onsubmit = async (e) => {
+      e.preventDefault(); const f = new FormData(e.target)
+      const picked = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r)
+      try {
+        const u = await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin'), allowedRatings: picked })
+        users = [...users, { id: u.id, name: u.name, is_admin: !!u.is_admin, allowed: u.allowed }]; paint(); $('#um').textContent = `Added ${u.name}`
+      } catch (err) { $('#um').textContent = err.message }
+    }
+  }
+  paint()
+}
+
+/* ---------- router ---------- */
 async function route() {
   cleanup?.(); cleanup = null
-  const st = await api('/api/me')
+  const token = ++navToken
+  let st
+  try { st = await api('/api/me') } catch { return }
   me = st.user
   renderTop()
-  if (!me) return authView(st.needsSetup)
+  top.classList.toggle('solid', scrollY > 30)
+  if (!me) return swap(authView(st.needsSetup))
   const [path, query] = location.hash.slice(1).split('?')
   const parts = path.split('/').filter(Boolean)
+  const slow = app.innerHTML.trim() ? null : setTimeout(() => { if (token === navToken) app.innerHTML = skeleton() }, 200)
   try {
-    if (parts[0] === 'series') await seriesView(parts[1])
-    else if (parts[0] === 'play') await playView(parts[1])
-    else if (parts[0] === 'admin' && me.is_admin) await adminView()
-    else await homeView(new URLSearchParams(query).get('q'))
-  } catch (e) { app.innerHTML = `<p class="bad">${esc(e.message)}</p>` }
+    let render
+    if (parts[0] === 'series') render = await seriesView(parts[1])
+    else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
+    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' ? 'family' : 'downloads')
+    else render = await homeView(new URLSearchParams(query).get('q'))
+    clearTimeout(slow)
+    if (token !== navToken) return
+    await swap(render)
+  } catch (e) {
+    clearTimeout(slow)
+    if (token === navToken) app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}</div></div>`
+  }
 }
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 addEventListener('hashchange', route)
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 route()
