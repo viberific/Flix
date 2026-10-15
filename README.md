@@ -31,6 +31,19 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
      (`src/config.ts`) and cannot be overridden – not by config, and not by the admin "force remove" (it returns 409).
      Ratio is measured against the full torrent size.
 
+## People and content ratings
+
+- Everyone has their own login, watch history and "continue watching". **Only an admin can create accounts**: public signup exists
+  solely to create the very first account (the admin). Admins add, remove, promote and reset passwords under *Family*; there is
+  always at least one admin, and a password reset signs that person out everywhere.
+- **Ratings per person:** for each person the admin ticks which ratings they may watch (TV-Y, TV-Y7, TV-G, TV-PG, TV-14, TV-MA, Unrated),
+  with Kids / Teens / Everything presets. Anything outside that set is hidden completely: not in lists, search, continue-watching,
+  artwork, or any stream URL (the server answers 404). Admins always see everything.
+- **Where ratings come from:** BTN's API has no content rating, so Flix looks the show up on [TMDB](https://www.themoviedb.org/)
+  by its TVDB id (US rating; movie-style G/PG/PG-13/R are mapped to TV-G/PG/14/MA) when `TMDB_API_KEY` is set. Only the TVDB id is sent.
+  Admins can set or override a show's rating on its page, or switch it back to *Automatic*.
+- **Unknown rating = Unrated**, which restricted users do not see unless "Unrated" is ticked for them.
+
 ## Interface
 
 Dark, cinematic design (with a light variant that follows the device): a hero for what you were watching, scrolling rows,

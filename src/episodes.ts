@@ -1,4 +1,6 @@
 import { db } from './db.ts'
+import { META_JOIN, ratingClause } from './ratings.ts'
+import type { User } from './auth.ts'
 import { isAlive, pickRelease, qualityLabel, type Cand } from './pick.ts'
 
 interface Row extends Cand { season: number | null; episode: number | null; label: string; is_pack: number }
@@ -44,10 +46,11 @@ export function buildEpisodes(seriesId: number, userId: number): Episode[] {
   return out.sort((a, b) => (a.season ?? 1e9) - (b.season ?? 1e9) || (a.episode ?? 1e9) - (b.episode ?? 1e9) || a.label.localeCompare(b.label))
 }
 
-export function continueWatching(userId: number) {
+export function continueWatching(user: User) {
+  const f = ratingClause(user)
   const rows = db.prepare(`SELECT r.series_id AS seriesId, r.series, CASE WHEN r.series_poster IS NOT NULL AND r.series_poster != '' THEN '/api/art/' || r.series_id || '/poster' END AS poster, r.season, r.label, i.position, i.duration
-    FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
-    WHERE i.user_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.position > 30 ORDER BY i.updated_at DESC LIMIT 40`).all(userId) as any[]
+    FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id ${META_JOIN}r.series_id
+    WHERE i.user_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.position > 30 AND ${f.sql} ORDER BY i.updated_at DESC LIMIT 40`).all(user.id, ...f.params) as any[]
   const seen = new Set<string>()
   return rows.filter((r) => (seen.has(r.seriesId + r.label) ? false : (seen.add(r.seriesId + r.label), true))).slice(0, 12)
 }

@@ -1,6 +1,7 @@
 import { db, now } from './db.ts'
 import { getTorrents, type BtnTorrent } from './btn/client.ts'
 import { parseGroupName } from './btn/parse.ts'
+import { queueRating } from './ratings.ts'
 
 const upsert = db.prepare(`INSERT INTO releases (torrent_id, group_id, series_id, series, series_poster, series_banner, tvdb_id, imdb_id,
   group_name, release_name, season, episode, label, is_pack, resolution, codec, container, source, origin, size, seeders, time,
@@ -32,6 +33,7 @@ export function storeTorrents(list: BtnTorrent[]) {
         JSON.stringify(x.Genres ?? []), t, youtubeUrl(x.YoutubeTrailer))
     }
     db.exec('COMMIT')
+    for (const id of new Set(list.map((x) => Number(x.SeriesID)).filter(Boolean))) queueRating(id)
   } catch (e) { db.exec('ROLLBACK'); throw e }
 }
 

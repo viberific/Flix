@@ -73,3 +73,25 @@ test('artwork safety: internal addresses blocked, only raster images accepted', 
   assert.equal(sniffImage(Buffer.from('<html>not an image at all</html>')), null)
   assert.equal(sniffImage(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0])), 'image/jpeg')
 })
+
+const { normalizeRating, cleanAllowed, canView, ratingClause, RATINGS } = await import('../src/ratings.ts')
+test('ratings: normalisation maps movie-style and TV ratings onto the TV scale', () => {
+  const m: Record<string, string> = { 'TV-Y': 'TV-Y', 'tv-y7': 'TV-Y7', 'TV-Y7-FV': 'TV-Y7', G: 'TV-G', 'TV-G': 'TV-G', PG: 'TV-PG', 'TV-PG': 'TV-PG', 'PG-13': 'TV-14', 'TV-14': 'TV-14', R: 'TV-MA', 'NC-17': 'TV-MA', 'TV-MA': 'TV-MA', '': 'Unrated', nonsense: 'Unrated' }
+  for (const [raw, want] of Object.entries(m)) assert.equal(normalizeRating(raw), want, raw)
+  assert.equal(normalizeRating(null), 'Unrated')
+})
+test('ratings: allowed lists and viewing rules', () => {
+  assert.equal(cleanAllowed(undefined), null)
+  assert.equal(cleanAllowed([...RATINGS]), null) // everything ticked == unrestricted
+  assert.deepEqual(cleanAllowed(['TV-G', 'TV-Y', 'TV-G']), ['TV-G', 'TV-Y'])
+  assert.throws(() => cleanAllowed(['PG-13']))
+  const kid = { is_admin: 0, allowed: ['TV-Y', 'TV-G'] as any }
+  assert.equal(canView(kid, 'TV-G'), true)
+  assert.equal(canView(kid, 'TV-14'), false)
+  assert.equal(canView(kid, 'Unrated'), false) // unknown rating is never shown to a restricted user
+  assert.equal(canView({ is_admin: 0, allowed: [] }, 'TV-Y'), false)
+  assert.equal(canView({ is_admin: 1, allowed: ['TV-Y'] as any }, 'TV-MA'), true) // admins see everything
+  assert.equal(canView({ is_admin: 0, allowed: null }, 'TV-MA'), true)
+  assert.deepEqual(ratingClause(kid).params, ['TV-Y', 'TV-G'])
+  assert.equal(ratingClause({ is_admin: 0, allowed: [] }).sql, '0')
+})

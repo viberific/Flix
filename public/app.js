@@ -62,7 +62,7 @@ function renderTop() {
     e.stopPropagation()
     const old = $('.menu'); if (old) return old.remove()
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Admin</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
@@ -142,7 +142,8 @@ async function seriesView(id) {
   return () => {
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
-      <div class="line rise" style="--i:1"><span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}</div>
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span><span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}
+        ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         ${series.trailer ? `<a class="trailer-link" href="${esc(series.trailer)}" target="_blank" rel="noopener noreferrer">${I.play} Trailer</a>` : ''}</div></div></div></section>
@@ -162,6 +163,9 @@ async function seriesView(id) {
       paint()
     })
     const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+    const rs = $('#rsel'); if (rs) rs.onchange = async () => {
+      try { const r = await api(`/api/admin/series/${id}/rating`, { rating: rs.value === 'auto' ? null : rs.value }, 'PUT'); $('#rchip').textContent = r.rating } catch (e) { alert(e.message) }
+    }
   }
 }
 
@@ -233,38 +237,103 @@ function playView(seriesId, season, label) {
 }
 
 /* ---------- admin ---------- */
-async function adminView() {
-  const data = await api('/api/admin/downloads')
+const PRESETS = { Kids: ['TV-Y', 'TV-Y7', 'TV-G'], Teens: ['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14'], Everything: null }
+const RATING_HELP = { 'TV-Y': 'All children', 'TV-Y7': 'Ages 7+', 'TV-G': 'General audience', 'TV-PG': 'Parental guidance', 'TV-14': 'Ages 14+', 'TV-MA': 'Mature, 17+', Unrated: 'No rating known' }
+
+function ratingPills(all, on, attrs = '') {
+  return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
+}
+
+async function adminView(tab = 'downloads') {
+  const data = tab === 'family' ? await api('/api/admin/users') : await api('/api/admin/downloads')
   return () => {
-    app.innerHTML = `<div class="pad page-top"><h1 style="font-size:32px">Downloads</h1>
-      <p class="dim" style="max-width:62ch">A show stays on the server until everyone has watched it <b style="color:var(--fg)">and</b> BroadcasTheNet's rule is met: ${data.requirements.minHours} hours seeded <b style="color:var(--fg)">or</b> a ${data.requirements.minRatio}:1 ratio. This can't be changed.</p>
-      <div class="card-box" id="adm"></div><h2 class="sec">Add a family member</h2>
-      <form id="uf" class="row-form"><input class="field" name="name" placeholder="Username"><input class="field" name="password" type="password" placeholder="Password (8+ characters)">
-      <label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add</button><span id="um" class="dim"></span></form></div>`
-    const draw = (d) => {
-      const rows = d.downloads.map((x) => {
-        const active = x.state === 'active'
-        return `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)} ${esc(x.resolution || '')}</span></td>
-        <td>${x.progress !== undefined ? Math.round(x.progress * 100) + '%' + (x.dlspeed ? '<br><span class="dim">' + mbps(x.dlspeed) + '</span>' : '') : '—'}</td>
-        <td>${x.ratio !== undefined ? `<div class="meter">Ratio ${x.ratio.toFixed(2)} / ${d.requirements.minRatio}<div class="m"><i style="width:${Math.min(100, x.ratio * 100)}%"></i></div></div>
-          <div class="meter">${x.seedHours.toFixed(1)} h / ${d.requirements.minHours} h<div class="m"><i style="width:${Math.min(100, (x.seedHours / d.requirements.minHours) * 100)}%"></i></div></div>` : ''}</td>
-        <td>${active ? (x.deletable ? '<span class="badge ok">will be removed</span>' : '<span class="badge warn">kept</span>') : '<span class="badge dim">removed</span>'}</td>
-        <td class="dim">${active ? esc((x.reasons || []).join('; ')) : esc(x.remove_reason || '')}</td>
-        <td>${active ? `<button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button>` : ''}</td></tr>`
-      }).join('')
-      $('#adm').innerHTML = `<table><thead><tr><th>Show</th><th>Download</th><th>BTN requirement</th><th>Status</th><th>Why</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nothing downloaded yet.</td></tr>'}</tbody></table>`
-      $('#adm').querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
-        try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not yet' : 'Failed'; b.disabled = true }
+    app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
+      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a></div><div id="adm-body"></div></div>`
+    ;(tab === 'family' ? familyPanel : downloadsPanel)(data, $('#adm-body'))
+  }
+}
+
+function downloadsPanel(data, root) {
+  root.innerHTML = `<h1 style="font-size:32px">Downloads</h1>
+    <p class="dim" style="max-width:62ch">A show stays on the server until everyone has watched it <b style="color:var(--fg)">and</b> BroadcasTheNet's rule is met: ${data.requirements.minHours} hours seeded <b style="color:var(--fg)">or</b> a ${data.requirements.minRatio}:1 ratio. This can't be changed.</p>
+    <div class="card-box" id="adm"></div>`
+  const draw = (d) => {
+    const rows = d.downloads.map((x) => {
+      const active = x.state === 'active'
+      return `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)} ${esc(x.resolution || '')}</span></td>
+      <td>${x.progress !== undefined ? Math.round(x.progress * 100) + '%' + (x.dlspeed ? '<br><span class="dim">' + mbps(x.dlspeed) + '</span>' : '') : '—'}</td>
+      <td>${x.ratio !== undefined ? `<div class="meter">Ratio ${x.ratio.toFixed(2)} / ${d.requirements.minRatio}<div class="m"><i style="width:${Math.min(100, x.ratio * 100)}%"></i></div></div>
+        <div class="meter">${x.seedHours.toFixed(1)} h / ${d.requirements.minHours} h<div class="m"><i style="width:${Math.min(100, (x.seedHours / d.requirements.minHours) * 100)}%"></i></div></div>` : ''}</td>
+      <td>${active ? (x.deletable ? '<span class="badge ok">will be removed</span>' : '<span class="badge warn">kept</span>') : '<span class="badge dim">removed</span>'}</td>
+      <td class="dim">${active ? esc((x.reasons || []).join('; ')) : esc(x.remove_reason || '')}</td>
+      <td>${active ? `<button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button>` : ''}</td></tr>`
+    }).join('')
+    $('#adm').innerHTML = `<table><thead><tr><th>Show</th><th>Download</th><th>BTN requirement</th><th>Status</th><th>Why</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nothing downloaded yet.</td></tr>'}</tbody></table>`
+    $('#adm').querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not yet' : 'Failed'; b.disabled = true }
+    })
+  }
+  draw(data)
+  const t = setInterval(async () => draw(await api('/api/admin/downloads').catch(() => data)), 15000)
+  cleanup = () => clearInterval(t)
+}
+
+function familyPanel(data, root) {
+  const all = data.ratings
+  let users = data.users
+  const onList = (u) => u.allowed ?? all
+  const paint = () => {
+    root.innerHTML = `<h1 style="font-size:32px">Family</h1>
+      <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up automatically yet. Set <code>TMDB_API_KEY</code>, or set each show\'s rating yourself on its page.</p>'}
+      <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
+        <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
+        <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
+        <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
+        <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">Reset password</button>
+        ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
+        <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div></div>`).join('')}</div>
+      <h2 class="sec">Add a family member</h2>
+      <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password" required></div>
+        <div><div class="dim" style="font-size:13px;margin-bottom:8px">Can watch:</div>${ratingPills(all, all, 'id="newr"')}
+        <div class="row-form" style="margin-top:10px">${Object.keys(PRESETS).map((k) => `<button type="button" class="btn" data-preset="${k}" style="padding:7px 14px">${k}</button>`).join('')}</div></div>
+        <div class="row-form"><label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add person</button><span id="um" class="dim" role="status"></span></div></form>`
+    wire()
+  }
+  const patch = async (id, body) => { const r = await api('/api/admin/users/' + id, body, 'PATCH'); users = users.map((u) => (u.id === id ? r : u)); return r }
+  const wire = () => {
+    root.querySelectorAll('.person[data-id]').forEach((card) => {
+      const id = +card.dataset.id, u = () => users.find((x) => x.id === id), msg = $('.msg', card)
+      card.querySelectorAll('.rpill').forEach((b) => b.onclick = async () => {
+        const cur = onList(u()), r = b.dataset.r, next = cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]
+        b.setAttribute('aria-pressed', String(next.includes(r)))
+        try { await patch(id, { allowedRatings: all.filter((x) => next.includes(x)) }); const l = $('.who .dim', card); if (l) l.textContent = u().allowed ? 'Limited' : 'Everything' }
+        catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); alert(e.message) }
       })
-    }
-    draw(data)
-    const t = setInterval(async () => draw(await api('/api/admin/downloads').catch(() => data)), 15000)
-    cleanup = () => clearInterval(t)
+      card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
+        const act = b.dataset.act
+        if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
+        else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = '' } catch (e) { msg.textContent = e.message } }
+        else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { alert(e.message) } }
+        else if (act === 'rm') {
+          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
+          try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { alert(e.message) }
+        }
+      })
+    })
+    const nr = $('#newr')
+    nr.querySelectorAll('.rpill').forEach((b) => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')))
+    root.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => { const set = PRESETS[b.dataset.preset] ?? all; nr.querySelectorAll('.rpill').forEach((p) => p.setAttribute('aria-pressed', String(set.includes(p.dataset.r)))) })
     $('#uf').onsubmit = async (e) => {
       e.preventDefault(); const f = new FormData(e.target)
-      try { await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin') }); $('#um').textContent = 'Added'; e.target.reset() } catch (err) { $('#um').textContent = err.message }
+      const picked = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r)
+      try {
+        const u = await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin'), allowedRatings: picked })
+        users = [...users, { id: u.id, name: u.name, is_admin: !!u.is_admin, allowed: u.allowed }]; paint(); $('#um').textContent = `Added ${u.name}`
+      } catch (err) { $('#um').textContent = err.message }
     }
   }
+  paint()
 }
 
 /* ---------- router ---------- */
@@ -284,7 +353,7 @@ async function route() {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
-    else if (parts[0] === 'admin' && me.is_admin) render = await adminView()
+    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' ? 'family' : 'downloads')
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return

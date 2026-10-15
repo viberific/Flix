@@ -13,6 +13,8 @@ export const config = {
     // BTN allows 150 calls/hour; stay well under.
     maxCallsPerHour: num('BTN_MAX_CALLS_PER_HOUR', 100),
   },
+  // Optional: automatic content ratings (TV-Y … TV-MA) via TMDB. Without a key the admin sets ratings by hand.
+  tmdb: { apiKey: env.TMDB_API_KEY ?? '', apiUrl: (env.TMDB_API_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, '') },
   qb: {
     url: (env.QB_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, ''),
     user: env.QB_USER ?? 'admin',
@@ -25,7 +27,6 @@ export const config = {
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
   abandonDays: num('ABANDON_DAYS', 0),
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
-  allowSignup: env.ALLOW_SIGNUP === 'true',
   /** Random per-process secret so our own ffmpeg can read the raw stream without a user cookie. */
   internalKey: crypto.randomUUID(),
 }

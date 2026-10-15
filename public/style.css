@@ -192,3 +192,19 @@ td { padding: 14px 8px; border-top: 1px solid var(--line); vertical-align: top; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* ---------- family & ratings ---------- */
+.people { display: grid; gap: 12px; margin-top: 16px; }
+.person { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr) auto; gap: 14px 22px; align-items: center; }
+.person .who { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.person .pwrow { grid-column: 1 / -1; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.person .pwrow .field { flex: 1 1 220px; width: auto; }
+.person .pact { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+form.person { grid-template-columns: 1fr; margin-top: 8px; }
+.rpills { display: flex; flex-wrap: wrap; gap: 6px; }
+.rpill { border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); padding: 6px 12px; border-radius: 99px; font-size: 13px; font-weight: 600; transition: all .25s var(--ease); }
+.rpill:hover { color: var(--fg); transform: translateY(-1px); }
+.rpill[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: transparent; }
+@media (max-width: 760px) { .person { grid-template-columns: 1fr; } .person .pact { justify-content: flex-start; } }
+a.pill { display: inline-block; }
+.notice { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 13px; color: var(--dim); max-width: 66ch; }
