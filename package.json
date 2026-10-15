@@ -5,11 +5,11 @@
   "type": "module",
   "description": "Jellyfin-style media server that uses BroadcasTheNet as its only source and streams torrents on demand",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.9"
   },
   "scripts": {
-    "dev": "node --watch --import tsx src/server.ts",
-    "start": "node --import tsx src/server.ts",
+    "dev": "node --env-file-if-exists=.env --watch --import tsx src/server.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts"
   },
