@@ -10,7 +10,7 @@ import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, p
 import { qb } from './qb.ts'
 import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, setBtnApiKey } from './settings.ts'
+import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
 import { artPathSql, getArt } from './art.ts'
@@ -261,7 +261,7 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus() }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus() }))
 app.put('/api/admin/settings/btn', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()
   if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
@@ -273,6 +273,23 @@ app.put('/api/admin/settings/btn', admin, async (req) => {
 app.post('/api/admin/settings/btn/test', admin, async () => {
   const info = await btnCall<any>('userInfo', [])
   return { ok: true, username: typeof info?.Username === 'string' ? info.Username : null }
+})
+
+app.put('/api/admin/settings/qb', admin, async (req) => {
+  const b = (req.body ?? {}) as any
+  if (b.reset) clearQb()
+  else {
+    const url = String(b.url ?? '').trim(), user = String(b.user ?? '').trim(), password = String(b.password ?? '')
+    if (!/^https?:\/\/[^\s/]+/i.test(url) || url.length > 300) throw Object.assign(new Error('Enter the qBittorrent address, like http://127.0.0.1:8080'), { statusCode: 400 })
+    if (!user || user.length > 100 || password.length > 200) throw Object.assign(new Error('Enter the qBittorrent username'), { statusCode: 400 })
+    setQb({ url, user, password })
+  }
+  return { qb: qbStatus() }
+})
+/** Log in to qBittorrent with the saved settings so the admin sees whether they work. */
+app.post('/api/admin/settings/qb/test', admin, async () => {
+  try { return { ok: true, version: await qb.reconnect() } }
+  catch (e: any) { throw Object.assign(new Error(`Could not connect to qBittorrent: ${e.message}`), { statusCode: 502 }) }
 })
 
 /** Set (or clear, with null = automatic) a show's content rating. */

@@ -127,3 +127,22 @@ test('BTN client: no jsonrpc field, -32002 is a rate limit, -32004 is an unappro
     await assert.rejects(btnCall('userInfo', []), /boom/)
   } finally { globalThis.fetch = realFetch; config.btn.apiKey = '' }
 })
+
+const { setQb, clearQb, qbStatus } = await import('../src/settings.ts')
+
+test('settings: qBittorrent override keeps the old password when left blank, never reports it, and can revert', () => {
+  const env = { ...config.qb }
+  config.qb.pass = 'envpass'
+  setQb({ url: 'http://qb.local:9090/', user: 'me', password: '' })
+  assert.equal(config.qb.url, 'http://qb.local:9090')
+  assert.equal(config.qb.user, 'me')
+  assert.equal(config.qb.pass, 'envpass') // blank = keep
+  setQb({ url: 'http://qb.local:9090', user: 'me', password: 'newpass' })
+  assert.equal(config.qb.pass, 'newpass')
+  const st = qbStatus()
+  assert.deepEqual(st, { url: 'http://qb.local:9090', user: 'me', passwordSet: true, source: 'settings' })
+  assert.ok(!JSON.stringify(st).includes('newpass'))
+  clearQb()
+  assert.equal(config.qb.url, env.url)
+  assert.equal(qbStatus().source, 'environment')
+})

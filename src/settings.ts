@@ -1,18 +1,23 @@
 import { db } from './db.ts'
 import { config } from './config.ts'
 
-/** The BTN key from the environment, kept so clearing the saved key falls back to it. */
+/** Values from the environment, kept so clearing a saved setting falls back to them. */
 const envBtnKey = config.btn.apiKey
+const envQb = { ...config.qb }
 
 const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value
+const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v)
 
-/** A key saved in the admin page overrides BTN_API_KEY from the environment. */
+/** Settings saved in the admin page override the matching environment variables. */
 export function loadSettings() {
   config.btn.apiKey = get('btn_api_key') || envBtnKey
+  config.qb.url = get('qb_url') ?? envQb.url
+  config.qb.user = get('qb_user') ?? envQb.user
+  config.qb.pass = get('qb_pass') ?? envQb.pass
 }
 
 export function setBtnApiKey(key: string) {
-  if (key) db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('btn_api_key', key)
+  if (key) put('btn_api_key', key)
   else db.prepare('DELETE FROM settings WHERE key = ?').run('btn_api_key')
   loadSettings()
 }
@@ -22,6 +27,25 @@ export function btnKeyStatus() {
   const saved = get('btn_api_key')
   const key = config.btn.apiKey
   return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
+}
+
+/** Save the qBittorrent connection. A blank password keeps the current one. */
+export function setQb(v: { url: string; user: string; password?: string }) {
+  put('qb_url', v.url.replace(/\/$/, ''))
+  put('qb_user', v.user)
+  put('qb_pass', v.password || config.qb.pass)
+  loadSettings()
+}
+
+/** Forget the saved qBittorrent connection and go back to QB_URL / QB_USER / QB_PASS. */
+export function clearQb() {
+  db.prepare(`DELETE FROM settings WHERE key IN ('qb_url','qb_user','qb_pass')`).run()
+  loadSettings()
+}
+
+/** Like btnKeyStatus: the password is never reported, only whether one is set. */
+export function qbStatus() {
+  return { url: config.qb.url, user: config.qb.user, passwordSet: !!config.qb.pass, source: get('qb_url') !== undefined ? 'settings' : 'environment' }
 }
 
 loadSettings()

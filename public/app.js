@@ -337,7 +337,7 @@ function familyPanel(data, root) {
 }
 
 function settingsPanel(data, root) {
-  let btn = data.btn
+  let btn = data.btn, qbs = data.qb
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
@@ -346,7 +346,15 @@ function settingsPanel(data, root) {
       <form id="bf" class="person"><div class="dim" id="bs" role="status">${state}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
-        <div class="dim" id="bm" role="status"></div></form>`
+        <div class="dim" id="bm" role="status"></div></form>
+      <h2 class="sec">qBittorrent</h2>
+      <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
+      <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
+        <div class="row-form"><input class="field" name="url" value="${esc(qbs.url)}" placeholder="http://127.0.0.1:8080" autocomplete="off" required>
+          <input class="field" name="user" value="${esc(qbs.user)}" placeholder="Username" autocomplete="off" required>
+          <input class="field" name="pass" type="password" placeholder="${qbs.passwordSet ? 'Password (unchanged)' : 'Password'}" autocomplete="new-password"></div>
+        <div class="row-form"><button class="btn primary">Save</button><button type="button" class="btn" id="qt">Test connection</button>${qbs.source === 'settings' ? '<button type="button" class="btn" id="qc">Use server environment</button>' : ''}</div>
+        <div class="dim" id="qm" role="status"></div></form>`
     wire()
   }
   const wire = () => {
@@ -359,6 +367,19 @@ function settingsPanel(data, root) {
     $('#bt').onclick = async () => {
       msg('Testing…')
       try { const r = await api('/api/admin/settings/btn/test', {}); msg(r.username ? `Connected as ${r.username}.` : 'Connected.') } catch (err) { msg(err.message) }
+    }
+    const qmsg = (t) => { $('#qm').textContent = t }
+    $('#qf').onsubmit = async (e) => {
+      e.preventDefault(); const f = new FormData(e.target)
+      try { qbs = (await api('/api/admin/settings/qb', { url: f.get('url'), user: f.get('user'), password: f.get('pass') }, 'PUT')).qb; paint(); $('#qm').textContent = 'Saved. Use Test connection to check it.' } catch (err) { qmsg(err.message) }
+    }
+    $('#qt').onclick = async () => {
+      qmsg('Testing…')
+      try { const r = await api('/api/admin/settings/qb/test', {}); qmsg(`Connected to qBittorrent ${r.version}.`) } catch (err) { qmsg(err.message) }
+    }
+    const qc = $('#qc')
+    if (qc) qc.onclick = async () => {
+      try { qbs = (await api('/api/admin/settings/qb', { reset: true }, 'PUT')).qb; paint() } catch (err) { qmsg(err.message) }
     }
     const bc = $('#bc')
     if (bc) bc.onclick = async () => {
