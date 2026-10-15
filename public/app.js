@@ -62,7 +62,7 @@ function renderTop() {
     e.stopPropagation()
     const old = $('.menu'); if (old) return old.remove()
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
@@ -245,11 +245,11 @@ function ratingPills(all, on, attrs = '') {
 }
 
 async function adminView(tab = 'downloads') {
-  const data = tab === 'family' ? await api('/api/admin/users') : await api('/api/admin/downloads')
+  const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
   return () => {
     app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
-      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a></div><div id="adm-body"></div></div>`
-    ;(tab === 'family' ? familyPanel : downloadsPanel)(data, $('#adm-body'))
+      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
+    ;(tab === 'family' ? familyPanel : tab === 'settings' ? settingsPanel : downloadsPanel)(data, $('#adm-body'))
   }
 }
 
@@ -336,6 +336,39 @@ function familyPanel(data, root) {
   paint()
 }
 
+function settingsPanel(data, root) {
+  let btn = data.btn
+  const paint = () => {
+    const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
+    root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
+      <h2 class="sec">BroadcasTheNet</h2>
+      <p class="dim" style="max-width:66ch">Flix talks to BTN with an API key, not your BTN username and password. Find the key in your BTN profile settings. BTN also only accepts a key from IP addresses you have approved on their site, so approve this server's address there if the test fails.</p>
+      <form id="bf" class="person"><div class="dim" id="bs" role="status">${state}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="bm" role="status"></div></form>`
+    wire()
+  }
+  const wire = () => {
+    const msg = (t) => { $('#bm').textContent = t }
+    $('#bf').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return msg('Paste a key first.')
+      try { btn = (await api('/api/admin/settings/btn', { apiKey: key }, 'PUT')).btn; paint(); msg('Saved. Use Test connection to check it.') } catch (err) { msg(err.message) }
+    }
+    $('#bt').onclick = async () => {
+      msg('Testing…')
+      try { const r = await api('/api/admin/settings/btn/test', {}); msg(r.username ? `Connected as ${r.username}.` : 'Connected.') } catch (err) { msg(err.message) }
+    }
+    const bc = $('#bc')
+    if (bc) bc.onclick = async () => {
+      if (bc.dataset.sure !== '1') { bc.dataset.sure = '1'; bc.textContent = 'Tap again to remove'; setTimeout(() => { bc.dataset.sure = ''; bc.textContent = 'Remove saved key' }, 4000); return }
+      try { btn = (await api('/api/admin/settings/btn', { apiKey: '' }, 'PUT')).btn; paint() } catch (err) { msg(err.message) }
+    }
+  }
+  paint()
+}
+
 /* ---------- router ---------- */
 async function route() {
   cleanup?.(); cleanup = null
@@ -353,7 +386,7 @@ async function route() {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
-    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' ? 'family' : 'downloads')
+    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' || parts[1] === 'settings' ? parts[1] : 'downloads')
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return

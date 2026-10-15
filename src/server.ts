@@ -9,7 +9,8 @@ import { createUser, hashPassword, login, logout, requireAdmin, requireUser, set
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
-import { RateLimitError } from './btn/client.ts'
+import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
+import { btnKeyStatus, setBtnApiKey } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
 import { artPathSql, getArt } from './art.ts'
@@ -21,7 +22,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
 
 app.setErrorHandler((err: any, _req, reply) => {
-  const status = err instanceof RateLimitError ? 429 : err.statusCode ?? 500
+  const status = err instanceof RateLimitError ? 429 : err instanceof IpNotAuthorizedError ? 403 : err.statusCode ?? 500
   if (status >= 500) app.log.error(err)
   reply.code(status).send({ error: err.message })
 })
@@ -258,6 +259,22 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
   return { ok: true }
 })
 
+// ---- settings ----------------------------------------------------------------
+// The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus() }))
+app.put('/api/admin/settings/btn', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setBtnApiKey(key)
+  startBtnSync()
+  return { btn: btnKeyStatus() }
+})
+/** Make one authenticated call so the admin can see whether the key (and this server's IP) is accepted. */
+app.post('/api/admin/settings/btn/test', admin, async () => {
+  const info = await btnCall<any>('userInfo', [])
+  return { ok: true, username: typeof info?.Username === 'string' ? info.Username : null }
+})
+
 /** Set (or clear, with null = automatic) a show's content rating. */
 app.put('/api/admin/series/:id/rating', admin, async (req) => {
   const id = Number((req.params as any).id)
@@ -272,6 +289,17 @@ app.put('/api/admin/series/:id/rating', admin, async (req) => {
 cleanHlsCache()
 const runSweep = startSweeper()
 
+let btnSyncStarted = false
+/** Start the periodic catalog sync once a key exists; safe to call again (e.g. after the key is saved). */
+function startBtnSync() {
+  if (!config.btn.apiKey) return false
+  if (btnSyncStarted) return true
+  btnSyncStarted = true
+  syncLatest().catch((e) => app.log.warn(`initial BTN sync failed: ${e.message}`))
+  setInterval(() => syncLatest().catch((e) => app.log.warn(`BTN sync failed: ${e.message}`)), 30 * 60_000).unref()
+  return true
+}
+
 export async function start() {
   try {
     await qb.setup()
@@ -280,10 +308,7 @@ export async function start() {
     app.log.error(`Cannot reach qBittorrent at ${config.qb.url}: ${e.message}. Playback will fail until it is available.`)
   }
   await app.listen({ port: config.port, host: process.env.HOST ?? '0.0.0.0' })
-  if (config.btn.apiKey) {
-    syncLatest().catch((e) => app.log.warn(`initial BTN sync failed: ${e.message}`))
-    setInterval(() => syncLatest().catch((e) => app.log.warn(`BTN sync failed: ${e.message}`)), 30 * 60_000).unref()
-  } else app.log.warn('BTN_API_KEY not set: the catalog will stay empty')
+  if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep
 }
 
