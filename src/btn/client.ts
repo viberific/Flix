@@ -46,11 +46,21 @@ export async function btnCall<T = any>(method: string, params: Record<string, un
     const code = body.error.code
     const msg = body.error.message ?? JSON.stringify(body.error)
     if (code === -32002) throw new RateLimitError(`BTN call limit exceeded: ${msg}`)
-    // -32004 covers two different things: an address BTN has never seen (logged as pending) and
-    // one it has seen and denied. Only the first is fixed by approving it on the site.
-    if (code === -32004) throw new Error(/denied/i.test(msg)
-      ? `BTN refused this IP address (${msg}). The address is known to BTN and explicitly denied: re-authorising it is a change on the BTN site, not something this client can retry past.`
-      : `BTN will not answer this IP address (${msg}). The address has been filed as pending: approve it from your notices on BTN, then retry.`)
+    // -32004 covers two different things, and only one is fixed by approving the address on
+    // the site. BTN sends exactly two messages here: "IP address needs authorization - please
+    // check your notices on BTN" (unrecognised, logged as pending) and "Unauthorized IP address"
+    // (known and explicitly denied). Note neither contains the word "denied".
+    if (code === -32004) {
+      const denied = /unauthorized|denied|refus|blocked/i.test(msg)
+      const pending = /needs authoriz|not authoriz|pending/i.test(msg)
+      throw new Error(denied && !pending
+        ? `BTN refused this IP address (${msg}). The address is known to BTN and explicitly denied: re-authorising it is a change on the BTN site, not something this client can retry past.`
+        : pending
+          ? `BTN will not answer this IP address (${msg}). The address has been filed as pending: approve it from your notices on BTN, then retry.`
+          // Wording BTN has not used before: name both meanings rather than send the user to
+          // approve an address that may have been refused.
+          : `BTN will not answer this IP address (${msg}). -32004 means the address is either unrecognised (logged as pending on BTN, and approved from your notices there) or known and explicitly denied. Check your notices on BTN to see which.`)
+    }
     if (code === -32005) throw new Error('BTN requires HTTPS and refused this request before dispatch: BTN_API_URL must be the https:// API endpoint.')
     if (code === -32003) throw new Error(`BTN says this account is disabled (${msg}) - BTN_API_KEY belongs to a disabled account. Check the account on the BTN site.`)
     if (code === -32001) throw new Error('BTN rejected BTN_API_KEY as an invalid API key. The key is on your profile on the BTN site — it is not your site password.')

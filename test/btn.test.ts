@@ -98,12 +98,18 @@ test('every documented error code says something actionable', async () => {
   answer = err(-32005, 'HTTPS is required')
   await assert.rejects(() => getTorrents({ series: '%T%' }, 10, 0), /HTTPS/)
 
-  answer = err(-32004, 'IP 203.0.113.5 is not authorized')
-  await assert.rejects(() => getTorrents({ series: '%T%' }, 10, 0), /pending/)
+  // BTN's own two -32004 messages, verbatim from https://apidocs.broadcasthe.net/v1/ :
+  // the address it has never seen (logged as pending) and the one it knows and has denied.
+  answer = err(-32004, 'IP address needs authorization - please check your notices on BTN')
+  await assert.rejects(() => getTorrents({ series: '%T%' }, 10, 0), (e: any) => /pending/.test(e.message) && !/denied/i.test(e.message))
 
-  // the same code, the other situation: the address is known and refused, so "approve it" is wrong
-  answer = err(-32004, 'IP 203.0.113.5 is explicitly denied')
+  answer = err(-32004, 'Unauthorized IP address')
   await assert.rejects(() => getTorrents({ series: '%T%' }, 10, 0), (e: any) => /denied/.test(e.message) && !/pending/.test(e.message))
+
+  // wording BTN has not used before: name both meanings, and do not send the user off to
+  // approve an address that may have been refused outright.
+  answer = err(-32004, 'something new')
+  await assert.rejects(() => getTorrents({ series: '%T%' }, 10, 0), (e: any) => /notices/.test(e.message) && !/then retry/.test(e.message))
 
   answer = err(-32002, 'Call limit exceeded')
   await assert.rejects(() => getTorrents({ series: '%T%' }, 10, 0), (e: any) => e instanceof RateLimitError)
