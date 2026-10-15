@@ -35,15 +35,24 @@ export async function btnCall<T = any>(method: string, params: Record<string, un
   })
   if (res.status === 429) throw new RateLimitError('BTN rate-limited this request')
   const text = await res.text()
-  let body: any
+  let body: any // parsed below
   try { body = JSON.parse(text) } catch {
-    throw new Error(`BTN API returned no JSON (HTTP ${res.status})${params.search === undefined ? ' — getTorrents requires a search argument' : ''}`)
+    // A getTorrents call without `search` is refused before dispatch, with an empty 500 body,
+    // so the hint belongs to that method only.
+    const hint = method === 'getTorrents' && params.search === undefined ? ' - getTorrents requires a search argument' : ''
+    throw new Error(`BTN API returned no JSON (HTTP ${res.status})${hint}`)
   }
   if (body?.error) {
     const code = body.error.code
     const msg = body.error.message ?? JSON.stringify(body.error)
     if (code === -32002) throw new RateLimitError(`BTN call limit exceeded: ${msg}`)
-    if (code === -32004) throw new Error(`BTN will not answer this IP address (${msg}). The address has been filed as pending: approve it from your notices on BTN, then retry.`)
+    // -32004 covers two different things: an address BTN has never seen (logged as pending) and
+    // one it has seen and denied. Only the first is fixed by approving it on the site.
+    if (code === -32004) throw new Error(/denied/i.test(msg)
+      ? `BTN refused this IP address (${msg}). The address is known to BTN and explicitly denied: re-authorising it is a change on the BTN site, not something this client can retry past.`
+      : `BTN will not answer this IP address (${msg}). The address has been filed as pending: approve it from your notices on BTN, then retry.`)
+    if (code === -32005) throw new Error('BTN requires HTTPS and refused this request before dispatch: BTN_API_URL must be the https:// API endpoint.')
+    if (code === -32003) throw new Error(`BTN says this account is disabled (${msg}) - BTN_API_KEY belongs to a disabled account. Check the account on the BTN site.`)
     if (code === -32001) throw new Error('BTN rejected BTN_API_KEY as an invalid API key. The key is on your profile on the BTN site — it is not your site password.')
     throw new Error(`BTN API error ${code ?? ''}: ${msg}`.trim())
   }

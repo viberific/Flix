@@ -37,13 +37,20 @@ export function storeTorrents(list: BtnTorrent[]) {
   } catch (e) { db.exec('ROLLBACK'); throw e }
 }
 
+/**
+ * BTN's string filters are SQL LIKE and apply no wildcards of their own: `{series: 'Firefly'}`
+ * matches nothing, `{series: '%Firefly%'}` matches. Wrap the term, and escape a wildcard the
+ * name itself contains (LIKE escapes a literal % or _ with a backslash) so it stays literal.
+ */
+const like = (s: string) => `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+
 const searchCache = new Map<string, number>()
 
 /** Search BTN by series name (cached 10 min to protect the API budget) and store results. */
 export async function searchBtn(q: string) {
   const key = q.toLowerCase()
   if ((searchCache.get(key) ?? 0) > Date.now() - 600_000) return
-  const { torrents } = await getTorrents({ series: `%${q.replace(/[%_]/g, '')}%` }, 200, 0)
+  const { torrents } = await getTorrents({ series: like(q) }, 200, 0)
   storeTorrents(torrents)
   searchCache.set(key, Date.now())
 }
@@ -55,7 +62,7 @@ export async function syncSeries(seriesId: number, force = false) {
   const last = db.prepare('SELECT synced_at FROM series_sync WHERE series_id = ?').get(seriesId) as { synced_at: number } | undefined
   if (!force && last && last.synced_at > now() - 3600) return
   for (let page = 0; page < 3; page++) {
-    const { torrents, total } = await getTorrents({ series: row.series }, 1000, page * 1000)
+    const { torrents, total } = await getTorrents({ series: like(row.series) }, 1000, page * 1000)
     storeTorrents(torrents.filter((t) => Number(t.SeriesID) === seriesId))
     if ((page + 1) * 1000 >= total) break
   }

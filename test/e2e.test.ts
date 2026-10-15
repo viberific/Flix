@@ -16,6 +16,19 @@ const P = { tracker: 18881, btn: 18882, qb: 18883, app: 18884, qbPeer: 18885 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
 
+/** SQL LIKE, the way BTN's string filters behave: `%` is any run, `_` one character, \% literal. */
+function likeMatch(value: string, pattern: string) {
+  let rx = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '\\' && i + 1 < pattern.length) { rx += pattern[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); continue }
+    if (c === '%') { rx += '.*'; continue }
+    if (c === '_') { rx += '.'; continue }
+    rx += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+  return new RegExp(`^${rx}$`, 'i').test(value)
+}
+
 // ---- environment for the app (must be set before importing it) ----
 process.env.DB_PATH = join(tmp, 'flix.db')
 process.env.DATA_DIR = join(tmp, 'data')
@@ -75,7 +88,7 @@ before(async () => {
     GroupName: `Test Show - S01E0${i + 1}`, GroupID: String(100 + i), TorrentID: String(1000 + i), SeriesID: '77', Series: 'Test Show',
     SeriesPoster: `http://127.0.0.1:${P.btn}/img/poster.png`, ReleaseName: m.path.split('/').pop(), Category: 'Episode', Codec: 'H.264', Container: k.split('.')[1].toUpperCase(),
     Source: 'WEB-DL', Resolution: '360p', Origin: 'P2P', Size: String(m.data.length), Time: String(1700000000 + i), InfoHash: m.hash.toUpperCase(),
-    TvdbID: '555', Seeders: '1', Leechers: '0', Genres: ['Test'], TorrentLink: `http://127.0.0.1:${P.btn}/dl/${1000 + i}?torrent_pass=SECRETPASSKEY`,
+    TvdbID: '555', Seeders: '1', Leechers: '0', Genres: ['Test'], DownloadURL: `http://127.0.0.1:${P.btn}/dl/${1000 + i}?torrent_pass=SECRETPASSKEY`,
   }))
   btn = createServer((req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/tmdb/')) {
@@ -93,10 +106,19 @@ before(async () => {
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       const rpc = JSON.parse(body)
-      assert.equal(rpc.params[0], 'testkey')
-      const obj = Object.fromEntries(torrents.map((t) => [t.TorrentID, t]))
+      // BTN v1: id present and non-empty, no jsonrpc field, auth in params.key.
+      assert.equal(rpc.jsonrpc, undefined)
+      assert.ok(rpc.id)
+      assert.equal(rpc.params?.key, 'testkey')
+      // ...and a getTorrents call without `search` is refused before dispatch, with an empty 500.
+      if (!('search' in (rpc.params ?? {}))) { res.statusCode = 500; return void res.end() }
+      const s = rpc.params.search
+      const filter = s && typeof s === 'object' && !Array.isArray(s) ? (s as any).series : undefined
+      const matched = filter === undefined ? torrents : torrents.filter((t) => likeMatch(t.Series, String(filter)))
+      const offset = Number(rpc.params.offset ?? 0), limit = Number(rpc.params.results ?? 10)
+      const obj = Object.fromEntries(matched.slice(offset, offset + limit).map((t) => [t.TorrentID, t]))
       res.setHeader('content-type', 'application/json')
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { results: String(torrents.length), torrents: obj } }))
+      res.end(JSON.stringify({ id: rpc.id, result: { results: String(matched.length), torrents: obj } }))
     })
   })
   await new Promise<void>((r) => btn.listen(P.btn, '127.0.0.1', r))
