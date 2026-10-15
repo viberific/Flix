@@ -22,6 +22,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A version already in the registry is a version nobody is offered: Umbrel
+      # compares the version string, so an image rebuilt under the number it
+      # already had is not an update. That is how a finished branch sat
+      # unshipped -- the work was merged to main with the version left standing
+      # and both this build and the app-store build went green. Fail here
+      # instead, on the push that carries the unbumped version to main.
+      - name: The version must not already be published
+        if: github.event_name == 'push'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "package.json version: $version"
+          # ghcr answers anonymously for a public package, and a registry we
+          # cannot reach must not hold up a release: warn and carry on.
+          if ! token="$(curl -fsS "https://ghcr.io/token?scope=repository:viberific/flix:pull&service=ghcr.io" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"; then
+            echo "::warning::could not reach ghcr to check whether $version is already published - allowing the build"
+            exit 0
+          fi
+          if ! tags="$(curl -fsS -H "Authorization: Bearer $token" https://ghcr.io/v2/viberific/flix/tags/list)"; then
+            echo "::warning::could not list the tags of viberific/flix - allowing the build"
+            exit 0
+          fi
+          if echo "$tags" | python3 -c 'import json,sys; sys.exit(0 if sys.argv[1] in (json.load(sys.stdin).get("tags") or []) else 1)' "$version"; then
+            echo "::error::ghcr.io/viberific/flix:$version already exists and package.json still says $version."
+            echo "Umbrel compares versions, so this build publishes nothing anyone is offered."
+            echo "Bump the version in package.json, and give the new version its releaseNotes in the app-store repo (blofstedt-flix/umbrel-app.yml), then push again."
+            exit 1
+          fi
+          echo "ghcr.io/viberific/flix:$version does not exist yet: this build publishes a new version."
+
       - uses: docker/setup-qemu-action@v3
         with:
           image: mirror.gcr.io/tonistiigi/binfmt:latest
