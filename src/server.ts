@@ -10,7 +10,7 @@ import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, p
 import { qb } from './qb.ts'
 import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb } from './settings.ts'
+import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
 import { artPathSql, getArt } from './art.ts'
@@ -261,7 +261,7 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus() }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus() }))
 app.put('/api/admin/settings/btn', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()
   if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
@@ -275,6 +275,23 @@ app.post('/api/admin/settings/btn/test', admin, async () => {
   return { ok: true, username: typeof info?.Username === 'string' ? info.Username : null }
 })
 
+app.put('/api/admin/settings/tmdb', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setTmdbApiKey(key)
+  return { tmdb: tmdbKeyStatus() }
+})
+/** One cheap authenticated TMDB call, so the admin sees whether the key is accepted. */
+app.post('/api/admin/settings/tmdb/test', admin, async () => {
+  const { apiKey, apiUrl } = config.tmdb
+  if (!apiKey) throw Object.assign(new Error('No TMDB key set'), { statusCode: 400 })
+  const res = await fetch(`${apiUrl}/configuration?api_key=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) }).catch((e) => {
+    throw Object.assign(new Error(`Could not reach TMDB: ${e.message}`), { statusCode: 502 })
+  })
+  if (res.status === 401) throw Object.assign(new Error('TMDB rejected this key'), { statusCode: 400 })
+  if (!res.ok) throw Object.assign(new Error(`TMDB returned HTTP ${res.status}`), { statusCode: 502 })
+  return { ok: true }
+})
 app.put('/api/admin/settings/qb', admin, async (req) => {
   const b = (req.body ?? {}) as any
   if (b.reset) clearQb()

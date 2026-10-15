@@ -4,6 +4,7 @@ import { config } from './config.ts'
 /** Values from the environment, kept so clearing a saved setting falls back to them. */
 const envBtnKey = config.btn.apiKey
 const envQb = { ...config.qb }
+const envTmdbKey = config.tmdb.apiKey
 
 const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value
 const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v)
@@ -11,6 +12,7 @@ const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, val
 /** Settings saved in the admin page override the matching environment variables. */
 export function loadSettings() {
   config.btn.apiKey = get('btn_api_key') || envBtnKey
+  config.tmdb.apiKey = get('tmdb_api_key') || envTmdbKey
   config.qb.url = get('qb_url') ?? envQb.url
   config.qb.user = get('qb_user') ?? envQb.user
   config.qb.pass = get('qb_pass') ?? envQb.pass
@@ -26,6 +28,19 @@ export function setBtnApiKey(key: string) {
 export function btnKeyStatus() {
   const saved = get('btn_api_key')
   const key = config.btn.apiKey
+  return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
+}
+
+export function setTmdbApiKey(key: string) {
+  if (key) put('tmdb_api_key', key)
+  else db.prepare('DELETE FROM settings WHERE key = ?').run('tmdb_api_key')
+  loadSettings()
+}
+
+/** Same shape as btnKeyStatus: set or not, where from, last 4 characters, never the key. */
+export function tmdbKeyStatus() {
+  const saved = get('tmdb_api_key')
+  const key = config.tmdb.apiKey
   return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
 }
 

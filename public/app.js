@@ -337,7 +337,7 @@ function familyPanel(data, root) {
 }
 
 function settingsPanel(data, root) {
-  let btn = data.btn, qbs = data.qb
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
@@ -347,6 +347,12 @@ function settingsPanel(data, root) {
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="bm" role="status"></div></form>
+      <h2 class="sec">TMDB (optional)</h2>
+      <p class="dim" style="max-width:66ch">A free TMDB v3 API key lets Flix look up each show's content rating (TV-Y to TV-MA) automatically. Without one, you set ratings by hand on each show's page.</p>
+      <form id="tf" class="person"><div class="dim">${tm.configured ? `Key set (ends in <code>${esc(tm.hint)}</code>)${tm.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="tm" role="status"></div></form>
       <h2 class="sec">qBittorrent</h2>
       <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
       <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
@@ -367,6 +373,21 @@ function settingsPanel(data, root) {
     $('#bt').onclick = async () => {
       msg('Testing…')
       try { const r = await api('/api/admin/settings/btn/test', {}); msg(r.username ? `Connected as ${r.username}.` : 'Connected.') } catch (err) { msg(err.message) }
+    }
+    const tmsg = (t) => { $('#tm').textContent = t }
+    $('#tf').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return tmsg('Paste a key first.')
+      try { tm = (await api('/api/admin/settings/tmdb', { apiKey: key }, 'PUT')).tmdb; paint(); $('#tm').textContent = 'Saved. Use Test connection to check it.' } catch (err) { tmsg(err.message) }
+    }
+    $('#tt').onclick = async () => {
+      tmsg('Testing…')
+      try { await api('/api/admin/settings/tmdb/test', {}); tmsg('TMDB accepted the key.') } catch (err) { tmsg(err.message) }
+    }
+    const tc = $('#tc')
+    if (tc) tc.onclick = async () => {
+      if (tc.dataset.sure !== '1') { tc.dataset.sure = '1'; tc.textContent = 'Tap again to remove'; setTimeout(() => { tc.dataset.sure = ''; tc.textContent = 'Remove saved key' }, 4000); return }
+      try { tm = (await api('/api/admin/settings/tmdb', { apiKey: '' }, 'PUT')).tmdb; paint() } catch (err) { tmsg(err.message) }
     }
     const qmsg = (t) => { $('#qm').textContent = t }
     $('#qf').onsubmit = async (e) => {

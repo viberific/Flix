@@ -146,3 +146,16 @@ test('settings: qBittorrent override keeps the old password when left blank, nev
   assert.equal(config.qb.url, env.url)
   assert.equal(qbStatus().source, 'environment')
 })
+
+const { setTmdbApiKey, tmdbKeyStatus } = await import('../src/settings.ts')
+
+test('settings: TMDB key overrides the environment, status hides it, clearing reverts', () => {
+  const env = config.tmdb.apiKey
+  setTmdbApiKey('tmdbsecret7788')
+  assert.equal(config.tmdb.apiKey, 'tmdbsecret7788')
+  const st = tmdbKeyStatus()
+  assert.deepEqual(st, { configured: true, source: 'settings', hint: '7788' })
+  assert.ok(!JSON.stringify(st).includes('tmdbsecret'))
+  setTmdbApiKey('')
+  assert.equal(config.tmdb.apiKey, env)
+})
