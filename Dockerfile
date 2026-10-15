@@ -25,6 +25,7 @@ ENV NODE_ENV=production \
     PORT=8096
 
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/qb-config.mjs /qb-config.mjs
 RUN chmod +x /entrypoint.sh
 
 # /data: the sqlite db, qBittorrent's config and the .env with the keys.

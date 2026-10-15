@@ -2,10 +2,9 @@
 # Flix entrypoint: qBittorrent-nox on 127.0.0.1:8080, then the app.
 # Config comes from /data/.env (KEY=value lines, survives app updates),
 # falling back to the image defaults.
-
 set -e
 
-mkdir -p /data/qbittorrent/qBittorrent/config /downloads
+mkdir -p /data/qbittorrent /downloads
 
 if [ -f /data/.env ]; then
   set -a
@@ -19,67 +18,89 @@ QB_PASS="${QB_PASS:-}"
 QB_PORT="${QB_PORT:-8080}"
 export BTN_API_KEY TMDB_API_KEY PORT DATA_DIR DOWNLOAD_DIR QB_USER QB_PASS
 
-# qBittorrent's Web UI: bound to localhost inside the container (never
-# published), auth on, and the password re-seeded from QB_PASS on every boot —
-# the .env is the single source of truth, so a forgotten password is fixed by
-# editing the file and restarting the app. Flix logs in with QB_USER/QB_PASS.
-QB_CONF=/data/qbittorrent/qBittorrent/config/qBittorrent.conf
-HASH=$(node -e '
-const crypto = require("node:crypto")
-const salt = crypto.randomBytes(16)
-const hash = crypto.pbkdf2Sync(process.argv[1] ?? "", salt, 100000, 64, "sha512")
-process.stdout.write(salt.toString("base64") + ":" + hash.toString("base64"))
-' "$QB_PASS")
+QB_PROFILE=/data/qbittorrent
+QB_ARGS="--profile=${QB_PROFILE} --configuration=qBittorrent"
 
-if [ ! -f "$QB_CONF" ]; then
-  cat > "$QB_CONF" <<EOF
-[AutoRun]
-enabled=false
+# qBittorrent's Web UI is bound to the container's own localhost and its port
+# is never published, so it is not reachable from outside the container.
+#
+# Two things had to be worked around here, both found in qBittorrent's own log
+# (in the app data dir, <config>/data/logs/qbittorrent.log):
+#
+#  1. qBittorrent 5.x does not use "$QB_PROFILE/qBittorrent/config" for the
+#     profile above; it reports "Using config directory:
+#     /data/qbittorrent/qBittorrent_qBittorrent/config". A config written to
+#     the other path is ignored, so its login stayed on the built-in
+#     credentials ("WebAPI login failure ... invalid credentials"). Our
+#     settings are therefore put into the file qBittorrent itself creates,
+#     which is found rather than assumed, by docker/qb-config.mjs.
+#
+#  2. A container that stops leaves "lockfile" and "ipc-socket" behind in that
+#     config directory. The next start reads them as a running instance and
+#     shuts itself down a second later ("qBittorrent termination initiated"),
+#     so the Web UI is never there for Flix. Nothing else can be running at
+#     this point in a fresh container, so they are cleared first.
+find /data/qbittorrent \( -name lockfile -o -name ipc-socket \) -exec rm -f {} \; 2>/dev/null || true
 
-[BitTorrent]
-Session\\DefaultSavePath=/downloads
-Session\\Port=6881
-Session\\TempPathEnabled=false
+start_qb() {
+  # shellcheck disable=SC2086
+  qbittorrent-nox $QB_ARGS >/proc/1/fd/1 2>&1 &
+  QB_PID=$!
+}
 
-[LegalNotice]
-Accepted=true
+stop_qb() {
+  kill "$QB_PID" 2>/dev/null || true
+  wait "$QB_PID" 2>/dev/null || true
+}
 
-[Network]
-PortRange=6881-6889
+# Wait for the Web UI to answer on 127.0.0.1:$QB_PORT. The image has no nc, so
+# this is node (which the image has anyway); 30 seconds at the most.
+wait_for_webui() {
+  node -e '
+    const net = require("node:net")
+    const port = Number(process.argv[1])
+    const deadline = Date.now() + 30000
+    const once = () => new Promise((resolve) => {
+      const s = net.connect({ host: "127.0.0.1", port })
+      s.once("connect", () => { s.destroy(); resolve(true) })
+      s.once("error", () => { s.destroy(); resolve(false) })
+    })
+    void (async () => {
+      while (Date.now() < deadline) {
+        if (await once()) process.exit(0)
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      process.exit(1)
+    })()
+  ' "$QB_PORT"
+}
 
-[Preferences]
-WebUI\\Address=*
-WebUI\\Port=${QB_PORT}
-WebUI\\Username=${QB_USER}
-WebUI\\Password_PBKDF2="@ByteArray(${HASH})"
-WebUI\\LocalHostAuth=true
-WebUI\\HostHeaderValidation=false
-WebUI\\CSRFProtection=true
-WebUI\\BanDuration=0
-EOF
-else
-  # Keep the user's other settings, but re-apply username and password from
-  # the .env every boot.
-  sed -i \
-    -e "s|^WebUI\\\\Username=.*|WebUI\\\\Username=${QB_USER}|" \
-    -e "s|^WebUI\\\\Password_PBKDF2=.*|WebUI\\\\Password_PBKDF2=\"@ByteArray(${HASH})\"|" \
-    -e "s|^WebUI\\\\Port=.*|WebUI\\\\Port=${QB_PORT}|" \
-    "$QB_CONF"
-fi
+find_conf() {
+  find "$QB_PROFILE" -name qBittorrent.conf 2>/dev/null | head -n 1
+}
 
-# qBittorrent-nox in the background.
-qbittorrent-nox \
-  --profile=/data/qbittorrent \
-  --configuration=qBittorrent \
-  --webui-port="${QB_PORT}" \
-  >/proc/1/fd/1 2>&1 &
+start_qb
 
-# Wait for the Web UI before starting Flix.
+# On a fresh profile there is no config yet: qBittorrent writes one, and only
+# then can our settings go into it (and it has to be restarted to read them).
+QB_CONF=$(find_conf)
 i=0
-while [ $i -lt 30 ]; do
-  if nc -z 127.0.0.1 "${QB_PORT}" 2>/dev/null; then break; fi
+while [ -z "$QB_CONF" ] && [ "$i" -lt 20 ]; do
   i=$((i + 1))
   sleep 1
+  QB_CONF=$(find_conf)
 done
+
+if [ -z "$QB_CONF" ]; then
+  echo "entrypoint: qBittorrent wrote no config file in $QB_PROFILE; leaving its own settings alone" >&2
+elif ! grep -q 'WebUI\\LocalHostAuth=false' "$QB_CONF"; then
+  stop_qb
+  node /qb-config.mjs "$QB_CONF" "$QB_PORT"
+  start_qb
+fi
+
+if ! wait_for_webui; then
+  echo "entrypoint: qBittorrent's Web UI did not answer on 127.0.0.1:${QB_PORT} within 30s" >&2
+fi
 
 exec node --import tsx src/server.ts
