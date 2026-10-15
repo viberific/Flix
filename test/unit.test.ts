@@ -95,3 +95,67 @@ test('ratings: allowed lists and viewing rules', () => {
   assert.deepEqual(ratingClause(kid).params, ['TV-Y', 'TV-G'])
   assert.equal(ratingClause({ is_admin: 0, allowed: [] }).sql, '0')
 })
+
+const { btnKeyStatus, setBtnApiKey } = await import('../src/settings.ts')
+const { btnCall, RateLimitError, IpNotAuthorizedError } = await import('../src/btn/client.ts')
+
+test('settings: saved BTN key overrides the environment, status never exposes it, clearing reverts', () => {
+  config.btn.apiKey = ''
+  setBtnApiKey('abcdef123456')
+  assert.equal(config.btn.apiKey, 'abcdef123456')
+  const st = btnKeyStatus()
+  assert.deepEqual(st, { configured: true, source: 'settings', hint: '3456' })
+  assert.ok(!JSON.stringify(st).includes('abcdef'))
+  setBtnApiKey('')
+  assert.deepEqual(btnKeyStatus(), { configured: false, source: null, hint: null })
+})
+
+test('BTN client: no jsonrpc field, -32002 is a rate limit, -32004 is an unapproved IP', async () => {
+  config.btn.apiKey = 'k'
+  const realFetch = globalThis.fetch
+  let sent: any
+  let reply: any = { result: { ok: 1 } }
+  globalThis.fetch = (async (_u: any, init: any) => { sent = JSON.parse(init.body); return new Response(JSON.stringify(reply)) }) as any
+  try {
+    assert.deepEqual(await btnCall('userInfo', []), { ok: 1 })
+    assert.ok(!('jsonrpc' in sent) && sent.id && sent.params[0] === 'k')
+    reply = { result: null, error: { code: -32002, message: 'Call limit exceeded' } }
+    await assert.rejects(btnCall('userInfo', []), RateLimitError)
+    reply = { result: null, error: { code: -32004, message: 'IP not authorised' } }
+    await assert.rejects(btnCall('userInfo', []), IpNotAuthorizedError)
+    reply = { result: null, error: { code: 0, message: 'boom' } }
+    await assert.rejects(btnCall('userInfo', []), /boom/)
+  } finally { globalThis.fetch = realFetch; config.btn.apiKey = '' }
+})
+
+const { setQb, clearQb, qbStatus } = await import('../src/settings.ts')
+
+test('settings: qBittorrent override keeps the old password when left blank, never reports it, and can revert', () => {
+  const env = { ...config.qb }
+  config.qb.pass = 'envpass'
+  setQb({ url: 'http://qb.local:9090/', user: 'me', password: '' })
+  assert.equal(config.qb.url, 'http://qb.local:9090')
+  assert.equal(config.qb.user, 'me')
+  assert.equal(config.qb.pass, 'envpass') // blank = keep
+  setQb({ url: 'http://qb.local:9090', user: 'me', password: 'newpass' })
+  assert.equal(config.qb.pass, 'newpass')
+  const st = qbStatus()
+  assert.deepEqual(st, { url: 'http://qb.local:9090', user: 'me', passwordSet: true, source: 'settings' })
+  assert.ok(!JSON.stringify(st).includes('newpass'))
+  clearQb()
+  assert.equal(config.qb.url, env.url)
+  assert.equal(qbStatus().source, 'environment')
+})
+
+const { setTmdbApiKey, tmdbKeyStatus } = await import('../src/settings.ts')
+
+test('settings: TMDB key overrides the environment, status hides it, clearing reverts', () => {
+  const env = config.tmdb.apiKey
+  setTmdbApiKey('tmdbsecret7788')
+  assert.equal(config.tmdb.apiKey, 'tmdbsecret7788')
+  const st = tmdbKeyStatus()
+  assert.deepEqual(st, { configured: true, source: 'settings', hint: '7788' })
+  assert.ok(!JSON.stringify(st).includes('tmdbsecret'))
+  setTmdbApiKey('')
+  assert.equal(config.tmdb.apiKey, env)
+})

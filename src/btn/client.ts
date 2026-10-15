@@ -11,6 +11,7 @@ export interface BtnTorrent {
 }
 
 export class RateLimitError extends Error {}
+export class IpNotAuthorizedError extends Error {}
 
 const calls: number[] = []
 
@@ -25,13 +26,18 @@ export async function btnCall<T = any>(method: string, params: unknown[]): Promi
   const res = await fetch(config.btn.apiUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'user-agent': 'Flix/0.1' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: String(Date.now()), method, params: [config.btn.apiKey, ...params] }),
+    body: JSON.stringify({ id: String(Date.now()), method, params: [config.btn.apiKey, ...params] }),
     signal: AbortSignal.timeout(30_000),
   })
   if (res.status === 429) throw new RateLimitError('BTN rate-limited this request')
   if (!res.ok) throw new Error(`BTN API HTTP ${res.status}`)
   const body: any = await res.json()
-  if (body.error) throw new Error(`BTN API error: ${body.error.message ?? JSON.stringify(body.error)}`)
+  if (body.error) {
+    // BTN signals most failures in the JSON-RPC error (HTTP is usually 200); code 0 is generic, so also rely on the message.
+    if (body.error.code === -32002) throw new RateLimitError('BTN call limit exceeded; try again later')
+    if (body.error.code === -32004) throw new IpNotAuthorizedError('BTN rejected this IP (-32004): approve this server\'s IP in your BTN API settings')
+    throw new Error(`BTN API error: ${body.error.message ?? JSON.stringify(body.error)}`)
+  }
   return body.result as T
 }
 

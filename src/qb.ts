@@ -45,6 +45,13 @@ async function post(path: string, form: Record<string, string>) {
 }
 
 export const qb = {
+  /** Drop the old session and prove the current URL/credentials work, then apply the engine preferences. */
+  async reconnect(): Promise<string> {
+    cookie = ''
+    await login()
+    await qb.setup()
+    return qb.version()
+  },
   async setup() {
     // Files must be readable in place while downloading: no ".!qB" suffix, no separate temp dir.
     await post('/api/v2/app/setPreferences', { json: JSON.stringify({

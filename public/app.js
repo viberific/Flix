@@ -62,7 +62,7 @@ function renderTop() {
     e.stopPropagation()
     const old = $('.menu'); if (old) return old.remove()
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
@@ -245,11 +245,11 @@ function ratingPills(all, on, attrs = '') {
 }
 
 async function adminView(tab = 'downloads') {
-  const data = tab === 'family' ? await api('/api/admin/users') : await api('/api/admin/downloads')
+  const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
   return () => {
     app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
-      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a></div><div id="adm-body"></div></div>`
-    ;(tab === 'family' ? familyPanel : downloadsPanel)(data, $('#adm-body'))
+      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
+    ;(tab === 'family' ? familyPanel : tab === 'settings' ? settingsPanel : downloadsPanel)(data, $('#adm-body'))
   }
 }
 
@@ -336,6 +336,81 @@ function familyPanel(data, root) {
   paint()
 }
 
+function settingsPanel(data, root) {
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb
+  const paint = () => {
+    const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
+    root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
+      <h2 class="sec">BroadcasTheNet</h2>
+      <p class="dim" style="max-width:66ch">Flix talks to BTN with an API key, not your BTN username and password. Find the key in your BTN profile settings. BTN also only accepts a key from IP addresses you have approved on their site, so approve this server's address there if the test fails.</p>
+      <form id="bf" class="person"><div class="dim" id="bs" role="status">${state}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="bm" role="status"></div></form>
+      <h2 class="sec">TMDB (optional)</h2>
+      <p class="dim" style="max-width:66ch">A free TMDB v3 API key lets Flix look up each show's content rating (TV-Y to TV-MA) automatically. Without one, you set ratings by hand on each show's page.</p>
+      <form id="tf" class="person"><div class="dim">${tm.configured ? `Key set (ends in <code>${esc(tm.hint)}</code>)${tm.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="tm" role="status"></div></form>
+      <h2 class="sec">qBittorrent</h2>
+      <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
+      <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
+        <div class="row-form"><input class="field" name="url" value="${esc(qbs.url)}" placeholder="http://127.0.0.1:8080" autocomplete="off" required>
+          <input class="field" name="user" value="${esc(qbs.user)}" placeholder="Username" autocomplete="off" required>
+          <input class="field" name="pass" type="password" placeholder="${qbs.passwordSet ? 'Password (unchanged)' : 'Password'}" autocomplete="new-password"></div>
+        <div class="row-form"><button class="btn primary">Save</button><button type="button" class="btn" id="qt">Test connection</button>${qbs.source === 'settings' ? '<button type="button" class="btn" id="qc">Use server environment</button>' : ''}</div>
+        <div class="dim" id="qm" role="status"></div></form>`
+    wire()
+  }
+  const wire = () => {
+    const msg = (t) => { $('#bm').textContent = t }
+    $('#bf').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return msg('Paste a key first.')
+      try { btn = (await api('/api/admin/settings/btn', { apiKey: key }, 'PUT')).btn; paint(); msg('Saved. Use Test connection to check it.') } catch (err) { msg(err.message) }
+    }
+    $('#bt').onclick = async () => {
+      msg('Testing…')
+      try { const r = await api('/api/admin/settings/btn/test', {}); msg(r.username ? `Connected as ${r.username}.` : 'Connected.') } catch (err) { msg(err.message) }
+    }
+    const tmsg = (t) => { $('#tm').textContent = t }
+    $('#tf').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return tmsg('Paste a key first.')
+      try { tm = (await api('/api/admin/settings/tmdb', { apiKey: key }, 'PUT')).tmdb; paint(); $('#tm').textContent = 'Saved. Use Test connection to check it.' } catch (err) { tmsg(err.message) }
+    }
+    $('#tt').onclick = async () => {
+      tmsg('Testing…')
+      try { await api('/api/admin/settings/tmdb/test', {}); tmsg('TMDB accepted the key.') } catch (err) { tmsg(err.message) }
+    }
+    const tc = $('#tc')
+    if (tc) tc.onclick = async () => {
+      if (tc.dataset.sure !== '1') { tc.dataset.sure = '1'; tc.textContent = 'Tap again to remove'; setTimeout(() => { tc.dataset.sure = ''; tc.textContent = 'Remove saved key' }, 4000); return }
+      try { tm = (await api('/api/admin/settings/tmdb', { apiKey: '' }, 'PUT')).tmdb; paint() } catch (err) { tmsg(err.message) }
+    }
+    const qmsg = (t) => { $('#qm').textContent = t }
+    $('#qf').onsubmit = async (e) => {
+      e.preventDefault(); const f = new FormData(e.target)
+      try { qbs = (await api('/api/admin/settings/qb', { url: f.get('url'), user: f.get('user'), password: f.get('pass') }, 'PUT')).qb; paint(); $('#qm').textContent = 'Saved. Use Test connection to check it.' } catch (err) { qmsg(err.message) }
+    }
+    $('#qt').onclick = async () => {
+      qmsg('Testing…')
+      try { const r = await api('/api/admin/settings/qb/test', {}); qmsg(`Connected to qBittorrent ${r.version}.`) } catch (err) { qmsg(err.message) }
+    }
+    const qc = $('#qc')
+    if (qc) qc.onclick = async () => {
+      try { qbs = (await api('/api/admin/settings/qb', { reset: true }, 'PUT')).qb; paint() } catch (err) { qmsg(err.message) }
+    }
+    const bc = $('#bc')
+    if (bc) bc.onclick = async () => {
+      if (bc.dataset.sure !== '1') { bc.dataset.sure = '1'; bc.textContent = 'Tap again to remove'; setTimeout(() => { bc.dataset.sure = ''; bc.textContent = 'Remove saved key' }, 4000); return }
+      try { btn = (await api('/api/admin/settings/btn', { apiKey: '' }, 'PUT')).btn; paint() } catch (err) { msg(err.message) }
+    }
+  }
+  paint()
+}
+
 /* ---------- router ---------- */
 async function route() {
   cleanup?.(); cleanup = null
@@ -353,7 +428,7 @@ async function route() {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
-    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' ? 'family' : 'downloads')
+    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' || parts[1] === 'settings' ? parts[1] : 'downloads')
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return
