@@ -13,6 +13,8 @@ export interface BtnTorrent {
 }
 
 export class RateLimitError extends Error {}
+/** BTN answered -32004: this server's IP is unrecognised or denied. server.ts maps it to HTTP 403. */
+export class IpNotAuthorizedError extends Error {}
 
 const calls: number[] = []
 
@@ -53,7 +55,7 @@ export async function btnCall<T = any>(method: string, params: Record<string, un
     if (code === -32004) {
       const denied = /unauthorized|denied|refus|blocked/i.test(msg)
       const pending = /needs authoriz|not authoriz|pending/i.test(msg)
-      throw new Error(denied && !pending
+      throw new IpNotAuthorizedError(denied && !pending
         ? `BTN refused this IP address (${msg}). The address is known to BTN and explicitly denied: re-authorising it is a change on the BTN site, not something this client can retry past.`
         : pending
           ? `BTN will not answer this IP address (${msg}). The address has been filed as pending: approve it from your notices on BTN, then retry.`

@@ -9,7 +9,8 @@ import { createUser, hashPassword, login, logout, requireAdmin, requireUser, set
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
-import { RateLimitError } from './btn/client.ts'
+import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
+import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
 import { artPathSql, getArt } from './art.ts'
@@ -21,7 +22,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
 
 app.setErrorHandler((err: any, _req, reply) => {
-  const status = err instanceof RateLimitError ? 429 : err.statusCode ?? 500
+  const status = err instanceof RateLimitError ? 429 : err instanceof IpNotAuthorizedError ? 403 : err.statusCode ?? 500
   if (status >= 500) app.log.error(err)
   reply.code(status).send({ error: err.message })
 })
@@ -258,6 +259,56 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
   return { ok: true }
 })
 
+// ---- settings ----------------------------------------------------------------
+// The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus() }))
+app.put('/api/admin/settings/btn', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setBtnApiKey(key)
+  startBtnSync()
+  return { btn: btnKeyStatus() }
+})
+/** Make one authenticated call so the admin can see whether the key (and this server's IP) is accepted. */
+app.post('/api/admin/settings/btn/test', admin, async () => {
+  const info = await btnCall<any>('userInfo')
+  return { ok: true, username: typeof info?.Username === 'string' ? info.Username : null }
+})
+
+app.put('/api/admin/settings/tmdb', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setTmdbApiKey(key)
+  return { tmdb: tmdbKeyStatus() }
+})
+/** One cheap authenticated TMDB call, so the admin sees whether the key is accepted. */
+app.post('/api/admin/settings/tmdb/test', admin, async () => {
+  const { apiKey, apiUrl } = config.tmdb
+  if (!apiKey) throw Object.assign(new Error('No TMDB key set'), { statusCode: 400 })
+  const res = await fetch(`${apiUrl}/configuration?api_key=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) }).catch((e) => {
+    throw Object.assign(new Error(`Could not reach TMDB: ${e.message}`), { statusCode: 502 })
+  })
+  if (res.status === 401) throw Object.assign(new Error('TMDB rejected this key'), { statusCode: 400 })
+  if (!res.ok) throw Object.assign(new Error(`TMDB returned HTTP ${res.status}`), { statusCode: 502 })
+  return { ok: true }
+})
+app.put('/api/admin/settings/qb', admin, async (req) => {
+  const b = (req.body ?? {}) as any
+  if (b.reset) clearQb()
+  else {
+    const url = String(b.url ?? '').trim(), user = String(b.user ?? '').trim(), password = String(b.password ?? '')
+    if (!/^https?:\/\/[^\s/]+/i.test(url) || url.length > 300) throw Object.assign(new Error('Enter the qBittorrent address, like http://127.0.0.1:8080'), { statusCode: 400 })
+    if (!user || user.length > 100 || password.length > 200) throw Object.assign(new Error('Enter the qBittorrent username'), { statusCode: 400 })
+    setQb({ url, user, password })
+  }
+  return { qb: qbStatus() }
+})
+/** Log in to qBittorrent with the saved settings so the admin sees whether they work. */
+app.post('/api/admin/settings/qb/test', admin, async () => {
+  try { return { ok: true, version: await qb.reconnect() } }
+  catch (e: any) { throw Object.assign(new Error(`Could not connect to qBittorrent: ${e.message}`), { statusCode: 502 }) }
+})
+
 /** Set (or clear, with null = automatic) a show's content rating. */
 app.put('/api/admin/series/:id/rating', admin, async (req) => {
   const id = Number((req.params as any).id)
@@ -272,6 +323,17 @@ app.put('/api/admin/series/:id/rating', admin, async (req) => {
 cleanHlsCache()
 const runSweep = startSweeper()
 
+let btnSyncStarted = false
+/** Start the periodic catalog sync once a key exists; safe to call again (e.g. after the key is saved). */
+function startBtnSync() {
+  if (!config.btn.apiKey) return false
+  if (btnSyncStarted) return true
+  btnSyncStarted = true
+  syncLatest().catch((e) => app.log.warn(`initial BTN sync failed: ${e.message}`))
+  setInterval(() => syncLatest().catch((e) => app.log.warn(`BTN sync failed: ${e.message}`)), 30 * 60_000).unref()
+  return true
+}
+
 export async function start() {
   try {
     await qb.setup()
@@ -280,10 +342,7 @@ export async function start() {
     app.log.error(`Cannot reach qBittorrent at ${config.qb.url}: ${e.message}. Playback will fail until it is available.`)
   }
   await app.listen({ port: config.port, host: process.env.HOST ?? '0.0.0.0' })
-  if (config.btn.apiKey) {
-    syncLatest().catch((e) => app.log.warn(`initial BTN sync failed: ${e.message}`))
-    setInterval(() => syncLatest().catch((e) => app.log.warn(`BTN sync failed: ${e.message}`)), 30 * 60_000).unref()
-  } else app.log.warn('BTN_API_KEY not set: the catalog will stay empty')
+  if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep
 }
 
