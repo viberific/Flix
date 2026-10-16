@@ -28,9 +28,12 @@ header#top { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 66px; disp
   padding: 0 var(--gutter-r) 0 var(--gutter); view-transition-name: hdr;
   background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 88%, transparent), transparent); transition: background .35s var(--ease), backdrop-filter .35s, box-shadow .35s; }
 header#top.solid { background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
-.brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 800; font-size: 22px; letter-spacing: -.03em; }
-.brand svg { width: 26px; height: 26px; filter: drop-shadow(0 4px 14px color-mix(in srgb, var(--accent) 55%, transparent)); }
-.brand span { background: linear-gradient(100deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 23px; letter-spacing: -.045em; line-height: 1; }
+.brand svg { width: 30px; height: 30px; flex: none; border-radius: 8px; box-shadow: 0 6px 18px -4px color-mix(in srgb, var(--accent-2) 60%, transparent), inset 0 0 0 1px rgba(255,255,255,.12);
+  transition: transform .35s var(--ease); }
+a.brand:hover svg { transform: rotate(-6deg) scale(1.06); }
+.brand span { color: var(--fg); }
+.auth .brand svg { width: 40px; height: 40px; border-radius: 10px; }
 .sp { flex: 1; }
 .search { position: relative; width: 44px; height: 44px; border-radius: 22px; background: color-mix(in srgb, var(--surface) 70%, transparent); border: 1px solid var(--line);
   transition: width .4s var(--ease), background .3s; overflow: hidden; display: flex; align-items: center; }
@@ -155,7 +158,7 @@ img.fade.in { opacity: 1; }
 .auth-wrap::before { background: var(--accent); left: -120px; top: -120px; } .auth-wrap::after { background: var(--accent-2); right: -140px; bottom: -140px; animation-delay: -6s; }
 .auth { position: relative; z-index: 1; width: min(380px, 100%); display: flex; flex-direction: column; gap: 14px; background: color-mix(in srgb, var(--surface) 80%, transparent); backdrop-filter: blur(20px);
   border: 1px solid var(--line); border-radius: 22px; padding: 34px 28px; box-shadow: var(--shadow); animation: rise .6s var(--ease); }
-.auth h1 { font-size: 26px; margin: 8px 0 4px; } .auth .brand { justify-content: center; font-size: 30px; }
+.auth h1 { font-size: 26px; margin: 8px 0 4px; } .auth .brand { justify-content: center; font-size: 32px; gap: 12px; }
 .field { background: var(--bg-2); border: 1px solid var(--line); color: var(--fg); border-radius: 12px; padding: 14px 16px; font: inherit; width: 100%; transition: border-color .25s, box-shadow .25s; }
 .field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
 
@@ -208,3 +211,9 @@ form.person { grid-template-columns: 1fr; margin-top: 8px; }
 @media (max-width: 760px) { .person { grid-template-columns: 1fr; } .person .pact { justify-content: flex-start; } }
 a.pill { display: inline-block; }
 .notice { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 13px; color: var(--dim); max-width: 66ch; }
+
+/* ---------- boot splash (before app.js runs) ---------- */
+.boot { min-height: 100vh; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+.boot p { margin: 0; max-width: 42ch; } .boot .btn { margin-top: 8px; }
+.boot-mark { width: 72px; height: 72px; border-radius: 18px; background: url(/icon.svg) center / cover; box-shadow: 0 16px 40px -8px color-mix(in srgb, var(--accent-2) 55%, transparent); animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { transform: scale(.94); opacity: .8; } }
