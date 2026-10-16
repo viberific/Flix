@@ -1,6 +1,7 @@
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+const rmq = matchMedia('(prefers-reduced-motion: reduce)')
+const smooth = () => (rmq.matches ? 'auto' : 'smooth')
 let me = null, cleanup = null, navToken = 0, retryT = null
 window.__flixBooted = true
 
@@ -72,8 +73,8 @@ function backdrop(el, banner, poster) {
 
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
 async function swap(fn) {
-  window.scrollTo(0, 0)
-  if (!reduce && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
+  window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
+  if (!rmq.matches && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
   fn()
 }
 
@@ -95,15 +96,16 @@ function renderTop() {
   sf.onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent(q.value.trim())); q.blur() }
   $('#av').onclick = (e) => {
     e.stopPropagation()
-    const old = $('.menu'); if (old) return old.remove()
+    const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
-    m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
+    m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
 }
-addEventListener('click', () => $('.menu')?.remove())
+function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
+addEventListener('click', () => closeMenu($('.menu')))
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
 
 /* ---------- auth ---------- */
@@ -117,7 +119,7 @@ function authView(needsSetup) {
     $('form').onsubmit = async (e) => {
       e.preventDefault()
       const f = new FormData(e.target)
-      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message }
+      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message; const f = $('form.auth'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake') }
     }
   }
 }
@@ -131,10 +133,15 @@ function rowOf(items, html) {
   return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
 }
 function wireRows(root) {
+  const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
   root.querySelectorAll('.rowwrap').forEach((w) => {
-    const sc = $('.row-scroll', w)
-    $('.arrow.l', w).onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: 'smooth' })
-    $('.arrow.r', w).onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: 'smooth' })
+    const sc = $('.row-scroll', w), l = $('.arrow.l', w), r = $('.arrow.r', w)
+    l.onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: smooth() })
+    r.onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: smooth() })
+    const edges = () => { l.classList.toggle('off', sc.scrollLeft < 8); r.classList.toggle('off', sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 8) }
+    sc.addEventListener('scroll', edges, { passive: true }); edges()
+    // Rows already on screen use the normal rise; rows further down cascade in when scrolled to.
+    if (io && w.getBoundingClientRect().top > innerHeight * 0.9) { w.classList.add('reveal'); io.observe(w); const h = w.previousElementSibling; if (h?.matches('h2.sec')) { h.classList.add('rv'); io.observe(h) } }
   })
   root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
@@ -215,7 +222,7 @@ async function seriesView(id) {
       tr.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(series.trailerId)}?autoplay=1&rel=0&playsinline=1" title="${esc(series.name)} trailer" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`
     }
     const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
-    const tl = $('#tl'); if (tl) tl.onclick = (e) => { e.preventDefault(); $('#tr').scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' }); loadTrailer() }
+    const tl = $('#tl'); if (tl) tl.onclick = (e) => { e.preventDefault(); $('#tr').scrollIntoView({ behavior: smooth(), block: 'center' }); loadTrailer() }
     const rs = $('#rsel'); if (rs) rs.onchange = async () => {
       try { const r = await api(`/api/admin/series/${id}/rating`, { rating: rs.value === 'auto' ? null : rs.value }, 'PUT'); $('#rchip').textContent = r.rating } catch (e) { alert(e.message) }
     }
@@ -281,7 +288,7 @@ function playView(seriesId, season, label) {
           bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
           cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
           $('#nn').onclick = () => go(target)
-          $('#nc').onclick = () => { clearInterval(cdT); box.remove() }
+          $('#nc').onclick = () => { clearInterval(cdT); box.classList.add('out'); setTimeout(() => box.remove(), 350) }
         }
       } catch (e) { fail(e.message) }
     })()
