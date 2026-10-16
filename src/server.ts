@@ -17,6 +17,7 @@ import { artPathSql, getArt } from './art.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
+import { getDetails, queueDetails, youtubeId } from './details.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
@@ -72,11 +73,44 @@ app.get('/api/series', auth, async (req) => {
 app.get('/api/series/:id', auth, async (req) => {
   const id = Number((req.params as any).id)
   if (!canViewSeries(req.user, id)) throw notFound()
-  await syncSeries(id).catch((e) => app.log.warn(`series sync failed: ${e.message}`))
+  const have = (db.prepare('SELECT COUNT(*) AS n FROM releases WHERE series_id = ?').get(id) as any).n
+  // The page must not wait on BTN: sync inline only when we know nothing about the show, otherwise refresh in the background.
+  const sync = syncSeries(id).catch((e) => app.log.warn(`series sync failed: ${e.message}`))
+  if (!have) await sync
   const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
   if (!info) throw notFound()
+  queueDetails(id)
+  const d = getDetails(id)
+  let genres: string[] = []
+  try { genres = JSON.parse(info.genres ?? '[]') } catch { /* none */ }
+  const { trailer, ...rest } = info
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
-  return { series: { ...info, ...getRating(id) }, episodes: buildEpisodes(id, req.user!.id) }
+  return {
+    series: { ...rest, genres, year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId: youtubeId(trailer) ?? youtubeId(d?.trailer), ...getRating(id) },
+    episodes: buildEpisodes(id, req.user!.id),
+  }
+})
+
+/** Netflix-style home: a "New" row, then one row per genre; every row is newest first. */
+app.get('/api/home', auth, async (req) => {
+  const f = ratingClause(req.user)
+  const rows = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
+      WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params) as any[]
+  rows.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
+  const byGenre = new Map<string, any[]>()
+  for (const r of rows) {
+    let gs: string[] = []
+    try { gs = JSON.parse(r.genres ?? '[]') } catch { /* none */ }
+    for (const g of new Set(gs.map((x) => String(x).trim()).filter(Boolean))) {
+      if (!byGenre.has(g)) byGenre.set(g, [])
+      byGenre.get(g)!.push(r)
+    }
+  }
+  const clean = ({ genres, ...r }: any) => r
+  const sections = [...byGenre.entries()].filter(([, l]) => l.length >= 2 || byGenre.size < 4)
+    .sort((a, b) => b[1][0].latest - a[1][0].latest || b[1].length - a[1].length).slice(0, 14)
+    .map(([genre, l]) => ({ title: genre, series: l.slice(0, 30).map(clean) }))
+  return { new: rows.slice(0, 30).map(clean), sections }
 })
 
 app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!) }))

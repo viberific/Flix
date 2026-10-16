@@ -1,6 +1,7 @@
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+const rmq = matchMedia('(prefers-reduced-motion: reduce)')
+const smooth = () => (rmq.matches ? 'auto' : 'smooth')
 let me = null, cleanup = null, navToken = 0, retryT = null
 window.__flixBooted = true
 
@@ -72,8 +73,8 @@ function backdrop(el, banner, poster) {
 
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
 async function swap(fn) {
-  window.scrollTo(0, 0)
-  if (!reduce && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
+  window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
+  if (!rmq.matches && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
   fn()
 }
 
@@ -95,15 +96,16 @@ function renderTop() {
   sf.onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent(q.value.trim())); q.blur() }
   $('#av').onclick = (e) => {
     e.stopPropagation()
-    const old = $('.menu'); if (old) return old.remove()
+    const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
-    m.querySelectorAll('a').forEach((a) => a.onclick = () => m.remove())
+    m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
 }
-addEventListener('click', () => $('.menu')?.remove())
+function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
+addEventListener('click', () => closeMenu($('.menu')))
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
 
 /* ---------- auth ---------- */
@@ -117,7 +119,7 @@ function authView(needsSetup) {
     $('form').onsubmit = async (e) => {
       e.preventDefault()
       const f = new FormData(e.target)
-      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message }
+      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message; const f = $('form.auth'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake') }
     }
   }
 }
@@ -131,16 +133,26 @@ function rowOf(items, html) {
   return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
 }
 function wireRows(root) {
+  const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
   root.querySelectorAll('.rowwrap').forEach((w) => {
-    const sc = $('.row-scroll', w)
-    $('.arrow.l', w).onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: 'smooth' })
-    $('.arrow.r', w).onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: 'smooth' })
+    const sc = $('.row-scroll', w), l = $('.arrow.l', w), r = $('.arrow.r', w)
+    l.onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: smooth() })
+    r.onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: smooth() })
+    const edges = () => { l.classList.toggle('off', sc.scrollLeft < 8); r.classList.toggle('off', sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 8) }
+    sc.addEventListener('scroll', edges, { passive: true }); edges()
+    // Rows already on screen use the normal rise; rows further down cascade in when scrolled to.
+    if (io && w.getBoundingClientRect().top > innerHeight * 0.9) { w.classList.add('reveal'); io.observe(w); const h = w.previousElementSibling; if (h?.matches('h2.sec')) { h.classList.add('rv'); io.observe(h) } }
   })
   root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
 async function homeView(q) {
-  const [{ series }, cont] = await Promise.all([api('/api/series' + (q ? '?q=' + encodeURIComponent(q) : '')), q ? { items: [] } : api('/api/continue')])
+  const [list, cont, home] = await Promise.all([
+    q ? api('/api/series?q=' + encodeURIComponent(q)) : { series: [] },
+    q ? { items: [] } : api('/api/continue'),
+    q ? { new: [], sections: [] } : api('/api/home'),
+  ])
+  const series = q ? list.series : home.new
   const items = cont.items
   return () => {
     let html = ''
@@ -154,7 +166,10 @@ async function homeView(q) {
     html += '<div class="pad">'
     if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
-    else html += `<h2 class="sec">New on BroadcasTheNet</h2>` + (series.length ? rowOf(series, tile) : '<div class="empty">Nothing here yet.</div>')
+    else {
+      html += `<h2 class="sec">New releases</h2>` + (series.length ? rowOf(series, tile) : '<div class="empty">Nothing here yet.</div>')
+      for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
+    }
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
@@ -177,12 +192,15 @@ async function seriesView(id) {
   return () => {
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
-      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span><span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
         ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
-        ${series.trailer ? `<a class="trailer-link" href="${esc(series.trailer)}" target="_blank" rel="noopener noreferrer">${I.play} Trailer</a>` : ''}</div></div></div></section>
-      <div class="pad"><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+        ${series.trailerId ? `<a class="trailer-link" href="#trailer" id="tl">${I.play} Trailer</a>` : `<a class="trailer-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}" target="_blank" rel="noopener noreferrer">${I.play} Find trailer on YouTube</a>`}</div></div></div></section>
+      <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
+      ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${I.play}<span>Watch trailer</span></button></div>` : ''}
+      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
+      <h2 class="sec">Episodes</h2><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`)
     const paint = () => {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
@@ -198,6 +216,13 @@ async function seriesView(id) {
       paint()
     })
     const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+    const loadTrailer = () => {
+      const tr = $('#tr'); if (!tr || tr.querySelector('iframe')) return
+      // Loaded only on tap, so Flix never contacts YouTube until someone asks for the trailer.
+      tr.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(series.trailerId)}?autoplay=1&rel=0&playsinline=1" title="${esc(series.name)} trailer" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`
+    }
+    const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
+    const tl = $('#tl'); if (tl) tl.onclick = (e) => { e.preventDefault(); $('#tr').scrollIntoView({ behavior: smooth(), block: 'center' }); loadTrailer() }
     const rs = $('#rsel'); if (rs) rs.onchange = async () => {
       try { const r = await api(`/api/admin/series/${id}/rating`, { rating: rs.value === 'auto' ? null : rs.value }, 'PUT'); $('#rchip').textContent = r.rating } catch (e) { alert(e.message) }
     }
@@ -263,7 +288,7 @@ function playView(seriesId, season, label) {
           bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
           cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
           $('#nn').onclick = () => go(target)
-          $('#nc').onclick = () => { clearInterval(cdT); box.remove() }
+          $('#nc').onclick = () => { clearInterval(cdT); box.classList.add('out'); setTimeout(() => box.remove(), 350) }
         }
       } catch (e) { fail(e.message) }
     })()
