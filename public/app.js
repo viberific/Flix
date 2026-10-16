@@ -4,9 +4,41 @@ const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
 let me = null, cleanup = null, navToken = 0, retryT = null
 window.__flixBooted = true
 
+/**
+ * Did this request end up at Umbrel's sign-in instead of at Flix?
+ * Umbrel puts every installed app behind its own login on another port, so when that
+ * session has lapsed the fetch is redirected to a different origin -- which the browser
+ * refuses, and all the app sees is a failed request. A second look with redirect:'manual'
+ * turns that refusal into something readable: an opaqueredirect.
+ */
+async function wentThroughGate() {
+  try {
+    const r = await fetch('/api/me', { redirect: 'manual', cache: 'no-store' })
+    return r.type === 'opaqueredirect' || (r.redirected && !String(r.url).endsWith('/api/me'))
+  } catch { return false }
+}
+
+const gated = (msg) => Object.assign(new Error(msg), { gate: true })
+const GATE_MSG = 'Umbrel signed you out. This app sits behind Umbrel’s own login; sign in to Umbrel, then open Flix again.'
+
 async function api(path, body, method, timeoutMs) {
-  const res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
-    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
+  let res
+  try {
+    res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, cache: 'no-store',
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
+  } catch (e) {
+    if (e.name === 'TimeoutError') throw new Error('The Flix server took too long to answer.')
+    if (await wentThroughGate()) throw gated(GATE_MSG)
+    if (!navigator.onLine) throw new Error('This device looks offline.')
+    throw new Error('The Flix server did not answer.')
+  }
+  // A page came back where JSON was expected. If the answer was a success (or a redirect we
+  // followed), it is Umbrel's sign-in page rather than Flix; a plain error stays an error.
+  const ctype = res.headers.get('content-type') || ''
+  if (!ctype.includes('json')) {
+    if (res.ok || res.redirected) throw gated(GATE_MSG)
+    throw new Error(`Flix answered ${res.status}${res.statusText ? ' ' + res.statusText : ''}.`)
+  }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || res.statusText)
   return data
@@ -414,16 +446,20 @@ function settingsPanel(data, root) {
   paint()
 }
 
-/** Shown when the server can't be reached, instead of a blank page. Retries by itself. */
-function offlineView(why) {
+/** Shown when Flix can't be reached, instead of a blank page. Retries by itself. */
+function offlineView(why, isGate) {
+  const admin = `https://${location.hostname}/`
   top.hidden = true
   app.innerHTML = `<div class="auth-wrap"><div class="auth" role="alert"><div class="brand">${I.logo}<span>Flix</span></div>
-    <h1 style="text-align:center">Can’t reach Flix</h1>
-    <p class="dim" style="text-align:center;margin:0">The Flix server isn’t answering. Make sure it’s running (<code>npm start</code>) and that this device is on the same network.</p>
+    <h1 style="text-align:center">${isGate ? 'Umbrel signed you out' : 'Can’t reach Flix'}</h1>
+    <p class="dim" style="text-align:center;margin:0">${isGate
+      ? 'Flix is installed behind Umbrel’s own login. Sign in to Umbrel, then open Flix again.'
+      : 'The Flix server isn’t answering. Check that the Flix app is running in Umbrel, and that this device is online.'}</p>
     <p class="dim" style="text-align:center;margin:0;font-size:13px">${esc(why)}</p>
-    <button class="btn primary" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px">Retrying automatically…</div></div></div>`
+    ${isGate ? `<a class="btn primary" style="width:100%;display:block;text-align:center;box-sizing:border-box" href="${esc(admin)}">Sign in to Umbrel</a><div style="height:8px"></div>` : ''}
+    <button class="btn${isGate ? '' : ' primary'}" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px">Retrying automatically…</div></div></div>`
   $('#rt').onclick = () => route()
-  clearTimeout(retryT); retryT = setTimeout(route, 5000)
+  clearTimeout(retryT); retryT = setTimeout(route, isGate ? 15000 : 5000)
 }
 
 /* ---------- router ---------- */
@@ -433,7 +469,7 @@ async function route() {
   const token = ++navToken
   let st
   try { st = await api('/api/me', null, 'GET', 15000) } catch (e) {
-    if (token === navToken) offlineView(e.name === 'TimeoutError' ? 'The server took too long to answer.' : e.message)
+    if (token === navToken) offlineView(e.message, !!e.gate)
     return
   }
   me = st.user

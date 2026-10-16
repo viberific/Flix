@@ -1,5 +1,5 @@
 // App-shell cache only. API responses and video streams are never cached (auth + huge, partially-downloaded files).
-const CACHE = 'flix-shell-v3'
+const CACHE = 'flix-shell-v4'
 const SHELL = ['/', '/app.js', '/style.css', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/manifest.webmanifest', '/vendor/hls.min.js']
 
 self.addEventListener('install', (e) => {
@@ -14,7 +14,10 @@ self.addEventListener('fetch', (e) => {
   // network-first so updates show up; fall back to cache when offline
   e.respondWith(
     fetch(e.request).then((res) => {
-      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)) }
+      // Only keep Flix's own answer. A redirected response means Umbrel's sign-in page
+      // came back instead of Flix, and caching that would serve the login page as the app.
+      const clean = res.ok && !res.redirected && res.type === 'basic' && new URL(res.url).pathname === url.pathname
+      if (clean) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)) }
       return res
     }).catch(() => caches.match(e.request).then((r) => r || caches.match('/'))),
   )
