@@ -341,7 +341,13 @@ export async function start() {
   } catch (e: any) {
     app.log.error(`Cannot reach qBittorrent at ${config.qb.url}: ${e.message}. Playback will fail until it is available.`)
   }
-  await app.listen({ port: config.port, host: process.env.HOST ?? '0.0.0.0' })
+  try {
+    await app.listen({ port: config.port, host: process.env.HOST ?? '0.0.0.0' })
+  } catch (e: any) {
+    if (e.code === 'EADDRINUSE') app.log.fatal(`Port ${config.port} is already in use: another Flix (or other app) is still running. Stop it, or set PORT in .env.`)
+    else app.log.fatal(`Could not start the web server: ${e.message}`)
+    process.exit(1)
+  }
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep
 }
