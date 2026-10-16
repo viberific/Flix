@@ -9,13 +9,22 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header id="top"></header>
-<main id="app"></main>
+<main id="app"><div class="boot" id="boot"><div class="boot-mark"></div></div></main>
 <script src="/vendor/hls.min.js"></script>
 <script type="module" src="/app.js"></script>
+<script>
+// If the app script never starts (old browser, blocked or broken download), say so instead of showing a blank page.
+setTimeout(function () {
+  if (window.__flixBooted) return
+  var b = document.getElementById('boot')
+  if (b) b.innerHTML = '<div class="boot-mark"></div><p>Flix didn\u2019t start.</p><p class="dim">Check that the Flix server is running, then reload. If it keeps happening, try another browser.</p><button class="btn primary" onclick="location.reload()">Reload</button>'
+}, 10000)
+</script>
 </body>
 </html>

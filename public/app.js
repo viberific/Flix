@@ -1,10 +1,12 @@
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
-let me = null, cleanup = null, navToken = 0
+let me = null, cleanup = null, navToken = 0, retryT = null
+window.__flixBooted = true
 
-async function api(path, body, method) {
-  const res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
+async function api(path, body, method, timeoutMs) {
+  const res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || res.statusText)
   return data
@@ -23,7 +25,8 @@ const I = {
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
-  logo: '<svg viewBox="0 0 32 32"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff6b4a"/><stop offset="1" stop-color="#ff3d71"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#lg)"/><path d="M12 9.5v13l11-6.5z" fill="#fff"/></svg>',
+  // The F's middle arm is a play button. Same artwork as /icon.svg.
+  logo: '<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="fxl-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a4c"/><stop offset=".5" stop-color="#ff3d6e"/><stop offset="1" stop-color="#b8155a"/></linearGradient><radialGradient id="fxl-hl" cx=".25" cy="0" r="1"><stop offset="0" stop-color="#fff" stop-opacity=".32"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" rx="118" fill="url(#fxl-bg)"/><rect width="512" height="512" rx="118" fill="url(#fxl-hl)"/><g fill="#fff"><rect x="140" y="116" width="76" height="280" rx="38"/><rect x="140" y="116" width="232" height="76" rx="38"/><path transform="translate(242 287) scale(.906) translate(-242 -287)" d="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z"/></g></svg>',
 }
 
 /** A poster-shaped block: generated colour + title underneath, real artwork fades in over it once loaded. */
@@ -411,12 +414,28 @@ function settingsPanel(data, root) {
   paint()
 }
 
+/** Shown when the server can't be reached, instead of a blank page. Retries by itself. */
+function offlineView(why) {
+  top.hidden = true
+  app.innerHTML = `<div class="auth-wrap"><div class="auth" role="alert"><div class="brand">${I.logo}<span>Flix</span></div>
+    <h1 style="text-align:center">Can’t reach Flix</h1>
+    <p class="dim" style="text-align:center;margin:0">The Flix server isn’t answering. Make sure it’s running (<code>npm start</code>) and that this device is on the same network.</p>
+    <p class="dim" style="text-align:center;margin:0;font-size:13px">${esc(why)}</p>
+    <button class="btn primary" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px">Retrying automatically…</div></div></div>`
+  $('#rt').onclick = () => route()
+  clearTimeout(retryT); retryT = setTimeout(route, 5000)
+}
+
 /* ---------- router ---------- */
 async function route() {
   cleanup?.(); cleanup = null
+  clearTimeout(retryT)
   const token = ++navToken
   let st
-  try { st = await api('/api/me') } catch { return }
+  try { st = await api('/api/me', null, 'GET', 15000) } catch (e) {
+    if (token === navToken) offlineView(e.name === 'TimeoutError' ? 'The server took too long to answer.' : e.message)
+    return
+  }
   me = st.user
   renderTop()
   top.classList.toggle('solid', scrollY > 30)
