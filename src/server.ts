@@ -79,7 +79,9 @@ app.get('/api/series/:id', auth, async (req) => {
   if (!have) await sync
   const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
   if (!info) throw notFound()
-  queueDetails(id)
+  // First visit: give the lookup a moment so the trailer is already there; otherwise it finishes in the background.
+  const looking = queueDetails(id)
+  if (!getDetails(id)) await Promise.race([looking, new Promise((r) => setTimeout(r, 4000))])
   const d = getDetails(id)
   let genres: string[] = []
   try { genres = JSON.parse(info.genres ?? '[]') } catch { /* none */ }
