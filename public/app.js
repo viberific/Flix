@@ -74,8 +74,15 @@ function backdrop(el, banner, poster, still) {
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
 async function swap(fn) {
   window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
-  if (!rmq.matches && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
-  fn()
+  let ran = false
+  const once = () => { if (!ran) { ran = true; fn() } }
+  if (!rmq.matches && document.startViewTransition) {
+    // A view transition can stall (the new page is built but never painted until something else happens), so never wait on one for long.
+    const guard = setTimeout(once, 400)
+    try { await document.startViewTransition(once).updateCallbackDone } catch { /* fall through */ }
+    clearTimeout(guard)
+  }
+  once()
 }
 
 function skeleton() {
@@ -87,13 +94,15 @@ function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
-    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off"></form>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
     <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
   if (cur) { q.value = cur; sf.classList.add('has') }
   q.oninput = () => sf.classList.toggle('has', !!q.value)
-  sf.onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent(q.value.trim())); q.blur() }
+  // Collapsed, the field is only as wide as its icon, so tapping it has to open (focus) the input itself.
+  sf.onclick = () => q.focus()
+  sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
   $('#av').onclick = (e) => {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
@@ -262,7 +271,7 @@ async function homeView(q) {
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
-      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+ and Apple TV+ as Flix learns which service each show is on; search finds everything else.'}</div>`
+      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
@@ -924,7 +933,8 @@ async function route() {
   if (!me || parts[0] === 'signin') { if (token === navToken) return swap(authView(!me && st.needsSetup)); return }
   // A shared device asks who is watching each time the app is opened.
   if (profiles().length > 1 && !picked() && parts[0] !== 'play') { markPicked(); return swap(profilesView()) }
-  const slow = app.innerHTML.trim() ? null : setTimeout(() => { if (token === navToken) app.innerHTML = skeleton() }, 200)
+  // Opening a show can take a moment on the server. Show the placeholder at once rather than leave the old page up, which looks like the tap did nothing.
+  const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton() } }, app.innerHTML.trim() ? 120 : 200)
   try {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])

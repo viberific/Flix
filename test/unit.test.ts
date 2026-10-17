@@ -268,6 +268,9 @@ test('streaming services are recognised however a source spells them', () => {
   assert.equal(normalizeStreamer('Crave'), 'Crave')
   assert.equal(normalizeStreamer('Showcase'), 'Showcase')
   assert.equal(normalizeStreamer('AMC'), null)
+  assert.equal(normalizeStreamer('Paramount+'), 'Paramount+')
+  assert.equal(normalizeStreamer('Paramount Plus'), 'Paramount+')
+  assert.equal(normalizeStreamer('Paramount Network'), null)
   assert.equal(normalizeStreamer(null), null)
 })
 
@@ -283,7 +286,7 @@ test('a show has one primary genre: the most specific it has', () => {
 const row = (id: number, genres: string[], latest = id) => ({ id, name: `S${id}`, poster: `/p${id}`, banner: null, genres, latest })
 const info = (streamer: string | null, first_air: string, trending: number | null = null, popularity = 10) => ({ streamer, first_air, notable: true, popularity, trending })
 
-test('home: only the six services, every row exactly ten, trending first, no show twice while there are enough', () => {
+test('home: only the seven services, every row exactly ten, trending first, no show twice while there are enough', () => {
   const rows: any[] = [], net = new Map<number, any>()
   let id = 1
   const add = (n: number, streamer: string | null, genre: string, trending = false) => {
@@ -303,7 +306,7 @@ test('home: only the six services, every row exactly ten, trending first, no sho
   assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Netflix') && titles.indexOf('New on Netflix') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
   assert.ok(!titles.includes('New on Showcase') && !titles.includes('New on Apple TV+'), 'a service with no shows has no row')
   const ids = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
-  assert.ok(ids.every((i) => net.get(i)!.streamer), 'nothing from outside the six services')
+  assert.ok(ids.every((i) => net.get(i)!.streamer), 'nothing from outside the seven services')
   const crave = sections.find((s) => s.title === 'New on Crave')
   assert.ok(!crave, 'four Crave shows cannot make ten, even topped up from the same service')
 })
@@ -343,7 +346,7 @@ test('library: only English-language shows, and a season is judged against its r
     for (const e of eps) rel.run(t++, id, `S${id}`, `S${id} - S01E${e}`, 1, e, e, 0, `h${t}`)
     if (opts.pack) rel.run(t++, id, `S${id}`, `S${id} - Season 1`, 1, null, null, 1, `h${t}`)
     db.prepare('INSERT INTO series_sync VALUES (?,0)').run(id)
-    if (opts.read !== false) db.prepare(`INSERT INTO series_net (series_id, fetched_at, lang, season_counts, ver) VALUES (?,0,?,?,2)`).run(id, opts.lang === undefined ? 'en' : opts.lang, JSON.stringify(opts.counts ?? {}))
+    if (opts.read !== false) db.prepare(`INSERT INTO series_net (series_id, fetched_at, lang, season_counts, ver) VALUES (?,0,?,?,3)`).run(id, opts.lang === undefined ? 'en' : opts.lang, JSON.stringify(opts.counts ?? {}))
   }
   show(1, [1], { counts: { 1: 10 } })                       // only E01 of ten, no pack: not a season 1
   show(2, [1], { counts: { 1: 10 }, pack: true })           // E01 plus the pack: the pack carries it
@@ -405,7 +408,7 @@ test('networks: a show\'s service, language and season lengths are read (the air
     db.prepare(`INSERT INTO releases (torrent_id, series_id, series, tvdb_id, group_name, info_hash, fetched_at) VALUES (9001, 90, 'Net Show', 900, 'Net Show - S01E01', 'hh', 0)`).run()
     await ensureNet(90)
     const r = db.prepare('SELECT streamer, lang, season_counts, ver FROM series_net WHERE series_id = 90').get() as any
-    assert.equal(r.streamer, 'HBO'); assert.equal(r.lang, 'en'); assert.equal(r.ver, 2)
+    assert.equal(r.streamer, 'HBO'); assert.equal(r.lang, 'en'); assert.equal(r.ver, 3)
     assert.deepEqual(JSON.parse(r.season_counts), { 1: 8, 2: 4 })
     assert.equal(netInfo().get(90)!.popularity, 80)
   } finally { config.tmdb.apiUrl = old.apiUrl; config.tmdb.apiKey = old.apiKey; config.art.tvmazeUrl = old.tvmaze; srv.close() }

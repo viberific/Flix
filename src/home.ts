@@ -12,7 +12,7 @@ const byAir = (net: Map<number, NetRow>) => (a: HomeRow, b: HomeRow) =>
   (net.get(b.id)?.first_air ?? '').localeCompare(net.get(a.id)?.first_air ?? '') || b.latest - a.latest
 
 /**
- * The home screen's discovery rows. Only shows on HBO, Crave, Showcase, Netflix, Disney+ or Apple TV+ are on it (everything
+ * The home screen's discovery rows. Only shows on HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ or Paramount+ are on it (everything
  * else is still in the library and search). From the top: the featured show, Trending, then the newest from each service in
  * turn, then the rest under the single genre each fits best. Every row has exactly ROW_SIZE shows.
  *
