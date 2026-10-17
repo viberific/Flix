@@ -114,6 +114,105 @@ function skeleton() {
   return `<div class="pad page-top"><div class="skel" style="height:min(46vh,380px);margin-bottom:28px"></div><div style="display:flex;gap:18px;overflow:hidden">${'<div class="skel" style="flex:none;width:168px;aspect-ratio:2/3"></div>'.repeat(8)}</div></div>`
 }
 
+/* ---------- casting ----------
+   The phone only picks the TV and hands it a link. A Chromecast or Google TV fetches the video itself, so what it
+   gets is the signed HLS URL built on the box's LAN address (castUrl, made in the player), never the tailnet name
+   the page itself was loaded from: a TV cannot resolve that. Tap the cast button once to pick the TV, then
+   anything started plays there. */
+const CAST_APP = 'CC1AD845' // Google's Default Media Receiver: plays an HLS link without an app of its own
+const casting = { connected: false, device: '', headerOff: null }
+const castSubs = new Set()
+function castEmit() { for (const fn of castSubs) { try { fn() } catch { /* one stale header bar is not worth a crash */ } } }
+/** Run fn now and on every casting change; the returned function stops it (the header replaces its bar on each render). */
+function onCast(fn) { castSubs.add(fn); fn(); return () => castSubs.delete(fn) }
+function castCtx() { return window.cast?.framework ? cast.framework.CastContext.getInstance() : null }
+function castNote(msg) {
+  const n = document.createElement('div')
+  n.className = 'castnote'; n.textContent = msg; n.setAttribute('role', 'status')
+  ;(document.querySelector('.player') || document.body).append(n)
+  setTimeout(() => n.remove(), 7000)
+}
+
+let castSdk = null
+/** The sender SDK comes from Google's CDN (not bundled), so it is fetched the first time casting is asked for. */
+function loadCastSdk() {
+  if (window.cast?.framework) return Promise.resolve()
+  if (!castSdk) castSdk = new Promise((ok, no) => {
+    const fail = () => no(new Error('cast unavailable'))
+    window.__onGCastApiAvailable = (yes) => {
+      if (!yes || !window.cast?.framework) return fail()
+      const ctx = cast.framework.CastContext.getInstance()
+      ctx.setOptions({ receiverApplicationId: CAST_APP, autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED })
+      ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
+        const live = e.castState === cast.framework.CastState.CONNECTED
+        casting.connected = live
+        casting.device = live ? (ctx.getCurrentSession()?.getCastDevice()?.friendlyName || 'the TV') : ''
+        if (!live) clearInterval(castTick)
+        castEmit()
+      })
+      ok()
+    }
+    const s = document.createElement('script')
+    s.src = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1'
+    s.onerror = fail
+    document.head.append(s)
+    setTimeout(fail, 12000) // gstatic blocked: the button must say so rather than do nothing
+  })
+  return castSdk
+}
+
+/** Connect to a TV (asking which one when none is picked yet). Rejects with code 'cancel' if they close the picker. */
+async function castConnect() {
+  await loadCastSdk()
+  const ctx = castCtx()
+  if (!ctx) throw new Error('cast unavailable')
+  let session = ctx.getCurrentSession()
+  if (!session) session = await ctx.requestSession()
+  if (!session) throw new Error('no TV picked')
+  casting.connected = true
+  casting.device = session.getCastDevice()?.friendlyName || 'the TV'
+  castEmit()
+  return session
+}
+
+let castTick = null
+/** Put one episode on the TV, from `at` seconds in. Rejects when the TV cannot open the link. */
+async function castSend(url, title, at = 0, torrentId, fileIndex, duration) {
+  if (!url) throw new Error('no LAN address for the TV')
+  const session = await castConnect()
+  const media = new chrome.cast.media.MediaInfo(url, 'application/vnd.apple.mpegurl')
+  media.streamType = chrome.cast.media.StreamType.BUFFERED
+  if (duration) media.duration = duration
+  const md = new chrome.cast.media.GenericMediaMetadata()
+  md.title = title || 'Flix'
+  media.metadata = md
+  const req = new chrome.cast.media.LoadRequest(media)
+  req.currentTime = Math.max(0, (at || 0) - 3) // a few seconds back, so it does not open mid-sentence
+  const player = await session.loadMedia(req)
+  castTrack(player, { torrentId, fileIndex, duration })
+  return player
+}
+
+/** The TV is playing it now, so the phone stops counting: watch state (and the 60% next-episode rule) comes from the TV. */
+function castTrack(player, ids) {
+  clearInterval(castTick)
+  const report = (ended) => {
+    const duration = player.media?.duration || ids.duration || 0
+    const position = ended ? duration : (player.getCurrentTime?.() || 0)
+    if (!(position > 0) && !ended) return
+    api('/api/progress', { torrentId: ids.torrentId, fileIndex: ids.fileIndex, position, duration, ended }).catch(() => {})
+  }
+  report(false) // straight away, so the show is under continue-watching on the phone
+  castTick = setInterval(() => {
+    if (!castCtx()?.getCurrentSession()) { clearInterval(castTick); return }
+    const idle = player.playerState === chrome.cast.media.PlayerState.IDLE
+    if (idle && player.idleReason === 'ERROR') { clearInterval(castTick); castNote('The TV could not play it. Check the TV is on the same network as this box.'); return }
+    const done = idle && player.idleReason === 'FINISHED'
+    report(done)
+    if (done) clearInterval(castTick)
+  }, 30000)
+}
+
 /* ---------- top bar ---------- */
 function renderTop() {
   if (!me) { top.hidden = true; return }
