@@ -557,3 +557,25 @@ test('held by: who keeps a torrent on disk, each hold lapsing if they never come
   assert.ok(h[0].lapsesAt! > t && h[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
   assert.ok(h[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
 })
+
+const { addRefusal } = await import('../src/qb.ts')
+
+test('add response: qBittorrent 5 JSON with failure_count 0 is a success, not a refusal', () => {
+  // This exact body is what 5.0.x answers; /fail/i used to match "failure_count":0.
+  const ok = '{"added_torrent_ids":["85b7c049416b96b4611bc7e75cbb1a5c7908af1b"],"success_count":1,"failure_count":0,"pending_count":0}'
+  assert.equal(addRefusal(true, ok), null)
+  assert.equal(addRefusal(true, '{"success_count":0,"failure_count":0,"pending_count":1}'), null) // queued
+})
+
+test('add response: real refusals are still refusals', () => {
+  assert.equal(addRefusal(true, 'Fails.'), 'Fails.')
+  assert.equal(addRefusal(true, '{"success_count":0,"failure_count":1,"pending_count":0}'), '{"success_count":0,"failure_count":1,"pending_count":0}')
+  assert.equal(addRefusal(false, 'Forbidden'), 'Forbidden')
+  assert.equal(addRefusal(false, ''), 'HTTP error')
+})
+
+test('add response: the older plain-text and empty replies are accepted', () => {
+  assert.equal(addRefusal(true, 'Ok.'), null)
+  assert.equal(addRefusal(true, ''), null)
+  assert.equal(addRefusal(true, 'not json at all'), null)
+})

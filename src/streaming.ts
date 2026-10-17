@@ -28,7 +28,12 @@ async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix') {
   } else {
     assertSpace(Number(rel.size ?? 0))
     const file = await fetchTorrentFile(rel.torrent_link)
-    await qb.add(file, config.downloadDir) // straight into the Downloads folder: qBittorrent puts each torrent in its own named folder there
+    try {
+      await qb.add(file, config.downloadDir) // straight into the Downloads folder: qBittorrent puts each torrent in its own named folder there
+    } catch (e) {
+      // The reply is not the proof: qBittorrent can take the torrent and still answer oddly. If it is in the engine now, it was added.
+      if (!(await qb.info(hash).catch(() => undefined))) throw e
+    }
   }
   // wait for metadata (files list)
   const deadline = Date.now() + 60_000

@@ -44,6 +44,27 @@ async function post(path: string, form: Record<string, string>) {
   if (!res.ok) throw new Error(`qBittorrent ${path} -> HTTP ${res.status}: ${await res.text()}`)
 }
 
+/**
+ * What `/api/v2/torrents/add` said, read as a refusal or not.
+ *
+ * qBittorrent 4 answers the add in plain text: "Ok." or "Fails.". 5.0 answers JSON such as
+ * `{"added_torrent_ids":["…"],"success_count":1,"failure_count":0,"pending_count":0}` -- and
+ * "failure_count":0 contains "fail", so the old /fail/i test called every good add a refusal.
+ * Returns the reason when it really was refused, null when the torrent was taken.
+ */
+export function addRefusal(ok: boolean, body: string): string | null {
+  const text = (body ?? '').trim()
+  if (!ok) return text || 'HTTP error'
+  if (/^fails\.?$/i.test(text)) return text
+  if (text.startsWith('{') || text.startsWith('[')) {
+    let j: any
+    try { j = JSON.parse(text) } catch { return null } // unreadable body on a 200: the torrent was still taken
+    const added = (Array.isArray(j?.added_torrent_ids) ? j.added_torrent_ids.length : 0) + Number(j?.success_count ?? 0) + Number(j?.pending_count ?? 0)
+    if (!added && Number(j?.failure_count ?? 0) > 0) return text
+  }
+  return null
+}
+
 export const qb = {
   /** Drop the old session and prove the current URL/credentials work, then apply the engine preferences. */
   async reconnect(): Promise<string> {
@@ -89,7 +110,8 @@ export const qb = {
     form.set('autoTMM', 'false')
     const res = await raw('/api/v2/torrents/add', { method: 'POST', body: form })
     const text = await res.text()
-    if (!res.ok || /fail/i.test(text)) throw new Error(`qBittorrent refused the torrent: ${text || res.status}`)
+    const refused = addRefusal(res.ok, text)
+    if (refused) throw new Error(`qBittorrent refused the torrent: ${refused}`)
   },
   async filePrio(hash: string, ids: number[], priority: number) {
     if (ids.length) await post('/api/v2/torrents/filePrio', { hash, id: ids.join('|'), priority: String(priority) })
