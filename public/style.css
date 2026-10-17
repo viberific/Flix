@@ -167,6 +167,8 @@ img.fade.in { opacity: 1; }
 .p-wait .art { width: 130px; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,.6); animation: float 3.2s ease-in-out infinite; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
 .pline { width: min(340px, 72vw); height: 4px; border-radius: 2px; background: rgba(255,255,255,.18); overflow: hidden; } .pline i { display: block; height: 100%; width: 4%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .8s var(--ease); }
+/* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
+.castnote { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 60; max-width: min(420px, 86vw); padding: 10px 14px; border-radius: 10px; background: rgba(12,14,18,.94); border: 1px solid var(--border); color: var(--text); font-size: 13px; line-height: 1.45; text-align: center; }
 .p-next { position: absolute; z-index: 6; right: var(--gutter-r); bottom: max(28px, env(safe-area-inset-bottom, 0px)); width: min(340px, calc(100vw - 36px)); padding: 18px; border-radius: 16px; color: #fff;
   background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); }
 .p-next small { color: rgba(255,255,255,.65); } .p-next b { display: block; font-size: 20px; margin: 2px 0 14px; } .p-next .actions { display: flex; gap: 10px; }

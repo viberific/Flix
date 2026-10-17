@@ -645,11 +645,63 @@ function playView(seriesId, season, label) {
       if (c) { b.textContent = /recap|previously/i.test(c.title) ? 'Skip recap' : 'Skip intro'; b.onclick = () => { v.currentTime = c.end } }
     }
     let castWired = false
+    // Casting uses the Cast SDK: the TV opens the signed HLS link itself. It is fetched from the LAN address,
+    // because a cast device cannot resolve the tailnet name the page was loaded from.
+    function loadCastSdk() {
+      if (window.cast?.framework) return Promise.resolve()
+      if (!loadCastSdk.p) loadCastSdk.p = new Promise((ok, no) => {
+        window.__onGCastApiAvailable = (yes) => {
+          if (!yes || !window.cast?.framework) return no(new Error('cast unavailable'))
+          cast.framework.CastContext.getInstance().setOptions({ receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID })
+          ok()
+        }
+        const s = document.createElement('script')
+        s.src = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1'
+        s.onerror = () => no(new Error('cast unavailable'))
+        document.head.append(s)
+      })
+      return loadCastSdk.p
+    }
+    function castNote(msg) {
+      const n = document.createElement('div')
+      n.className = 'castnote'; n.textContent = msg
+      ;(v.parentElement || document.body).append(n)
+      setTimeout(() => n.remove(), 6000)
+    }
     function wireExtras() {
-      if (castWired || !('remote' in v) || !v.remote?.watchAvailability) return
+      if (castWired) return
       castWired = true
-      v.remote.watchAvailability((ok) => { $('#cast').hidden = !ok }).catch(() => {})
-      $('#cast').onclick = () => v.remote.prompt().catch(() => {})
+      // No LAN address configured means the TV could not reach the media anyway,
+      // so the button stays away rather than failing at the last step.
+      if (!info?.castUrl) return
+      loadCastSdk().then(() => {
+        const ctx = cast.framework.CastContext.getInstance()
+        ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
+          const S = cast.framework.CastState
+          $('#cast').hidden = e.castState === S.NO_DEVICES
+          // Once the TV is playing it, stop the phone playing the same thing.
+          if (e.castState === S.CONNECTED) v.pause?.()
+        })
+      }).catch(() => {})
+      $('#cast').onclick = async () => {
+        try {
+          await loadCastSdk()
+          const session = await cast.framework.CastContext.getInstance().requestSession()
+          if (!session) return
+          const media = new chrome.cast.media.MediaInfo(info.castUrl, 'application/vnd.apple.mpegurl')
+          media.streamType = chrome.cast.media.StreamType.BUFFERED
+          const md = new chrome.cast.media.GenericMediaMetadata()
+          md.title = label
+          media.metadata = md
+          const req = new chrome.cast.media.LoadRequest(media)
+          req.currentTime = Math.floor(v.currentTime || 0)
+          await session.loadMedia(req)
+          v.pause?.()
+        } catch (err) {
+          if (err?.code === 'cancel') return // they closed the device picker
+          castNote('Could not start on the TV. Check the TV is on the same network as this box.')
+        }
+      }
     }
 
     begin()

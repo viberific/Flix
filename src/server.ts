@@ -60,6 +60,9 @@ if (config.publicUrl) {
     // original Host) and Docker service names, which have no dot
     // (blofstedt-flix_app_1, app), keep working.
     if (name === 'localhost' || name === '[::1]' || name.startsWith('127.') || !name.includes('.')) return
+    // A TV or cast device fetches the media itself and cannot resolve the tailnet name, so the signed stream links
+    // are served on whatever address the device used. They carry an unguessable token in the path, never a cookie.
+    if (req.url.startsWith('/api/tv/')) return
     // 308 so a POST keeps its method and body; only a stale cached shell sends one here.
     return reply.redirect(config.publicUrl + req.url, 308)
   })
@@ -326,8 +329,11 @@ app.get('/api/stream/:t/:f/info', guarded, async (req) => {
   const base = `/api/stream/${t}/${f}`
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead.
   const tv = `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/${path}`
+  // Casting always uses the HLS playlist: the cast receiver plays HLS but not Matroska. It is made absolute on the
+  // LAN address when one is configured, because the receiver cannot resolve the tailnet name this page came from.
+  const tvHls = `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/${a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'}`
   return {
-    mode: direct ? 'direct' : 'hls', url: `${base}/${path}`, tvUrl: tv, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    mode: direct ? 'direct' : 'hls', url: `${base}/${path}`, tvUrl: tv, castUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
     audio: p.audio, chapters: p.chapters,
     subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
   }
@@ -412,7 +418,13 @@ const tvAuth = async (req: any, reply: any) => {
   const u = userForTvToken(String(req.params?.token ?? ''))
   if (!u) return reply.code(401).send({ error: 'This link has expired' })
   req.user = u
+  // A cast receiver fetches the playlist and every segment from its own origin, so it needs CORS.
+  reply.header('access-control-allow-origin', '*').header('access-control-expose-headers', 'content-length, content-range')
 }
+// Ranges (and anything else a receiver asks with) need a preflight answered before the media is fetched.
+app.options('/api/tv/*', async (_req, reply) =>
+  reply.header('access-control-allow-origin', '*').header('access-control-allow-methods', 'GET, HEAD, OPTIONS')
+    .header('access-control-allow-headers', 'range, origin, content-type').header('access-control-max-age', '86400').code(204).send())
 for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/api/tv/:token', [tvAuth, torrentGuard]]] as const) {
   app.get(`${prefix}/:t/:f/raw`, { preHandler: pre as any }, rawHandler)
   app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)
