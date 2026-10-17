@@ -22,7 +22,7 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { storageHistory } from './storage.ts'
-import { autoForListed, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { autoForListed, autoNext, autoWarm, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { holdersOf, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
@@ -174,9 +174,11 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerIds = d?.trailers.length ? d.trailers : [youtubeId(trailer) ?? youtubeId(d?.trailer)].filter((x): x is string => !!x)
   const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
+  const episodes = buildEpisodes(id, req.user!.id)
+  void autoWarm(req.user!.id, episodes) // quietly starts what they would resume, so Play is near-instant
   return {
     series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), vote: (db.prepare('SELECT vote FROM votes WHERE user_id = ? AND series_id = ?').get(req.user!.id, id) as any)?.vote ?? 0, year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
-    episodes: withInfo(id, buildEpisodes(id, req.user!.id)),
+    episodes: withInfo(id, episodes),
   }
 })
 

@@ -559,11 +559,11 @@ function playView(seriesId, season, label) {
           if (!alive || !s || s.error || started) return
           $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
           const waited = Date.now() - t0
-          slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0
+          slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0 // one tick is half a second
           // Nothing arriving for ~25 s: try another release of the same episode, up to twice.
-          if (waited > 25000 && slow >= 20 && tries < 2) return switchSource()
+          if (waited > 25000 && slow >= 40 && tries < 2) return switchSource()
           $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : ''
-        }, 1000)
+        }, 500)
         await loadInfo(0, play.position)
       } catch (e) { fail(e.message) }
     }
