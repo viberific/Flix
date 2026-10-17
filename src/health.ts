@@ -79,7 +79,7 @@ export async function health(): Promise<Issue[]> {
   }
   const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number
   if (reported) out.push({ level: 'warn', title: `${reported} playback problem${reported === 1 ? '' : 's'} reported`, detail: 'Someone tapped “Something’s wrong”, or an episode failed to start. The Torrents page lists which.', link: '#/admin' })
-  if (!config.tmdb.apiKey) out.push({ level: 'info', title: 'Content ratings are manual', detail: 'Add a free TMDB key under Settings so kids’ accounts hide unsuitable shows automatically.', link: '#/admin/settings' })
+  if (!config.tmdb.apiKey) out.push({ level: 'info', title: 'Ratings and Trending need a TMDB key', detail: 'Add a free TMDB key under Settings so kids’ accounts hide unsuitable shows automatically and the home screen can show a Trending row.', link: '#/admin/settings' })
   const left = unsyncedCount()
   if (config.btn.apiKey && left > 0) out.push({ level: 'info', title: 'Still building the library', detail: `${left} show${left === 1 ? '' : 's'} left to check with BTN. The home page fills in as they finish.` })
   if (!lastBackup() && (process.env.DB_PATH ?? '') !== ':memory:') out.push({ level: 'warn', title: 'No backup yet', detail: 'Accounts and watch history are backed up once a day; the first one is made shortly after start.' })

@@ -241,3 +241,56 @@ test('assertSpace refuses when the disk would fill up', async () => {
   assert.throws(() => assertSpace(1), /out of storage/)
   config.minFreeGb = 10
 })
+
+const { normalizeStreamer, primaryGenre } = await import('../src/networks.ts')
+const { curateHome } = await import('../src/home.ts')
+
+test('streaming services are recognised however a source spells them', () => {
+  assert.equal(normalizeStreamer('Netflix'), 'Netflix')
+  assert.equal(normalizeStreamer('Disney+'), 'Disney+')
+  assert.equal(normalizeStreamer('Disney Plus'), 'Disney+')
+  assert.equal(normalizeStreamer('Apple TV+'), 'Apple TV+')
+  assert.equal(normalizeStreamer('Apple TV'), 'Apple TV+')
+  assert.equal(normalizeStreamer('HBO'), null)
+  assert.equal(normalizeStreamer(null), null)
+})
+
+test('a show has one primary genre: the most specific it has', () => {
+  assert.equal(primaryGenre(['Drama', 'Documentary']), 'Documentary')
+  assert.equal(primaryGenre(['Comedy', 'Animation', 'Family']), 'Animation')
+  assert.equal(primaryGenre(['Drama', 'Crime']), 'Crime')
+  assert.equal(primaryGenre(['Drama']), 'Drama')
+  assert.equal(primaryGenre(['Zzz']), 'Zzz')
+  assert.equal(primaryGenre([]), null)
+})
+
+test('home: every show once, trending then streamers newest-first, the rest under one genre', () => {
+  const row = (id: number, genres: string[], latest = id) => ({ id, name: `S${id}`, poster: `/p${id}`, banner: null, genres, latest })
+  const rows = [row(1, ['Drama', 'Crime']), row(2, ['Drama']), row(3, ['Comedy', 'Animation']), row(4, ['Drama']), row(5, ['Drama']), row(6, ['Drama']), row(7, ['Comedy']), row(8, ['Comedy']), row(9, ['Comedy']), row(10, ['Drama'])]
+  const net = new Map<number, any>([
+    [1, { streamer: 'Netflix', first_air: '2025-01-01', notable: true, trending: 2 }],   // trending AND Netflix: shown once, as trending
+    [2, { streamer: 'Netflix', first_air: '2024-06-01', notable: true, trending: null }],
+    [3, { streamer: 'Netflix', first_air: '2025-03-01', notable: true, trending: null }],
+    [4, { streamer: 'Disney+', first_air: '2023-01-01', notable: true, trending: 1 }],
+    [5, { streamer: null, first_air: '2022-01-01', notable: true, trending: null }],
+    [6, { streamer: null, first_air: '2021-01-01', notable: true, trending: null }],
+    [7, { streamer: null, first_air: '2020-01-01', notable: true, trending: null }],
+    [8, { streamer: null, first_air: '2019-01-01', notable: true, trending: null }],
+    [9, { streamer: null, first_air: '2018-01-01', notable: true, trending: null }],
+    // 10: nothing known and not notable, so it stays off the home screen
+  ])
+  const { hero, sections } = curateHome(rows, net, new Set([5]), 3)
+  assert.equal(hero?.id, 4, 'the top trending show is the billboard')
+  const titles = sections.map((s) => s.title)
+  assert.deepEqual(titles.slice(0, 2), ['Trending now', 'New on Netflix'])
+  assert.deepEqual(sections[0].series.map((r) => r.id), [1])
+  assert.deepEqual(sections[1].series.map((r) => r.id), [3, 2], 'newest premiere first')
+  const ids = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
+  assert.equal(new Set(ids).size, ids.length, 'no show appears twice')
+  assert.ok(!ids.includes(5), 'already shown higher up (My List)')
+  assert.ok(!ids.includes(10), 'unknown and not notable: off the home screen')
+  assert.ok(sections.some((s) => s.title === 'Comedy' && s.series.length === 3), 'the rest sit under one genre each')
+  // with too little else to show, unknown shows are let in rather than leaving the screen empty
+  const sparse = curateHome([row(10, ['Drama']), row(11, ['Drama']), row(12, ['Drama'])], new Map())
+  assert.equal(sparse.sections.flatMap((s) => s.series).length + (sparse.hero ? 1 : 0), 3)
+})
