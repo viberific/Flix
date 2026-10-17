@@ -390,3 +390,16 @@ html.tv * { cursor: none; }
 @keyframes sweep { to { left: 130%; } }
 #msg:empty { display: none; }
 @media (prefers-reduced-motion: reduce) { .mark svg { animation: markFade .4s forwards; } .mark .burst, .mark .sweep { display: none; } @keyframes markFade { to { opacity: 1; } } }
+
+/* ---------- downloads ---------- */
+.eside { display: flex; align-items: center; gap: 10px; }
+.dlb { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); font-size: 13px; font-weight: 600; cursor: pointer; max-width: 22ch; text-align: left; }
+.dlb svg { width: 18px; height: 18px; } .dlb:hover { color: var(--fg); }
+.dlb.done { color: var(--ok); } .dlb.busy { color: var(--fg); } .dlb.err { color: #ff8a80; }
+.dl-active { display: grid; gap: 10px; margin-bottom: 8px; }
+.dl-row { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; }
+.dl-row.err .dl-t span { color: #ff8a80; }
+.dl-t { display: flex; flex-direction: column; gap: 2px; } .dl-t span { color: var(--dim); font-size: 13px; }
+.prog-line { height: 4px; border-radius: 2px; background: var(--surface-2); margin-top: 10px; overflow: hidden; }
+.prog-line i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s; }
+.dl-item { cursor: pointer; }
