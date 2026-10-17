@@ -186,7 +186,9 @@ async function fetchCached(url: string, seriesId: number, kind: ArtKind) {
 /** An episode's still image (a frame from the episode), cached like the other artwork. */
 export async function getStill(seriesId: number, season: number, episode: number) {
   const r = db.prepare('SELECT still FROM episode_info WHERE series_id = ? AND season = ? AND episode = ?').get(seriesId, season, episode) as { still: string | null } | undefined
-  return r?.still ? fetchCached(r.still, seriesId, 'still') : null
+  const own = r?.still ? await fetchCached(r.still, seriesId, 'still') : null
+  // No picture of its own for this episode (or it would not download): the show's wide artwork stands in, so the tile is never blank.
+  return own ?? (await getArt(seriesId, 'banner')) ?? (await getArt(seriesId, 'poster'))
 }
 
 /** Cached artwork for a series, downloading it on first use and trying the backup sources when one fails. Null when there is none. */

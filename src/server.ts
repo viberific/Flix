@@ -173,7 +173,7 @@ function withInfo<T extends { season: number | null; episode: number | null }>(s
   const info = episodeInfoFor(seriesId)
   return eps.map((e) => {
     const i = e.season !== null && e.episode !== null ? info.get(`${e.season}|${e.episode}`) : undefined
-    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: i?.still ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null }
+    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: e.season !== null && e.episode !== null ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null } // always asked for: the server falls back to the show's artwork
   })
 }
 

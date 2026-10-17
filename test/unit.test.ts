@@ -413,3 +413,40 @@ test('networks: a show\'s service, language and season lengths are read (the air
     assert.equal(netInfo().get(90)!.popularity, 80)
   } finally { config.tmdb.apiUrl = old.apiUrl; config.tmdb.apiKey = old.apiKey; config.art.tvmazeUrl = old.tvmaze; srv.close() }
 })
+
+test('episode pictures: gaps in TMDB are patched from TVmaze, then TMDB\'s other images', async () => {
+  const { createServer } = await import('node:http')
+  const { db } = await import('../src/db.ts')
+  const { queueEpisodeInfo, episodeInfoFor } = await import('../src/episodeinfo.ts')
+  const { catalogChanged } = await import('../src/seasons.ts')
+  let base = ''
+  const srv = createServer((req, res) => {
+    const u = req.url!
+    res.setHeader('content-type', 'application/json')
+    if (u.startsWith('/tmdb/find/700')) return void res.end(JSON.stringify({ tv_results: [{ id: 7 }] }))
+    if (u.startsWith('/tmdb/tv/7/season/1/episode/3/images')) return void res.end(JSON.stringify({ stills: [{ file_path: '/ep3.jpg' }] }))
+    if (u.startsWith('/tmdb/tv/7/season/1/episode/4/images')) return void res.end(JSON.stringify({ stills: [] }))
+    if (u.startsWith('/tmdb/tv/7/season/1')) return void res.end(JSON.stringify({ episodes: [
+      { episode_number: 1, name: 'One', still_path: '/one.jpg' }, { episode_number: 2, name: 'Two' }, { episode_number: 3, name: 'Three' }, { episode_number: 4, name: 'Four' }] }))
+    if (u.startsWith('/tvmaze/lookup/shows')) return void res.end(JSON.stringify({ id: 70 }))
+    if (u.startsWith('/tvmaze/shows/70/episodes')) return void res.end(JSON.stringify([{ season: 1, number: 2, name: 'Two!', image: { original: 'https://static.tvmaze.com/two.jpg' } }]))
+    res.statusCode = 404; res.end('{}')
+  })
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+  base = `http://127.0.0.1:${(srv.address() as any).port}`
+  const old = { api: config.tmdb.apiUrl, key: config.tmdb.apiKey, tv: config.art.tvmazeUrl, img: config.art.tmdbImages }
+  Object.assign(config.tmdb, { apiUrl: `${base}/tmdb`, apiKey: 'k' }); config.art.tvmazeUrl = `${base}/tvmaze`; config.art.tmdbImages = `${base}/img`
+  try {
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, tvdb_id, group_name, season, episode, episode_end, is_pack, info_hash, fetched_at) VALUES (7001, 70, 'Pic Show', 700, 'Pic Show - Season 1', 1, NULL, NULL, 1, 'pp', 0)`).run()
+    db.prepare('INSERT INTO series_sync VALUES (70, 0)').run()
+    db.prepare(`INSERT INTO series_net (series_id, fetched_at, lang, season_counts, ver) VALUES (70,0,'en','{}',3)`).run()
+    catalogChanged()
+    await queueEpisodeInfo(70)
+    const info = episodeInfoFor(70)
+    assert.equal(info.get('1|1')!.still, `${base}/img/w500/one.jpg`)          // TMDB's own
+    assert.equal(info.get('1|2')!.still, 'https://static.tvmaze.com/two.jpg')  // from TVmaze
+    assert.equal(info.get('1|2')!.name, 'Two')                                // TMDB's text is kept
+    assert.equal(info.get('1|3')!.still, `${base}/img/w500/ep3.jpg`)           // TMDB's other images
+    assert.equal(info.get('1|4')!.still, null)                                // nobody has one: the show's artwork stands in at display time
+  } finally { Object.assign(config.tmdb, { apiUrl: old.api, apiKey: old.key }); config.art.tvmazeUrl = old.tv; config.art.tmdbImages = old.img; srv.close() }
+})
