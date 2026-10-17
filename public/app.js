@@ -137,9 +137,10 @@ function renderTop() {
 }
 /* ---------- the Flix sound ---------- */
 /**
- * A two-beat "ba-DUM" made entirely in the browser (Web Audio), so there is no sound file to ship: a soft low thump, then a deeper
- * one with a sub swell underneath and a bright shimmer that rings out. Played as the player opens, which happens on a tap, so the
- * browser allows it. It never throws: no audio support, or a browser that insists on a tap first, just means a silent intro.
+ * Flix's own sound, made entirely in the browser (Web Audio) so there is no sound file to ship: a breath of air that rises, three
+ * bright glass-bell notes climbing a pentatonic scale, and a warm major chord that blooms under the last one and fades out. Nothing
+ * percussive, so it is nothing like the familiar two-drum-hit streaming jingles. Played as the player opens, which happens on a
+ * tap, so the browser allows it. It never throws: no audio support, or a browser that insists on a tap first, is just a silent intro.
  */
 let audioCtx = null
 function flixSting() {
@@ -151,26 +152,35 @@ function flixSting() {
     const c = audioCtx
     if (c.state === 'suspended') c.resume().catch(() => {})
     const t = c.currentTime + 0.05
-    const out = c.createGain(); out.gain.value = 0.9
-    const comp = c.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6
+    const out = c.createGain(); out.gain.value = 0.8
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4
     out.connect(comp); comp.connect(c.destination)
     const env = (g, at, peak, attack, decay) => { g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(peak, at + attack); g.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay) }
-    const thump = (at, from, to, peak, decay) => {
-      const o = c.createOscillator(), g = c.createGain()
-      o.type = 'sine'; o.frequency.setValueAtTime(from, at); o.frequency.exponentialRampToValueAtTime(to, at + 0.22)
-      env(g, at, peak, 0.008, decay); o.connect(g); g.connect(out); o.start(at); o.stop(at + decay + 0.1)
-      const click = c.createOscillator(), cg = c.createGain() // a short tick on the front gives the hit its edge
-      click.type = 'triangle'; click.frequency.setValueAtTime(260, at); click.frequency.exponentialRampToValueAtTime(90, at + 0.04)
-      env(cg, at, peak * 0.35, 0.002, 0.05); click.connect(cg); cg.connect(out); click.start(at); click.stop(at + 0.12)
+    // 1. A rising breath: noise through a band-pass that sweeps upward, swelling into the first note.
+    const len = Math.floor(c.sampleRate * 0.7), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0)
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1
+    const air = c.createBufferSource(); air.buffer = buf
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2.5
+    bp.frequency.setValueAtTime(500, t); bp.frequency.exponentialRampToValueAtTime(5200, t + 0.6)
+    const ag = c.createGain(); env(ag, t, 0.16, 0.5, 0.12)
+    air.connect(bp); bp.connect(ag); ag.connect(out); air.start(t); air.stop(t + 0.75)
+    // 2. Glass bells: a sine carrier whose pitch is wobbled by a second sine (FM) for the metallic ring, decaying slowly.
+    const bell = (f, at, peak, ring) => {
+      const car = c.createOscillator(), mod = c.createOscillator(), mg = c.createGain(), g = c.createGain()
+      car.type = 'sine'; car.frequency.value = f; mod.type = 'sine'; mod.frequency.value = f * 3.5
+      mg.gain.setValueAtTime(f * 1.6, at); mg.gain.exponentialRampToValueAtTime(f * 0.05, at + ring * 0.6)
+      mod.connect(mg); mg.connect(car.frequency)
+      env(g, at, peak, 0.006, ring); car.connect(g); g.connect(out)
+      car.start(at); mod.start(at); car.stop(at + ring + 0.1); mod.stop(at + ring + 0.1)
     }
-    thump(t, 150, 55, 0.55, 0.32)            // ba
-    thump(t + 0.3, 110, 38, 0.95, 0.9)       // DUM
-    const sub = c.createOscillator(), sg = c.createGain(); sub.type = 'sine'; sub.frequency.value = 41
-    env(sg, t + 0.3, 0.5, 0.05, 1.5); sub.connect(sg); sg.connect(out); sub.start(t + 0.3); sub.stop(t + 1.9)
-    // The shimmer: a few bright partials of a chord that bloom as the second beat lands and fade over a second or so.
-    for (const [f, peak, lag] of [[392, 0.09, 0.02], [587.3, 0.07, 0.06], [784, 0.06, 0.1], [1174.7, 0.035, 0.14]]) {
-      const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = f; o.detune.value = (f % 7) - 3
-      env(g, t + 0.3 + lag, peak, 0.12, 1.4); o.connect(g); g.connect(out); o.start(t + 0.3 + lag); o.stop(t + 2.1)
+    const n1 = t + 0.5, n2 = n1 + 0.16, n3 = n2 + 0.16
+    bell(587.33, n1, 0.34, 0.9)    // D5
+    bell(880.0, n2, 0.34, 1.0)     // A5
+    bell(1479.98, n3, 0.38, 1.7)   // F#6
+    // 3. A warm D major chord (triangle waves, soft) that swells under the last bell and fades.
+    for (const [f, peak] of [[146.83, 0.2], [220.0, 0.14], [293.66, 0.12], [369.99, 0.09]]) {
+      const o = c.createOscillator(), g = c.createGain(); o.type = 'triangle'; o.frequency.value = f
+      env(g, n2, peak, 0.35, 1.6); o.connect(g); g.connect(out); o.start(n2); o.stop(n2 + 2.1)
     }
   } catch { /* silent intro */ }
 }
