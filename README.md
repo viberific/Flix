@@ -51,7 +51,7 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
   are verified. Browser-friendly MP4/WebM plays directly; everything else (e.g. MKV/AC3/HEVC) is remuxed or
   transcoded by ffmpeg to HLS on the fly.
 - **Retention** – a torrent is deleted only when **all** of these hold:
-  1. every user who started it has watched it (≥ 90 %) or released it,
+  1. every user who started it has watched it (played to the end, 100 %) or released it,
   2. it has finished downloading, and
   3. **BTN's seeding requirement is met: 130 hours of seeding _or_ a 1:1 ratio.** This is hard-coded
      (`src/config.ts`) and cannot be overridden – not by config, and not by the admin "force remove" (it returns 409).

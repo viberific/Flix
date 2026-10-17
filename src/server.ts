@@ -417,9 +417,11 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
 
 // ---- watch state ------------------------------------------------------------
 app.post('/api/progress', auth, async (req) => {
-  const { torrentId, fileIndex, position, duration } = req.body as any
+  const { torrentId, fileIndex, position, duration, ended } = req.body as any
   const frac = duration > 0 ? position / duration : 0
-  const done = frac >= config.watchedThreshold
+  // "Watched" means played to the end: the player says so when the video ends, and the last few seconds count as the end
+  // (the reported length and the playing position rarely agree to the frame). Anything less keeps the file for the viewer.
+  const done = !!ended || (config.watchedThreshold >= 1 ? duration > 0 && duration - position <= 3 : frac >= config.watchedThreshold)
   db.prepare(`UPDATE interests SET position=?, duration=?, updated_at=?, watched_at = CASE WHEN ? THEN COALESCE(watched_at, ?) ELSE watched_at END
     WHERE user_id=? AND torrent_id=? AND file_index=?`).run(position, duration, now(), done ? 1 : 0, now(), req.user!.id, torrentId, fileIndex)
   return { watched: done }

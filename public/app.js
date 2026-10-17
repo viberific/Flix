@@ -528,14 +528,14 @@ function playView(seriesId, season, label) {
       v.play?.().catch(() => {})
     }
 
-    function report() {
+    function report(ended) {
       if (!v || !play) return
       if (!isFinite(v.duration) && !info?.duration) return
-      api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration }).catch(() => {})
+      api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
     }
 
     function onEnded() {
-      report()
+      report(true)
       if (!play.next) return go(`#/series/${seriesId}`)
       const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
       const box = document.createElement('div'); box.className = 'p-next'
