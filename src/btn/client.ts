@@ -18,6 +18,13 @@ export class IpNotAuthorizedError extends Error {}
 
 const calls: number[] = []
 
+/** API calls still available this hour under our own budget. */
+export function btnBudgetLeft(): number {
+  const cutoff = Date.now() - 3600_000
+  while (calls.length && calls[0] < cutoff) calls.shift()
+  return Math.max(0, config.btn.maxCallsPerHour - calls.length)
+}
+
 /** Minimal BTN JSON-RPC client with a local hourly budget so we never trip the API limit (150/h). */
 export async function btnCall<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   if (!config.btn.apiKey) throw new Error('BTN_API_KEY is not configured')

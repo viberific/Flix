@@ -3,7 +3,7 @@ import { config } from './config.ts'
 export interface QbTorrent {
   hash: string; name: string; state: string; progress: number; size: number; total_size: number
   amount_left: number; uploaded: number; downloaded: number; ratio: number; seeding_time: number
-  dlspeed: number; upspeed: number; num_seeds: number; num_leechs: number; save_path: string; added_on: number
+  dlspeed: number; upspeed: number; eta?: number; num_seeds: number; num_leechs: number; save_path: string; added_on: number
 }
 export interface QbFile { index: number; name: string; size: number; progress: number; priority: number; piece_range: [number, number] }
 

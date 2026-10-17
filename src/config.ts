@@ -15,6 +15,11 @@ export const config = {
   },
   // Optional: automatic content ratings (TV-Y … TV-MA) via TMDB. Without a key the admin sets ratings by hand.
   tmdb: { apiKey: env.TMDB_API_KEY ?? '', apiUrl: (env.TMDB_API_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, '') },
+  // Backup artwork when BTN has none (or its image host refuses us): TMDB (needs the key above), then TVmaze (no key).
+  // Set TVMAZE_URL to an empty string to turn TVmaze off.
+  art: { tmdbImages: (env.TMDB_IMAGE_URL ?? 'https://image.tmdb.org/t/p').replace(/\/$/, ''), tvmazeUrl: (env.TVMAZE_URL ?? 'https://api.tvmaze.com').replace(/\/$/, ''), youtubeImages: (env.YOUTUBE_IMAGE_URL ?? 'https://i.ytimg.com/vi').replace(/\/$/, ''),
+    // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
+    allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
   qb: {
     url: (env.QB_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, ''),
     user: env.QB_USER ?? 'admin',
@@ -22,8 +27,6 @@ export const config = {
   },
   // BroadcasTheNet's seeding requirement: 130 hours of seeding OR a 1:1 ratio. Fixed on purpose, not configurable.
   seed: { minRatio: 1.0, minHours: 130, mode: 'any' } as { minRatio: number; minHours: number; mode: 'any' | 'all' },
-  // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
-  art: { allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
   abandonDays: num('ABANDON_DAYS', 0),
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),

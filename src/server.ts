@@ -8,13 +8,15 @@ import { db, now } from './db.ts'
 import { createUser, hashPassword, login, logout, requireAdmin, requireUser, setSessionCookie, userCount, userFor } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
 import { qb } from './qb.ts'
-import { searchBtn, syncLatest, syncSeries } from './catalog.ts'
+import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
 import { artPathSql, getArt } from './art.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
+import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
+import { ensurePackFiles } from './packs.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -60,12 +62,24 @@ const seriesCols = `series_id AS id, series AS name, ${artPathSql('series_poster
 
 const notFound = (m = 'Series not found') => Object.assign(new Error(m), { statusCode: 404 })
 
+/** Only shows whose first season is complete are listed; see seasons.ts. */
+const isListed = (r: { id: number }) => listable().has(r.id)
+
+/** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
+const ensureSynced = (id: number) => syncSeries(id).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
+
 app.get('/api/series', auth, async (req) => {
   const { q } = req.query as { q?: string }
-  if (q && q.trim().length >= 2) await searchBtn(q.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
   const f = ratingClause(req.user)
-  const rows = db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
-      WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 100`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
+  const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
+      WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
+  if (q && q.trim().length >= 2) {
+    await searchBtn(q.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
+    // A search only brings back some of a show's releases; read the rest of the top few matches so their seasons can be judged.
+    const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id)).slice(0, 5)
+    await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
+  }
+  const rows = query().filter(isListed).slice(0, 100)
   rows.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
   return { series: rows }
 })
@@ -74,9 +88,12 @@ app.get('/api/series/:id', auth, async (req) => {
   const id = Number((req.params as any).id)
   if (!canViewSeries(req.user, id)) throw notFound()
   const have = (db.prepare('SELECT COUNT(*) AS n FROM releases WHERE series_id = ?').get(id) as any).n
-  // The page must not wait on BTN: sync inline only when we know nothing about the show, otherwise refresh in the background.
-  const sync = syncSeries(id).catch((e) => app.log.warn(`series sync failed: ${e.message}`))
-  if (!have) await sync
+  const synced = db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(id)
+  // The page must not wait on BTN once we know the show: sync inline only when it has never been read in full, otherwise refresh in the background.
+  const sync = ensureSynced(id)
+  if (!have || !synced) await sync
+  if (!seasonsOf(id)) throw notFound('This show is not available yet')
+  await ensurePackFiles(id)
   const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
   if (!info) throw notFound()
   // First visit: give the lookup a moment so the trailer is already there; otherwise it finishes in the background.
@@ -86,9 +103,10 @@ app.get('/api/series/:id', auth, async (req) => {
   let genres: string[] = []
   try { genres = JSON.parse(info.genres ?? '[]') } catch { /* none */ }
   const { trailer, ...rest } = info
+  const trailerId = youtubeId(trailer) ?? youtubeId(d?.trailer)
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   return {
-    series: { ...rest, genres, year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId: youtubeId(trailer) ?? youtubeId(d?.trailer), ...getRating(id) },
+    series: { ...rest, genres, year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: buildEpisodes(id, req.user!.id),
   }
 })
@@ -96,8 +114,8 @@ app.get('/api/series/:id', auth, async (req) => {
 /** Netflix-style home: a "New" row, then one row per genre; every row is newest first. */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
-  const rows = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
-      WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params) as any[]
+  const rows = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
+      WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 400)
   rows.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
   const byGenre = new Map<string, any[]>()
   for (const r of rows) {
@@ -112,7 +130,7 @@ app.get('/api/home', auth, async (req) => {
   const sections = [...byGenre.entries()].filter(([, l]) => l.length >= 2 || byGenre.size < 4)
     .sort((a, b) => b[1][0].latest - a[1][0].latest || b[1].length - a[1].length).slice(0, 14)
     .map(([genre, l]) => ({ title: genre, series: l.slice(0, 30).map(clean) }))
-  return { new: rows.slice(0, 30).map(clean), sections }
+  return { new: rows.slice(0, 30).map(clean), sections, checking: unsyncedCount() }
 })
 
 app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!) }))
@@ -130,7 +148,7 @@ const guarded = { preHandler: [requireUser, torrentGuard] }
 app.get('/api/art/:id/:kind', auth, async (req, reply) => {
   const { id, kind } = req.params as any
   if (!canViewSeries(req.user, Number(id))) return reply.code(404).send({ error: 'no artwork' })
-  if (kind !== 'poster' && kind !== 'banner') return reply.code(404).send({ error: 'unknown artwork' })
+  if (kind !== 'poster' && kind !== 'banner' && kind !== 'trailer') return reply.code(404).send({ error: 'unknown artwork' })
   const art = await getArt(Number(id), kind)
   if (!art) return reply.code(404).send({ error: 'no artwork' })
   return reply.type(art.type).header('cache-control', 'private, max-age=86400').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
@@ -146,12 +164,13 @@ app.post('/api/play', guarded, async (req) => {
 app.post('/api/watch', auth, async (req) => {
   const { seriesId, season, label } = req.body as any
   if (!canViewSeries(req.user, Number(seriesId))) throw notFound('That show is not available')
+  await ensurePackFiles(Number(seriesId))
   const eps = buildEpisodes(Number(seriesId), req.user!.id)
   const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
   if (i < 0) throw Object.assign(new Error('That episode is not available'), { statusCode: 404 })
   const ep = eps[i]
   if (!ep.available) throw Object.assign(new Error('Nobody is sharing this episode right now. Please try again later.'), { statusCode: 503 })
-  const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack ? undefined : ep.label })
+  const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
   const next = eps.slice(i + 1).find((e) => e.available)
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
   return { ...play, seriesName, quality: ep.quality, title: ep.label, next: next ? { season: next.season, label: next.label } : null }
@@ -233,7 +252,7 @@ app.post('/api/release', auth, async (req) => {
 // ---- admin ------------------------------------------------------------------
 const admin = { preHandler: requireAdmin }
 app.get('/api/admin/downloads', admin, async () => {
-  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, r.series, r.group_name, r.resolution
+  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, r.series, r.group_name, r.resolution, r.is_pack
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id ORDER BY d.added_at DESC LIMIT 200`).all() as any[]
   const out = []
   for (const d of rows) {
@@ -241,8 +260,9 @@ app.get('/api/admin/downloads', admin, async () => {
     const t = await engine.info(d.info_hash)
     if (!t) { out.push({ ...d, missing: true }); continue }
     const k = whyKept(t, d.torrent_id)
-    out.push({ ...d, progress: t.progress, size: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds,
-      ratio: k.seed.ratio, seedHours: k.seed.hours, deletable: k.deletable, reasons: k.reasons })
+    out.push({ ...d, progress: t.progress, size: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
+      engineState: t.state, eta: t.eta ?? null, left: t.amount_left,
+      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending })
   }
   return { requirements: config.seed, downloads: out }
 })
@@ -384,6 +404,7 @@ export async function start() {
     else app.log.fatal(`Could not start the web server: ${e.message}`)
     process.exit(1)
   }
+  startCrawler()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep
 }

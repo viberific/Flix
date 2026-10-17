@@ -15,7 +15,18 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 
 4K is always re-encoded down to 1080p for the browser. HDR is not tone-mapped yet, so HDR sources can look washed out.
 
-- **Artwork** – posters and banners are downloaded by the server on first view and cached in `DATA_DIR/art`; browsers only ever talk to Flix (`/api/art/…`), never to BTN's image host, and BTN's image URLs never reach the client. Fetches refuse internal/private addresses, accept only JPEG/PNG/GIF/WebP (no SVG), and are capped at 8 MB.
+- **What gets listed** (`src/seasons.ts`) – a show appears only when its **whole first season** is available; otherwise it is hidden.
+  After season 1 only the *next* season in sequence may follow, and only when it is whole: with seasons 1 and 3 on BTN but no 2, only season 1 shows.
+  A season is whole when it has a season pack, or when its single episodes run from E01 with nothing missing (double episodes like `S01E05E06` count for both numbers).
+  Specials (season 0) and date-named shows (no season/episode numbers) cannot be judged, so they are never listed. Because this needs a show's full release list,
+  Flix reads shows from BTN in the background (one at a time, always leaving part of the API budget free), and a show appears once it has been read.
+- **Single episodes first, season packs second** – when a season has all its single episodes, those are what is listed and played. When it doesn't but a season pack exists,
+  the pack is listed as individual episodes (read from the `.torrent`, nothing downloaded yet), and playing any of them downloads the **entire pack in order**,
+  starting at the episode you picked and continuing through the rest of the season whether or not anyone watches it, because a half-downloaded pack can't be seeded.
+  It is then kept until BTN's seeding requirement is met.
+- **Artwork** – posters and banners are downloaded by the server on first view and cached in `DATA_DIR/art`; browsers only ever talk to Flix (`/api/art/…`), never to BTN's image host, and BTN's image URLs never reach the client.
+  If BTN has no picture (or refuses us), Flix looks the show up on TMDB (with `TMDB_API_KEY`: poster and backdrop) and then TVmaze (no key needed: poster) and remembers the answer for a day.
+  The trailer's thumbnail on the show page is fetched the same way (server-side, from YouTube's image host) and cached. Fetches refuse internal/private addresses, accept only JPEG/PNG/GIF/WebP (no SVG), and are capped at 8 MB.
 - **Catalog** – BTN JSON-RPC API (rate-limited locally to 100 calls/h; BTN allows 150). The passkey-bearing
   `.torrent` link never leaves the server.
 - **Engine** – [qBittorrent](https://www.qbittorrent.org) via its Web API (BTN only allows whitelisted clients, so
@@ -44,6 +55,12 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
   Admins can set or override a show's rating on its page, or switch it back to *Automatic*.
 - **Unknown rating = Unrated**, which restricted users do not see unless "Unrated" is ticked for them.
 
+## Torrents & seeding page
+
+Account menu → **Torrents & seeding** (admins): every torrent Flix has pulled, grouped as *Downloading*, *Seeding: requirement not met yet* and *Requirement met*,
+with the ratio and hours-seeded bars against BTN's 1:1 / 130 h rule, upload totals, and why a torrent is being kept. Removed torrents are listed underneath.
+Remove is refused until the seeding requirement is met.
+
 ## Interface
 
 Dark, cinematic design (with a light variant that follows the device): a hero for what you were watching, scrolling rows,
@@ -66,11 +83,14 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 - Seeking far beyond the downloaded part waits for the sequential download to reach it (qBittorrent cannot
   prioritise arbitrary pieces).
 - Subtitles are not extracted yet.
-- Season packs: if a season exists only as a pack, it shows as one "Season N" entry that resumes at the next unfinished file.
-- Trailers are found automatically (BTN, then TMDB, then a YouTube search) and play in an embedded player only after someone taps them, so nothing is sent to YouTube before that.
+- "Whole season" is judged from what BTN has: Flix does not know a currently airing season's final episode count, so a season with E01–E06 and nothing missing counts as whole.
+- Trailers are found automatically (BTN, then TMDB, then a YouTube search). The still image on the show page is fetched by the server; the viewer's browser only contacts YouTube once someone taps play.
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set
   `ABANDON_DAYS` to auto-release inactive viewers.
-- Keep Flix behind HTTPS (reverse proxy) when exposing it; a PWA needs a secure context to install.
+- Installing the app needs HTTPS **with a certificate the browser trusts** (Chrome says "this app cannot be installed" otherwise, and on a certificate warning page it never gets that far).
+  On Tailscale: enable HTTPS certificates in the admin console and run `tailscale serve --bg --https=443 http://127.0.0.1:8096`, then open `https://<machine>.<tailnet>.ts.net` (no port).
+  If the app sits behind Umbrel's sign-in, the manifest has to be fetched with cookies (`crossorigin="use-credentials"`, already set).
+  The account menu has an **Install app** entry that installs, or says what is missing.
 - BTN API field names were written from memory of the public API; verify against a real key.
 
 ## Tests

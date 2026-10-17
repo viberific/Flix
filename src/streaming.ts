@@ -6,7 +6,7 @@ import { db, now } from './db.ts'
 import { config } from './config.ts'
 import { qb, type QbFile } from './qb.ts'
 import { fetchTorrentFile } from './btn/client.ts'
-import { isVideo } from './btn/parse.ts'
+import { isVideo, parseEpisodeTag } from './btn/parse.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -40,10 +40,17 @@ export function pickVideo(files: QbFile[]): QbFile | undefined {
   return files.filter((f) => isVideo(f.name)).sort((a, b) => b.size - a.size)[0]
 }
 
-/** In a season pack: the requested episode, else the first video this user has not finished (so "Play" resumes the season). */
+const byName = (a: QbFile, b: QbFile) => a.name.localeCompare(b.name, undefined, { numeric: true })
+
+/** In a season pack: the requested episode (by its S01E02 tag), else the first video this user has not finished (so "Play" resumes the season). */
 function pickFromPack(files: QbFile[], userId: number, torrentId: number, label?: string): QbFile | undefined {
-  const vids = files.filter((f) => isVideo(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-  if (label) { const hit = vids.find((f) => f.name.toUpperCase().includes(label.toUpperCase())); if (hit) return hit }
+  const vids = files.filter((f) => isVideo(f.name)).sort(byName)
+  if (label) {
+    const want = parseEpisodeTag(label)
+    const hit = vids.find((f) => { const t = parseEpisodeTag(f.name.split('/').pop()!); return want && t && t.season === want.season && want.episode >= t.episode && want.episode <= t.episodeEnd })
+      ?? vids.find((f) => f.name.toUpperCase().includes(label.toUpperCase()))
+    if (hit) return hit
+  }
   const done = new Set((db.prepare('SELECT file_index FROM interests WHERE user_id = ? AND torrent_id = ? AND watched_at IS NOT NULL').all(userId, torrentId) as any[]).map((r) => r.file_index))
   return vids.find((f) => !done.has(f.index)) ?? vids[0]
 }
@@ -60,16 +67,30 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
   const file = fileIndex !== undefined ? files.find((f) => f.index === fileIndex) : rel.is_pack ? pickFromPack(files, userId, torrentId, opts.episodeLabel) : pickVideo(files)
   if (!file) throw new Error('No playable video file in this torrent')
 
-  // Only fetch what somebody asked to watch; everything else in a season pack stays at priority 0.
-  const wanted = new Set(
-    (db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? AND watched_at IS NULL AND released_at IS NULL').all(torrentId) as any[]).map((r) => r.file_index),
-  )
-  wanted.add(file.index)
-  const toEnable = files.filter((f) => wanted.has(f.index) && f.priority === 0).map((f) => f.index)
-  const toSkip = files.filter((f) => !wanted.has(f.index) && f.priority !== 0 && f.progress === 0).map((f) => f.index)
-  await qb.filePrio(rel.info_hash, toSkip, 0)
-  await qb.filePrio(rel.info_hash, toEnable, 1)
-  await qb.filePrio(rel.info_hash, [file.index], 7)
+  if (rel.is_pack) {
+    // A season pack is downloaded whole, in order, whether or not anyone watches every episode: BTN's seeding rule
+    // applies to the complete torrent, and a half-downloaded pack can't be seeded. The requested episode goes first
+    // (max priority), the episodes after it next (high), then the earlier ones and the extras (normal).
+    const vids = files.filter((f) => isVideo(f.name)).sort(byName)
+    const at = vids.findIndex((f) => f.index === file.index)
+    const after = new Set(vids.slice(at + 1).map((f) => f.index))
+    const rank = (f: QbFile) => (f.index === file.index ? 7 : after.has(f.index) ? 6 : 1)
+    for (const prio of [7, 6, 1]) {
+      const ids = files.filter((f) => rank(f) === prio && f.priority !== prio && f.progress < 1).map((f) => f.index)
+      await qb.filePrio(rel.info_hash, ids, prio)
+    }
+  } else {
+    // A single episode: fetch only what somebody asked to watch (a torrent can hold extras).
+    const wanted = new Set(
+      (db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? AND watched_at IS NULL AND released_at IS NULL').all(torrentId) as any[]).map((r) => r.file_index),
+    )
+    wanted.add(file.index)
+    const toEnable = files.filter((f) => wanted.has(f.index) && f.priority === 0).map((f) => f.index)
+    const toSkip = files.filter((f) => !wanted.has(f.index) && f.priority !== 0 && f.progress === 0).map((f) => f.index)
+    await qb.filePrio(rel.info_hash, toSkip, 0)
+    await qb.filePrio(rel.info_hash, toEnable, 1)
+    await qb.filePrio(rel.info_hash, [file.index], 7)
+  }
 
   const t = now()
   db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, file_name, created_at, updated_at) VALUES (?,?,?,?,?,?)

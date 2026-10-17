@@ -65,10 +65,10 @@ const I = {
 /** A poster-shaped block: generated colour + title underneath, real artwork fades in over it once loaded. */
 const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" src="${esc(url)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
 
-/** Set a hero backdrop: banner if it exists, otherwise a blurred poster. */
-function backdrop(el, banner, poster) {
+/** Set a hero backdrop: banner if it exists, then the trailer's still frame, otherwise a blurred poster. */
+function backdrop(el, banner, poster, still) {
   const load = (u, cls) => new Promise((ok, no) => { if (!u) return no(); const i = new Image(); i.onload = () => ok(u); i.onerror = no; i.src = u }).then((u) => { el.style.backgroundImage = `url("${u}")`; el.className = 'bd ' + cls; requestAnimationFrame(() => el.classList.add('in')) })
-  load(banner, '').catch(() => load(poster, 'blur')).catch(() => {})
+  load(banner, '').catch(() => load(still, '')).catch(() => load(poster, 'blur')).catch(() => {})
 }
 
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
@@ -98,12 +98,25 @@ function renderTop() {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Downloads</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Torrents &amp; seeding</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
+    const ib = $('#inst'); if (ib) ib.onclick = installApp
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
 }
+/* ---------- install ---------- */
+let installEvt = null
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e })
+addEventListener('appinstalled', () => { installEvt = null })
+const installed = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
+async function installApp() {
+  if (installEvt) { const e = installEvt; installEvt = null; e.prompt(); await e.userChoice.catch(() => {}); return }
+  if (!window.isSecureContext) {
+    alert('Chrome only installs apps from a secure (HTTPS) address with a certificate it trusts. This address (' + location.origin + ') is not one, so the install option is switched off. Open Flix through its trusted https:// address (for example your Tailscale name without a port number), then try again.')
+  } else alert('Your browser has not offered to install Flix yet. Open the browser menu (⋮) and choose “Install app” or “Add to Home screen”. On iPhone: Share → Add to Home Screen.')
+}
+
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
 addEventListener('click', () => closeMenu($('.menu')))
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
@@ -167,7 +180,7 @@ async function homeView(q) {
     if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
-      html += `<h2 class="sec">New releases</h2>` + (series.length ? rowOf(series, tile) : '<div class="empty">Nothing here yet.</div>')
+      html += `<h2 class="sec">New releases</h2>` + (series.length ? rowOf(series, tile) : `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet.'}</div>`)
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
     }
     html += '</div>'
@@ -198,14 +211,14 @@ async function seriesView(id) {
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         ${series.trailerId ? `<a class="trailer-link" href="#trailer" id="tl">${I.play} Trailer</a>` : `<a class="trailer-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}" target="_blank" rel="noopener noreferrer">${I.play} Find trailer on YouTube</a>`}</div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
-      ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${I.play}<span>Watch trailer</span></button></div>` : ''}
+      ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <h2 class="sec">Episodes</h2><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
-    backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`)
+    backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const paint = () => {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="play">${I.play}</span><span><span class="en">${esc(e.label)}</span><br>
-        <span class="es">${e.available ? (e.onServer ? 'Ready to watch' : '') : 'Not available right now'}</span></span>
+        <span class="es">${e.available ? (e.onServer ? 'Ready to watch' : e.isPack ? 'Part of the full season download' : '') : 'Not available right now'}</span></span>
         <span>${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => go1(seasons.get(cur)[+b.dataset.i]))
     }
@@ -308,29 +321,47 @@ async function adminView(tab = 'downloads') {
   const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
   return () => {
     app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
-      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Downloads</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
+      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Torrents</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
     ;(tab === 'family' ? familyPanel : tab === 'settings' ? settingsPanel : downloadsPanel)(data, $('#adm-body'))
   }
 }
 
+const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
+const ago = (t) => { const d = Math.floor(Date.now() / 1000) - t; return d < 3600 ? Math.max(1, Math.round(d / 60)) + ' min ago' : d < 86400 ? Math.round(d / 3600) + ' h ago' : Math.round(d / 86400) + ' d ago' }
+
 function downloadsPanel(data, root) {
-  root.innerHTML = `<h1 style="font-size:32px">Downloads</h1>
-    <p class="dim" style="max-width:62ch">A show stays on the server until everyone has watched it <b style="color:var(--fg)">and</b> BroadcasTheNet's rule is met: ${data.requirements.minHours} hours seeded <b style="color:var(--fg)">or</b> a ${data.requirements.minRatio}:1 ratio. This can't be changed.</p>
-    <div class="card-box" id="adm"></div>`
+  const req = data.requirements
+  root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
+    <p class="dim" style="max-width:66ch">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded for <b style="color:var(--fg)">${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first, and Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
+    <div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+  const meter = (label, v, max, met) => `<div class="meter wide${met ? ' met' : ''}"><span>${label}</span><div class="m"><i style="width:${Math.min(100, (v / max) * 100)}%"></i></div></div>`
+  const card = (x, kind) => {
+    const title = esc(x.series), sub = esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name) + (x.resolution ? ' · ' + esc(x.resolution) : '') + (x.is_pack ? ' · whole season' : '')
+    let badge, body = ''
+    if (x.missing) { badge = '<span class="badge warn">not in qBittorrent</span>'; body = '<div class="dim">Flix lost track of this torrent in the download engine; it will be tidied up shortly.</div>' }
+    else if (kind === 'dl') {
+      badge = `<span class="badge info">Downloading ${Math.round(x.progress * 100)}%</span>`
+      body = `<div class="meter wide met"><span>${gb(x.size * x.progress)} of ${gb(x.size)}${x.dlspeed ? ' · ' + mbps(x.dlspeed) : ''}${x.eta && x.dlspeed ? ' · ' + dur(x.eta) + ' left' : ''}${!x.dlspeed ? ' · waiting for peers (' + x.seeds + ' seeders)' : ''}</span><div class="m"><i style="width:${x.progress * 100}%"></i></div></div>`
+    } else {
+      badge = x.seedMet ? '<span class="badge ok">Seeding requirement met</span>' : '<span class="badge warn">Seeding · not there yet</span>'
+      body = `<div class="meters">${meter(`Ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1`, x.ratio, req.minRatio, x.ratio >= req.minRatio)}${meter(`${x.seedHours.toFixed(1)} h of ${req.minHours} h seeded`, x.seedHours, req.minHours, x.seedHours >= req.minHours)}</div>
+        <div class="dim" style="font-size:13px">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
+    }
+    const rs = (x.reasons || []).filter((r) => !/^BTN seeding/.test(r) && r !== 'still downloading')
+    const why = x.deletable ? '<div class="dim" style="font-size:13px">Done: will be removed on the next sweep.</div>' : rs.length ? `<div class="dim" style="font-size:13px">Kept: ${esc(rs.join(' · '))}</div>` : ''
+    return `<div class="tcard rise"><div class="thead"><div><b>${title}</b><div class="dim" style="font-size:13px">${sub}</div></div>${badge}</div>${body}${why}
+      <div class="tfoot"><span class="dim" style="font-size:12px">Added ${ago(x.added_at)}</span><button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button></div></div>`
+  }
   const draw = (d) => {
-    const rows = d.downloads.map((x) => {
-      const active = x.state === 'active'
-      return `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)} ${esc(x.resolution || '')}</span></td>
-      <td>${x.progress !== undefined ? Math.round(x.progress * 100) + '%' + (x.dlspeed ? '<br><span class="dim">' + mbps(x.dlspeed) + '</span>' : '') : '—'}</td>
-      <td>${x.ratio !== undefined ? `<div class="meter">Ratio ${x.ratio.toFixed(2)} / ${d.requirements.minRatio}<div class="m"><i style="width:${Math.min(100, x.ratio * 100)}%"></i></div></div>
-        <div class="meter">${x.seedHours.toFixed(1)} h / ${d.requirements.minHours} h<div class="m"><i style="width:${Math.min(100, (x.seedHours / d.requirements.minHours) * 100)}%"></i></div></div>` : ''}</td>
-      <td>${active ? (x.deletable ? '<span class="badge ok">will be removed</span>' : '<span class="badge warn">kept</span>') : '<span class="badge dim">removed</span>'}</td>
-      <td class="dim">${active ? esc((x.reasons || []).join('; ')) : esc(x.remove_reason || '')}</td>
-      <td>${active ? `<button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button>` : ''}</td></tr>`
-    }).join('')
-    $('#adm').innerHTML = `<table><thead><tr><th>Show</th><th>Download</th><th>BTN requirement</th><th>Status</th><th>Why</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nothing downloaded yet.</td></tr>'}</tbody></table>`
-    $('#adm').querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
-      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not yet' : 'Failed'; b.disabled = true }
+    const act = d.downloads.filter((x) => x.state === 'active'), gone = d.downloads.filter((x) => x.state !== 'active')
+    const dl = act.filter((x) => !x.missing && x.left > 0), seed = act.filter((x) => !x.missing && x.left === 0 && !x.seedMet), done = act.filter((x) => !x.missing && x.left === 0 && x.seedMet), miss = act.filter((x) => x.missing)
+    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding, goal not yet met'], [done.length, 'seeding goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
+    const sec = (title, list, kind) => list.length ? `<h2 class="sec">${title}</h2><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
+    $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
+      + sec('Downloading', dl, 'dl') + sec('Seeding: requirement not met yet', seed, 'seed') + sec('Requirement met', done, 'seed') + sec('Needs attention', miss, 'dl')
+    $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><div class="card-box"><table><tbody>${gone.slice(0, 50).map((x) => `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)}</span></td><td class="dim">${esc(x.remove_reason || '')}</td><td class="dim">${x.removed_at ? ago(x.removed_at) : ''}</td></tr>`).join('')}</tbody></table></div></details>` : ''
+    root.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until seeded' : 'Failed'; b.disabled = true }
     })
   }
   draw(data)
