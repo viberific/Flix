@@ -135,6 +135,45 @@ function renderTop() {
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
 }
+/* ---------- the Flix sound ---------- */
+/**
+ * A two-beat "ba-DUM" made entirely in the browser (Web Audio), so there is no sound file to ship: a soft low thump, then a deeper
+ * one with a sub swell underneath and a bright shimmer that rings out. Played as the player opens, which happens on a tap, so the
+ * browser allows it. It never throws: no audio support, or a browser that insists on a tap first, just means a silent intro.
+ */
+let audioCtx = null
+function flixSting() {
+  try {
+    if (store.get('sting', true) === false) return
+    const AC = window.AudioContext || window.webkitAudioContext
+    if (!AC) return
+    audioCtx ??= new AC()
+    const c = audioCtx
+    if (c.state === 'suspended') c.resume().catch(() => {})
+    const t = c.currentTime + 0.05
+    const out = c.createGain(); out.gain.value = 0.9
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6
+    out.connect(comp); comp.connect(c.destination)
+    const env = (g, at, peak, attack, decay) => { g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(peak, at + attack); g.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay) }
+    const thump = (at, from, to, peak, decay) => {
+      const o = c.createOscillator(), g = c.createGain()
+      o.type = 'sine'; o.frequency.setValueAtTime(from, at); o.frequency.exponentialRampToValueAtTime(to, at + 0.22)
+      env(g, at, peak, 0.008, decay); o.connect(g); g.connect(out); o.start(at); o.stop(at + decay + 0.1)
+      const click = c.createOscillator(), cg = c.createGain() // a short tick on the front gives the hit its edge
+      click.type = 'triangle'; click.frequency.setValueAtTime(260, at); click.frequency.exponentialRampToValueAtTime(90, at + 0.04)
+      env(cg, at, peak * 0.35, 0.002, 0.05); click.connect(cg); cg.connect(out); click.start(at); click.stop(at + 0.12)
+    }
+    thump(t, 150, 55, 0.55, 0.32)            // ba
+    thump(t + 0.3, 110, 38, 0.95, 0.9)       // DUM
+    const sub = c.createOscillator(), sg = c.createGain(); sub.type = 'sine'; sub.frequency.value = 41
+    env(sg, t + 0.3, 0.5, 0.05, 1.5); sub.connect(sg); sg.connect(out); sub.start(t + 0.3); sub.stop(t + 1.9)
+    // The shimmer: a few bright partials of a chord that bloom as the second beat lands and fade over a second or so.
+    for (const [f, peak, lag] of [[392, 0.09, 0.02], [587.3, 0.07, 0.06], [784, 0.06, 0.1], [1174.7, 0.035, 0.14]]) {
+      const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = f; o.detune.value = (f % 7) - 3
+      env(g, t + 0.3 + lag, peak, 0.12, 1.4); o.connect(g); g.connect(out); o.start(t + 0.3 + lag); o.stop(t + 2.1)
+    }
+  } catch { /* silent intro */ }
+}
 /* ---------- install ---------- */
 let installEvt = null
 // Keep the event so the in-app button can use it, but deliberately do NOT preventDefault():
@@ -428,11 +467,11 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
-      <div class="p-wait" id="wait"><img class="art" id="wart" alt="" hidden><div class="ring"></div><div id="msg">Getting your show ready…</div><div class="pline"><i id="pb"></i></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="burst"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div><div class="pline"><i id="pb"></i></div></div></div>`
+    flixSting()
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
-    const wa = $('#wart'); wa.onload = () => { wa.hidden = false }; wa.src = `/api/art/${seriesId}/poster`
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     const avoid = []
@@ -473,7 +512,7 @@ function playView(seriesId, season, label) {
       if (!alive) return
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
-      $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
+      $('.mark')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
       $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(friendly(msg))}</div>${me?.is_admin && friendly(msg) !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
         <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
       $('#again').onclick = () => route()
@@ -513,7 +552,7 @@ function playView(seriesId, season, label) {
           slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0
           // Nothing arriving for ~25 s: try another release of the same episode, up to twice.
           if (waited > 25000 && slow >= 20 && tries < 2) return switchSource()
-          $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
+          $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : ''
         }, 1000)
         await loadInfo(0, play.position)
       } catch (e) { fail(e.message) }
