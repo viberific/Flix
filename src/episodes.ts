@@ -10,7 +10,7 @@ import { packEpisodes, packFor } from './packs.ts'
 export { candidatesFor }
 export interface Episode {
   season: number | null; episode: number | null; label: string
-  /** True when the episode lives inside a season pack (the whole pack is downloaded, in order, so it can be seeded). */
+  /** True when the episode lives inside a season pack (fetched one episode at a time, as it is watched, so it can be seeded). */
   isPack: boolean
   torrentId: number; quality: string; available: boolean; onServer: boolean
   watched: boolean; position: number; duration: number

@@ -56,8 +56,9 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
   if (origin === 'adopted' && !db.prepare('SELECT 1 FROM interests WHERE torrent_id = ?').get(torrentId))
     return { deletable: false, reasons: ['added to the Downloads folder outside Flix; kept until someone has watched it'], pending, seed }
   // A torrent that never got a single byte (no seeders, or the viewer was moved to another source) owes BTN nothing and is
-  // not worth keeping; without this a dead torrent would sit in the engine forever, "still downloading".
-  if (t.downloaded === 0 && !pending.length) return { deletable: true, reasons: [], pending, seed }
+  // not worth keeping; without this a dead torrent would sit in the engine forever, "still downloading". Every one of these
+  // has to hold for that to be true: a torrent that fetched even a byte, or holds a partial file, is kept and seeded.
+  if (t.downloaded === 0 && t.progress === 0 && t.amount_left >= t.size && !pending.length) return { deletable: true, reasons: [], pending, seed }
   const reasons: string[] = []
   if (t.amount_left > 0) reasons.push('still downloading')
   if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
@@ -71,11 +72,43 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
 }
 
 export async function removeDownload(torrentId: number, hash: string, reason: string) {
-  stopJobsFor(torrentId)
   const t = await qb.info(hash).catch(() => undefined)
+  // Last line of defence, so no caller can get round the seeding rule: anything that has fetched a byte stays until BTN's
+  // 130 h or 1:1 is met. Thrown, not skipped, so a caller that expected a removal reports it instead of assuming one.
+  if (t && t.downloaded > 0 && !seedStatus(t).met)
+    throw new Error(`BTN seeding requirement (${config.seed.minHours}h or ${config.seed.minRatio}:1) not met yet; refusing to remove`)
+  stopJobsFor(torrentId)
   await qb.remove(hash, true)
   if (t) tidyAfterRemoval(t) // the engine deletes the files; sweep up the empty folders it leaves in Downloads
   db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason=? WHERE torrent_id=?`).run(now(), reason, torrentId)
+}
+
+/**
+ * Point every torrent in the engine at the Downloads folder Flix is configured to use, so a changed DOWNLOAD_DIR (or a folder
+ * that moved under it) does not leave files scattered and unseedable. Moving a torrent this way keeps it in the engine: it
+ * stays in the swarm, keeps its seed time, and nothing is removed or deleted. Torrents already there are left alone, ones
+ * still downloading are picked up next start, and ones somebody is watching right now wait until they stop. Never throws:
+ * a start-up that cannot reach the engine must still come up.
+ */
+export async function relocateDownloads(): Promise<{ moved: number; skipped: number; failed: number }> {
+  const out = { moved: 0, skipped: 0, failed: 0 }
+  const target = config.downloadDir.replace(/[\\/]+$/, '')
+  const all = await qb.listAll().catch((e: any) => { console.warn(`[qb] could not list torrents to relocate: ${e.message}`); return [] as QbTorrent[] })
+  const busy = new Set((db.prepare('SELECT DISTINCT torrent_id FROM interests WHERE watched_at IS NULL AND released_at IS NULL AND updated_at > ?').all(now() - 1800) as { torrent_id: number }[]).map((r) => r.torrent_id))
+  const flixId = new Map((db.prepare(`SELECT torrent_id, info_hash FROM downloads WHERE state='active'`).all() as { torrent_id: number; info_hash: string }[]).map((r) => [r.info_hash, r.torrent_id]))
+  for (const t of all) {
+    if (t.save_path.replace(/[\\/]+$/, '') === target) { out.skipped++; continue }
+    if (t.dlspeed > 0 || /DL$/.test(t.state) || t.progress < 1) { out.skipped++; console.log(`[qb] left ${t.name} where it is: still downloading`); continue }
+    const id = flixId.get(t.hash)
+    if (id !== undefined && busy.has(id)) { out.skipped++; console.log(`[qb] left ${t.name} where it is: being watched right now`); continue }
+    try {
+      await qb.setLocation(t.hash, target)
+      out.moved++
+      console.log(`[qb] moved ${t.name} to ${target} (was ${t.save_path})`)
+    } catch (e: any) { out.failed++; console.warn(`[qb] could not move ${t.name}: ${e.message}`) }
+  }
+  if (out.moved || out.failed) console.log(`[qb] relocate: ${out.moved} moved, ${out.skipped} left alone, ${out.failed} failed`)
+  return out
 }
 
 /** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled. */

@@ -22,9 +22,9 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { storageHistory } from './storage.ts'
-import { autoForListed, autoNext, startAutoDownloads } from './autodl.ts'
+import { autoForListed, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
-import { holdersOf, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { holdersOf, pendingViewers, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -432,6 +432,19 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
 }
 
 // ---- watch state ------------------------------------------------------------
+/** Which episode of a torrent this file is, so the one after it can be lined up (a pack names each file by its own SxxEyy). */
+async function lineUpNext(userId: number, torrentId: number, fileIndex: number) {
+  const rel = db.prepare('SELECT series_id, season, label, is_pack FROM releases WHERE torrent_id = ?').get(torrentId) as any
+  if (!rel) return
+  let label = String(rel.label ?? '')
+  if (rel.is_pack) {
+    const i = db.prepare('SELECT file_name FROM interests WHERE user_id=? AND torrent_id=? AND file_index=?').get(userId, torrentId, fileIndex) as any
+    const tag = /S\d+E\d+/i.exec(i?.file_name ?? '')?.[0]?.toUpperCase()
+    if (!tag) return
+    label = tag
+  }
+  if (label) await autoNext(userId, rel.series_id, rel.season, label, 'next episode, current one is past 60%')
+}
 app.post('/api/progress', auth, async (req) => {
   const { torrentId, fileIndex, position, duration, ended } = req.body as any
   const frac = duration > 0 ? position / duration : 0
@@ -440,6 +453,9 @@ app.post('/api/progress', auth, async (req) => {
   const done = !!ended || (config.watchedThreshold >= 1 ? duration > 0 && duration - position <= 3 : frac >= config.watchedThreshold)
   db.prepare(`UPDATE interests SET position=?, duration=?, updated_at=?, watched_at = CASE WHEN ? THEN COALESCE(watched_at, ?) ELSE watched_at END
     WHERE user_id=? AND torrent_id=? AND file_index=?`).run(position, duration, now(), done ? 1 : 0, now(), req.user!.id, torrentId, fileIndex)
+  // The player asks for the next episode itself once it is 60% through, but a client that does not (a TV app, a reloaded
+  // tab) must still get it: line it up from here as well. Repeats are dropped inside autoFetch for ten minutes.
+  if (!done && frac >= NEXT_EPISODE_AT) void lineUpNext(req.user!.id, torrentId, fileIndex).catch(() => {})
   return { watched: done }
 })
 app.post('/api/watched', auth, async (req) => {
@@ -505,6 +521,10 @@ app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const t = await engine.info(d.info_hash)
   if (t && t.downloaded > 0 && !seedStatus(t).met)
     throw Object.assign(new Error('BTN seeding requirement (130 h or 1:1) not met yet; refusing to remove'), { statusCode: 409 })
+  // Nor while somebody is still partway through it: that would take the file out from under them.
+  const watching = pendingViewers(id)
+  if (watching.length)
+    throw Object.assign(new Error(`Still being watched by ${watching.join(', ')}; refusing to remove until they finish or release it`), { statusCode: 409 })
   await removeDownload(id, d.info_hash, 'removed by admin')
   return { ok: true }
 })
@@ -652,6 +672,7 @@ export async function start() {
   }
   startCrawler()
   startNetworkCrawler()
+  await relocateDownloads() // point every torrent at the Downloads folder Flix is set to use now, without taking any out of the engine
   startAutoDownloads()
   startBackups()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')

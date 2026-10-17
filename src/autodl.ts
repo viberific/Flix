@@ -9,13 +9,16 @@ import { seasonsOf } from './seasons.ts'
 
 /**
  * Downloads Flix starts before anyone presses play, so a show does not buffer for ages:
- *   - the next episode, once the current one is half watched (or fully downloaded);
+ *   - the next episode, once the current one is watched past 60% (or fully downloaded);
  *   - the first unwatched episode of a show added to My List;
  *   - a new episode, for someone who is caught up on that show.
  * They are conservative on purpose: a download has to seed 130 h (or 1:1) before it may be deleted, so a wasted one holds the disk
  * for days. Limits: a few per person, a total size, no big season packs, nothing below 25% free disk, and one nobody opens lapses in a week.
  * Something a person pressed play on is never held back by any of this.
  */
+
+/** How far into an episode counts as "they are watching this": past this the next one is lined up on disk. */
+export const NEXT_EPISODE_AT = 0.6
 
 const autoCutoff = () => now() - config.auto.expireDays * 86400
 const mb = (n: number) => `${Math.round(n / 1e6)} MB`
@@ -104,7 +107,7 @@ export async function autoNewEpisodes() {
 /** Every few minutes: whoever is partway through an episode that has now finished downloading gets the next one lined up. */
 export async function autoNextWhenComplete() {
   const rows = db.prepare(`SELECT i.user_id, i.file_index, r.torrent_id, r.info_hash, r.series_id, r.season, r.label, r.is_pack, i.file_name FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
-    WHERE i.watched_at IS NULL AND i.released_at IS NULL AND i.auto = 0 AND i.position > 60 AND i.updated_at > ?`).all(now() - 900) as any[]
+    WHERE i.watched_at IS NULL AND i.released_at IS NULL AND i.auto = 0 AND i.duration > 0 AND i.position >= i.duration * ${NEXT_EPISODE_AT} AND i.updated_at > ?`).all(now() - 900) as any[]
   for (const r of rows) {
     const files = await qb.files(r.info_hash).catch(() => [])
     if (!files.find((f) => f.index === r.file_index && f.progress >= 1)) continue

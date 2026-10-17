@@ -536,8 +536,8 @@ function playView(seriesId, season, label) {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           skipCheck()
           const dur = info?.duration || v.duration
-          if (!prefetched && dur && v.currentTime / dur > 0.5) {
-            prefetched = true // halfway through: line up the next episode, so "Up next" is instant
+          if (!prefetched && dur && v.currentTime / dur >= 0.6) {
+            prefetched = true // watched past 60%: line up the next episode, so "Up next" is instant
             api('/api/prefetch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label }).catch(() => {})
           }
         }

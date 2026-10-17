@@ -78,31 +78,23 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
   const file = fileIndex !== undefined ? files.find((f) => f.index === fileIndex) : rel.is_pack ? pickFromPack(files, userId, torrentId, opts.episodeLabel) : pickVideo(files)
   if (!file) throw new Error('No playable video file in this torrent')
 
-  if (rel.is_pack) {
-    // A season pack is downloaded whole, in order, whether or not anyone watches every episode: BTN's seeding rule
-    // applies to the complete torrent, and a half-downloaded pack can't be seeded. The requested episode goes first
-    // (max priority), the episodes after it next (high), then the earlier ones and the extras (normal).
-    const vids = files.filter((f) => isVideo(f.name)).sort(byName)
-    const at = vids.findIndex((f) => f.index === file.index)
-    const after = new Set(vids.slice(at + 1).map((f) => f.index))
-    const rank = (f: QbFile) => (f.index === file.index ? 7 : after.has(f.index) ? 6 : 1)
-    for (const prio of [7, 6, 1]) {
-      const ids = files.filter((f) => rank(f) === prio && f.priority !== prio && f.progress < 1).map((f) => f.index)
-      await qb.filePrio(rel.info_hash, ids, prio)
-    }
-  } else {
-    // A single episode: fetch only what somebody asked to watch (a torrent can hold extras).
-    const wanted = new Set(
-      (db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? AND watched_at IS NULL AND released_at IS NULL').all(torrentId) as any[]).map((r) => r.file_index),
-    )
-    wanted.add(file.index)
-    for (const f of files) if (SUBFILE.test(f.name)) wanted.add(f.index) // tiny, and the player offers them as subtitles
-    const toEnable = files.filter((f) => wanted.has(f.index) && f.priority === 0).map((f) => f.index)
-    const toSkip = files.filter((f) => !wanted.has(f.index) && f.priority !== 0 && f.progress === 0).map((f) => f.index)
-    await qb.filePrio(rel.info_hash, toSkip, 0)
-    await qb.filePrio(rel.info_hash, toEnable, 1)
-    await qb.filePrio(rel.info_hash, [file.index], 7)
-  }
+  // Fetch only what somebody asked to watch, one episode at a time (a torrent can also hold extras). In a season pack
+  // that means the pack is NOT pulled in whole: BTN requires 130 h of seeding (or 1:1) before a byte may be removed, so
+  // downloading episodes nobody has asked for would pin the disk and the upload for days. Playing the next episode of
+  // the same pack runs this again and enables that one file inside the same torrent, and the files already held stay
+  // enabled, so what has been fetched keeps seeding normally.
+  const wanted = new Set(
+    (db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? AND watched_at IS NULL AND released_at IS NULL').all(torrentId) as any[]).map((r) => r.file_index),
+  )
+  wanted.add(file.index)
+  for (const f of files) if (SUBFILE.test(f.name)) wanted.add(f.index) // tiny, and the player offers them as subtitles
+  const toEnable = files.filter((f) => wanted.has(f.index) && f.priority === 0).map((f) => f.index)
+  // Never set a file that already has bytes back to skipped: a part-fetched episode stays fetchable instead of being
+  // abandoned mid-file (and its pieces keep seeding either way).
+  const toSkip = files.filter((f) => !wanted.has(f.index) && f.priority !== 0 && f.progress === 0).map((f) => f.index)
+  await qb.filePrio(rel.info_hash, toSkip, 0)
+  await qb.filePrio(rel.info_hash, toEnable, 1)
+  await qb.filePrio(rel.info_hash, [file.index], 7)
 
   const t = now()
   if (opts.auto) { // started ahead of time: never bring back something this person finished or let go of
