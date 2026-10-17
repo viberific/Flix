@@ -7,10 +7,11 @@ import { config } from './config.ts'
 import { qb, type QbFile } from './qb.ts'
 import { fetchTorrentFile } from './btn/client.ts'
 import { isVideo, parseEpisodeTag } from './btn/parse.ts'
+import { assertSpace } from './health.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export interface Release { is_pack: number; torrent_id: number; info_hash: string; torrent_link: string; series: string; group_name: string }
+export interface Release { size: number | null; is_pack: number; torrent_id: number; info_hash: string; torrent_link: string; series: string; group_name: string }
 export const getRelease = (id: number) => db.prepare('SELECT * FROM releases WHERE torrent_id = ?').get(id) as Release | undefined
 
 const adding = new Map<number, Promise<void>>()
@@ -21,6 +22,7 @@ async function ensureAdded(rel: Release) {
   if (await qb.info(hash)) {
     await qb.resume(hash).catch(() => {})
   } else {
+    assertSpace(Number(rel.size ?? 0))
     const file = await fetchTorrentFile(rel.torrent_link)
     await qb.add(file, join(config.downloadDir, hash))
   }

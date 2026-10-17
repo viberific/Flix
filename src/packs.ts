@@ -32,16 +32,16 @@ async function list(torrentId: number, season: number) {
 }
 
 /** The pack the show's pack-sourced seasons play from (the best living one for that season). */
-export function packFor(seriesId: number, season: number): number | undefined {
-  return pickRelease(candidatesFor(seriesId).filter((r) => r.is_pack && r.season === season))?.torrent_id
+export function packFor(seriesId: number, season: number, avoid?: Set<number>): number | undefined {
+  return pickRelease(candidatesFor(seriesId).filter((r) => r.is_pack && r.season === season && !avoid?.has(r.torrent_id)))?.torrent_id
 }
 
 /** Make sure every pack-sourced season of this show has its episode list. A pack that can't be read keeps showing as one "Season N" entry. */
-export async function ensurePackFiles(seriesId: number): Promise<void> {
+export async function ensurePackFiles(seriesId: number, avoid?: Set<number>): Promise<void> {
   const seasons = seasonsOf(seriesId)
   if (!seasons) return
   await Promise.all([...seasons].filter(([, src]) => src === 'pack').map(async ([season]) => {
-    const id = packFor(seriesId, season)
+    const id = packFor(seriesId, season, avoid)
     if (id === undefined) return
     let p = inflight.get(id)
     if (!p) { p = list(id, season).catch((e) => console.warn(`[packs] could not list torrent ${id}: ${e.message}`)).finally(() => inflight.delete(id)); inflight.set(id, p) }

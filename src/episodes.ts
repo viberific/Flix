@@ -27,10 +27,11 @@ function episodeKey(r: { season: number | null; label: string; is_pack: number; 
  * individual episode releases when the season has them all, otherwise the season pack expanded into its episodes.
  * Call ensurePackFiles() first so packs can be expanded.
  */
-export function buildEpisodes(seriesId: number, userId: number): Episode[] {
+/** `avoid` lists sources that did not work for this viewer; the next-best release is used instead. */
+export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<number>): Episode[] {
   const seasons = seasonsOf(seriesId)
   if (!seasons) return []
-  const rows = candidatesFor(seriesId)
+  const rows = candidatesFor(seriesId).filter((r) => !avoid?.has(r.torrent_id))
   const prog = (db.prepare(`SELECT r.season, r.label, r.is_pack, i.file_name, i.watched_at, i.position, i.duration, i.updated_at FROM interests i
     JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND r.series_id = ? AND i.released_at IS NULL ORDER BY i.updated_at DESC`).all(userId, seriesId) as any[])
     .map((p) => ({ ...p, ...episodeKey(p) }))
@@ -51,7 +52,7 @@ export function buildEpisodes(seriesId: number, userId: number): Episode[] {
       }
       continue
     }
-    const packId = packFor(seriesId, season)
+    const packId = packFor(seriesId, season, avoid)
     const pack = rows.find((r) => r.torrent_id === packId)
     if (!pack) continue
     const files = packEpisodes(pack.torrent_id)

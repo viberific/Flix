@@ -13,7 +13,16 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 2. **1080p** is preferred, **4K (2160p)** is the fallback when there is no 1080p, then 720p, then anything else;
 3. ties go to a copy already on disk (instant start), then H.264, then the most seeders.
 
-4K is always re-encoded down to 1080p for the browser. HDR is not tone-mapped yet, so HDR sources can look washed out.
+4K is always re-encoded down to 1080p for the browser. HDR sources are tone-mapped to normal colours during that re-encode (needs ffmpeg's `zscale` filter, which Flix checks for at startup of the first transcode; if the container's ffmpeg lacks it, HDR is passed through unchanged).
+
+## "Just works" for the family
+
+- **One login, no typing.** Sessions last 180 days and renew while a device is in use. The admin can create a one-time **sign-in link** for each person (Family → *Sign-in link*); opening it signs that device in with no password. Devices remember every profile used on them and ask **Who's watching?** when the app opens. To drop Umbrel's own login in front of Flix, see `docs/umbrel-single-login.md`.
+- **Playback that recovers.** If the chosen release delivers nothing for ~25 s, Flix quietly switches to the next-best release of the same episode (up to twice). While an episode plays, the next one starts downloading, so "Up next" is instant. Errors are written for the family ("isn't ready to play yet"), with the technical text shown to admins only.
+- **Subtitles and audio.** Embedded text subtitles appear in the player's own CC menu (extracted as they download), with the choice remembered per device; English subtitles turn on by default for non-English audio. Several audio tracks give an audio button. Picture subtitles (PGS/VobSub) can't be shown in a browser. A *Skip intro* / *Skip recap* button appears when the file's chapters are named like one. Also: 10-second back/forward, keyboard shortcuts (space, arrows, F, M), remembered volume.
+- **TVs and casting.** On a TV browser (or with arrow keys once something is focused) the arrow keys move between tiles and Back goes back; the layout scales up on big screens. Where the browser supports casting (Remote Playback) a cast button appears, using a signed, cookie-free link. That only works when the TV can reach this server on the local network, not over Tailscale alone.
+- **My List, Because you watched, New badges** on the home page.
+- **Looks after itself.** New downloads are refused before the disk is nearly full (`MIN_FREE_GB`, default 10); a dead torrent that never delivered a byte is cleaned up; the database (accounts, watch history) is copied once a day to `DATA_DIR/backups` (last 7 kept). Admins get a banner on any page when BTN refuses the key or IP, qBittorrent is down, or storage is low.
 
 - **What gets listed** (`src/seasons.ts`) – a show appears only when its **whole first season** is available; otherwise it is hidden.
   After season 1 only the *next* season in sequence may follow, and only when it is whole: with seasons 1 and 3 on BTN but no 2, only season 1 shows.
@@ -82,7 +91,8 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 
 - Seeking far beyond the downloaded part waits for the sequential download to reach it (qBittorrent cannot
   prioritise arbitrary pieces).
-- Subtitles are not extracted yet.
+- Subtitles inside the file only: separate `.srt` files in a torrent are not picked up yet. While a file is still downloading, subtitles cover what has arrived and refresh every 90 s.
+- Casting works only where the TV can reach the server directly (see above); HLS (transcoded) playback in Chrome uses MSE, which the browser can't hand to a cast device.
 - "Whole season" is judged from what BTN has: Flix does not know a currently airing season's final episode count, so a season with E01–E06 and nothing missing counts as whole.
 - Trailers are found automatically (BTN, then TMDB, then a YouTube search). The still image on the show page is fetched by the server; the viewer's browser only contacts YouTube once someone taps play.
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set

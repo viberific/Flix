@@ -46,6 +46,8 @@ process.env.ART_ALLOW_PRIVATE_HOSTS = 'true' // test artwork is served from loca
 process.env.BTN_API_URL = `http://127.0.0.1:${P.btn}/`
 process.env.QB_URL = `http://127.0.0.1:${P.qb}`
 process.env.SWEEP_INTERVAL_SEC = '3600'
+process.env.SWEEP_GRACE_SEC = '0'
+process.env.MIN_FREE_GB = '0'
 
 let tracker: any, seeder: WebTorrent.Instance, btn: Server, qbProc: ChildProcess
 // 1x1 PNG

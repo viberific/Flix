@@ -215,3 +215,29 @@ test('torrentFiles reads single- and multi-file torrents', () => {
   assert.deepEqual(torrentFiles(Buffer.from(ben({ info: { name: 'a.mkv', length: 5 } }))), [{ path: 'a.mkv', size: 5 }])
   assert.throws(() => torrentFiles(Buffer.from('d4:spam')))
 })
+
+const { createUser, createInvite, redeemInvite, newSession, sessionUser, tvToken, userForTvToken } = await import('../src/auth.ts')
+
+test('sign-in links work once; sessions and TV links are checked', () => {
+  const u = createUser('ann', 'password123', false)
+  const inv = createInvite(u.id)
+  const r = redeemInvite(inv)
+  assert.equal(r?.userId, u.id)
+  assert.equal(redeemInvite(inv), null, 'second use is refused')
+  assert.equal(redeemInvite('0'.repeat(48)), null)
+  assert.equal(sessionUser(r!.session), u.id)
+  assert.equal(sessionUser('f'.repeat(64)), null)
+  assert.notEqual(newSession(u.id), newSession(u.id))
+  const tok = tvToken(u.id)
+  assert.equal(userForTvToken(tok)?.id, u.id)
+  assert.equal(userForTvToken(tok.slice(0, -1) + (tok.endsWith('0') ? '1' : '0')), null, 'a tampered token is refused')
+  assert.equal(userForTvToken(`${u.id}.1.${'0'.repeat(32)}`), null)
+})
+
+test('assertSpace refuses when the disk would fill up', async () => {
+  const { assertSpace } = await import('../src/health.ts')
+  assert.doesNotThrow(() => assertSpace(0))
+  config.minFreeGb = 1e9 // more than any disk
+  assert.throws(() => assertSpace(1), /out of storage/)
+  config.minFreeGb = 10
+})

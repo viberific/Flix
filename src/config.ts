@@ -28,8 +28,13 @@ export const config = {
   // BroadcasTheNet's seeding requirement: 130 hours of seeding OR a 1:1 ratio. Fixed on purpose, not configurable.
   seed: { minRatio: 1.0, minHours: 130, mode: 'any' } as { minRatio: number; minHours: number; mode: 'any' | 'all' },
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
-  abandonDays: num('ABANDON_DAYS', 0),
+  // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
+  abandonDays: num('ABANDON_DAYS', 30),
+  // Refuse new downloads when less than this much disk would be left (GB).
+  minFreeGb: num('MIN_FREE_GB', 10),
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
+  /** A torrent added less than this long ago is never swept (its first viewer is still being recorded). */
+  sweepGraceSec: num('SWEEP_GRACE_SEC', 300),
   /** Random per-process secret so our own ffmpeg can read the raw stream without a user cookie. */
   internalKey: crypto.randomUUID(),
 }

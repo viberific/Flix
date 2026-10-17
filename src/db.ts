@@ -58,8 +58,14 @@ CREATE TABLE IF NOT EXISTS interests (
   released_at INTEGER,                       -- user said "I don't need this"
   PRIMARY KEY (user_id, torrent_id, file_index)
 );
+-- One-time sign-in links the admin hands out, so a family member never has to type a password on a new device.
+CREATE TABLE IF NOT EXISTS invites (
+  token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS my_list (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, series_id INTEGER NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (user_id, series_id)
+);
 `)
-
 try { db.exec('ALTER TABLE releases ADD COLUMN youtube_trailer TEXT') } catch { /* already present */ }
 // Last episode a multi-episode file covers (S01E01E02 -> 2); null for everything else.
 try { db.exec('ALTER TABLE releases ADD COLUMN episode_end INTEGER') } catch { /* already present */ }

@@ -5,18 +5,19 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
-import { createUser, hashPassword, login, logout, requireAdmin, requireUser, setSessionCookie, userCount, userFor } from './auth.ts'
+import { createInvite, createUser, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setSessionCookie, tvToken, userCount, userFor, userForTvToken } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { cleanHlsCache, ensureHls, jobDir, probe, touchHls } from './transcode.ts'
+import { cleanHlsCache, ensureHls, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
 import { artPathSql, getArt } from './art.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
+import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -42,6 +43,21 @@ app.post('/api/login', async (req, reply) => {
   if (!token) return reply.code(401).send({ error: 'Wrong username or password' })
   setSessionCookie(reply, token)
   return { user: userFor({ headers: { cookie: `flix_session=${token}` } } as any) }
+})
+/** A second session for this person, kept by the browser so "Who's watching?" can switch back to them without a password. */
+app.post('/api/device-token', { preHandler: requireUser }, async (req) => ({ token: newSession(req.user!.id) }))
+app.post('/api/switch', async (req, reply) => {
+  const token = String((req.body as any)?.token ?? '')
+  if (!sessionUser(token)) return reply.code(401).send({ error: 'That profile needs to sign in again' })
+  setSessionCookie(reply, token)
+  return { user: userFor({ headers: { cookie: `flix_session=${token}` } } as any) }
+})
+/** Open a sign-in link from the admin: signs this device in as that person, once. */
+app.post('/api/join', async (req, reply) => {
+  const r = redeemInvite(String((req.body as any)?.token ?? ''))
+  if (!r) return reply.code(410).send({ error: 'This sign-in link has already been used or has expired. Ask for a new one.' })
+  setSessionCookie(reply, r.session)
+  return { user: userFor({ headers: { cookie: `flix_session=${r.session}` } } as any), token: r.session }
 })
 app.post('/api/logout', async (req, reply) => { logout(req); setSessionCookie(reply, null); return { ok: true } })
 
@@ -106,31 +122,57 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerId = youtubeId(trailer) ?? youtubeId(d?.trailer)
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   return {
-    series: { ...rest, genres, year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
+    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: buildEpisodes(id, req.user!.id),
   }
 })
 
-/** Netflix-style home: a "New" row, then one row per genre; every row is newest first. */
+const NEW_DAYS = 7
+const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[]') as any[]).map((x) => String(x).trim()).filter(Boolean) } catch { return [] } }
+
+/** Netflix-style home: My List, "Because you watched", a "New" row, then one row per genre; every row is newest first. */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
   const rows = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 400)
   rows.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
   const byGenre = new Map<string, any[]>()
-  for (const r of rows) {
-    let gs: string[] = []
-    try { gs = JSON.parse(r.genres ?? '[]') } catch { /* none */ }
-    for (const g of new Set(gs.map((x) => String(x).trim()).filter(Boolean))) {
-      if (!byGenre.has(g)) byGenre.set(g, [])
-      byGenre.get(g)!.push(r)
-    }
+  for (const r of rows) for (const g of new Set(genresOf(r))) {
+    if (!byGenre.has(g)) byGenre.set(g, [])
+    byGenre.get(g)!.push(r)
   }
-  const clean = ({ genres, ...r }: any) => r
+  const fresh = now() - NEW_DAYS * 86400
+  const clean = ({ genres, ...r }: any) => ({ ...r, isNew: r.latest > fresh })
   const sections = [...byGenre.entries()].filter(([, l]) => l.length >= 2 || byGenre.size < 4)
     .sort((a, b) => b[1][0].latest - a[1][0].latest || b[1].length - a[1].length).slice(0, 14)
     .map(([genre, l]) => ({ title: genre, series: l.slice(0, 30).map(clean) }))
-  return { new: rows.slice(0, 30).map(clean), sections, checking: unsyncedCount() }
+
+  const uid = req.user!.id
+  const listed = new Set((db.prepare('SELECT series_id FROM my_list WHERE user_id = ? ORDER BY added_at DESC').all(uid) as any[]).map((r) => r.series_id))
+  const myList = [...listed].map((id) => rows.find((r) => r.id === id)).filter(Boolean).map(clean)
+
+  // "Because you watched X": other shows sharing X's genres that this person has not started.
+  let because: { name: string; series: any[] } | null = null
+  const last = db.prepare('SELECT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? ORDER BY i.updated_at DESC LIMIT 1').get(uid) as any
+  const base = last && rows.find((r) => r.id === last.id)
+  if (base) {
+    const mine = new Set(genresOf(base))
+    const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
+    const rec = rows.filter((r) => !touched.has(r.id)).map((r) => ({ r, score: genresOf(r).filter((g) => mine.has(g)).length })).filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, 20).map((x) => clean(x.r))
+    if (rec.length >= 2) because = { name: base.name, series: rec }
+  }
+  return { new: rows.slice(0, 30).map(clean), sections, checking: unsyncedCount(), myList, because }
+})
+
+/** Add or remove a show from the viewer's own list. */
+app.post('/api/mylist', auth, async (req) => {
+  const { seriesId, on } = req.body as any
+  const id = Number(seriesId)
+  if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
+  if (on) db.prepare('INSERT OR IGNORE INTO my_list VALUES (?,?,?)').run(req.user!.id, id, now())
+  else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
+  return { inList: !!on }
 })
 
 app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!) }))
@@ -160,14 +202,20 @@ app.post('/api/play', guarded, async (req) => {
   return startPlayback(req.user!.id, Number(torrentId), fileIndex === undefined ? undefined : Number(fileIndex))
 })
 
-/** The one-tap path: pick the best source (1080p, else 4K) and start playing. */
+const cleanIds = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 10) : [])
+
+/** The one-tap path: pick the best source (1080p, else 4K) and start playing. `avoid` = sources that already failed for this viewer. */
 app.post('/api/watch', auth, async (req) => {
   const { seriesId, season, label } = req.body as any
+  const avoid = new Set(cleanIds((req.body as any).avoid))
   if (!canViewSeries(req.user, Number(seriesId))) throw notFound('That show is not available')
-  await ensurePackFiles(Number(seriesId))
-  const eps = buildEpisodes(Number(seriesId), req.user!.id)
+  if (avoid.size) { // the viewer was moved to another source: stop holding the one that did not work
+    db.prepare(`UPDATE interests SET released_at = ? WHERE user_id = ? AND watched_at IS NULL AND torrent_id IN (${[...avoid].map(() => '?').join(',')})`).run(now(), req.user!.id, ...avoid)
+  }
+  await ensurePackFiles(Number(seriesId), avoid)
+  const eps = buildEpisodes(Number(seriesId), req.user!.id, avoid)
   const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
-  if (i < 0) throw Object.assign(new Error('That episode is not available'), { statusCode: 404 })
+  if (i < 0) throw Object.assign(new Error(avoid.size ? 'There is no other source for this episode.' : 'That episode is not available'), { statusCode: 404 })
   const ep = eps[i]
   if (!ep.available) throw Object.assign(new Error('Nobody is sharing this episode right now. Please try again later.'), { statusCode: 503 })
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
@@ -176,21 +224,60 @@ app.post('/api/watch', auth, async (req) => {
   return { ...play, seriesName, quality: ep.quality, title: ep.label, next: next ? { season: next.season, label: next.label } : null }
 })
 
+const prefetched = new Map<string, number>()
+/** While one episode plays, start fetching the next so "Up next" is instant. Quiet by design: failures are ignored. */
+app.post('/api/prefetch', auth, async (req) => {
+  const { seriesId, season, label } = req.body as any
+  if (!canViewSeries(req.user, Number(seriesId))) return { ok: false }
+  const eps = buildEpisodes(Number(seriesId), req.user!.id)
+  const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
+  const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
+  if (!next) return { ok: false }
+  const key = `${req.user!.id}:${next.torrentId}:${next.label}`
+  if ((prefetched.get(key) ?? 0) > Date.now() - 600_000) return { ok: true }
+  prefetched.set(key, Date.now())
+  startPlayback(req.user!.id, next.torrentId, undefined, { episodeLabel: next.isPack && next.episode === null ? undefined : next.label }).catch((e) => app.log.info(`prefetch skipped: ${e.message}`))
+  return { ok: true }
+})
+
 app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   const { t, f } = req.params as any
   return (await bufferStatus(+t, +f)) ?? { error: 'not ready' }
 })
 
+const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInteger(n) && n >= 0 && n < 32 ? n : 0 }
+
 app.get('/api/stream/:t/:f/info', guarded, async (req) => {
   const { t, f } = req.params as any
+  const a = audioIdx((req.query as any).a)
   const p = await probe(+t, +f)
+  const direct = p.direct && a === 0 // another audio track needs the transcode path (raw bytes can't switch tracks)
+  const path = direct ? 'raw' : a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'
   const base = `/api/stream/${t}/${f}`
-  return { mode: p.direct ? 'direct' : 'hls', url: p.direct ? `${base}/raw` : `${base}/hls/index.m3u8`, duration: p.duration, probe: p }
+  // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead.
+  const tv = `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/${path}`
+  return {
+    mode: direct ? 'direct' : 'hls', url: `${base}/${path}`, tvUrl: tv, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    audio: p.audio, chapters: p.chapters,
+    subs: p.subs.map((s) => ({ n: s.n, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })),
+  }
+})
+
+/** An embedded text subtitle as WebVTT. While the file is still arriving it covers what has arrived; x-flix-complete says when to stop asking. */
+app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
+  const { t, f, file } = req.params as any
+  const m = /^(\d{1,2})\.vtt$/.exec(file)
+  if (!m) return reply.code(404).send({ error: 'no such subtitle' })
+  const p = await probe(+t, +f)
+  const fi = await fileInfo(+t, +f)
+  if (!fi || !p.subs.some((s) => s.n === +m[1])) return reply.code(404).send({ error: 'no such subtitle' })
+  const { vtt, complete } = await subtitleVtt(+t, +f, +m[1], fi.file.progress, p.duration ?? 0)
+  return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0').send(vtt)
 })
 
 const MIME: Record<string, string> = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska' }
 
-app.get('/api/stream/:t/:f/raw', guarded, async (req, reply) => {
+async function rawHandler(req: any, reply: any) {
   const { t, f } = req.params as any
   const fi = await fileInfo(+t, +f)
   if (!fi) return reply.code(404).send({ error: 'Not downloading' })
@@ -212,19 +299,32 @@ app.get('/api/stream/:t/:f/raw', guarded, async (req, reply) => {
   const stream = readRange(fi.rel.info_hash, fi.layout.savePath, fi.file, start, end, ac.signal)
   stream.on('error', (e) => { if (!ac.signal.aborted) app.log.warn(`stream ${t}/${f}: ${e.message}`); reply.raw.destroy() })
   return reply.send(stream)
-})
+}
 
-app.get('/api/stream/:t/:f/hls/:file', guarded, async (req, reply) => {
+async function hlsHandler(req: any, reply: any) {
   const { t, f, file } = req.params as any
+  const a = audioIdx(req.params.a)
   if (!/^(index\.m3u8|seg\d{5}\.ts)$/.test(file)) return reply.code(400).send({ error: 'bad file' })
-  if (file === 'index.m3u8' || !touchHls(+t, +f)) {
+  if (file === 'index.m3u8' || !touchHls(+t, +f, a)) {
     const p = await probe(+t, +f)
-    try { await ensureHls(+t, +f, p) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+    try { await ensureHls(+t, +f, p, a) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   }
-  const path = join(jobDir(+t, +f), file)
+  const path = join(jobDir(+t, +f, a), file)
   if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
   return reply.type(file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t').header('cache-control', 'no-store').send(createReadStream(path))
-})
+}
+
+/** The same video routes twice: with the login cookie, and with a signed token in the path for TVs and cast devices. */
+const tvAuth = async (req: any, reply: any) => {
+  const u = userForTvToken(String(req.params?.token ?? ''))
+  if (!u) return reply.code(401).send({ error: 'This link has expired' })
+  req.user = u
+}
+for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/api/tv/:token', [tvAuth, torrentGuard]]] as const) {
+  app.get(`${prefix}/:t/:f/raw`, { preHandler: pre as any }, rawHandler)
+  app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)
+  app.get(`${prefix}/:t/:f/hls-a/:a/:file`, { preHandler: pre as any }, hlsHandler)
+}
 
 // ---- watch state ------------------------------------------------------------
 app.post('/api/progress', auth, async (req) => {
@@ -264,8 +364,9 @@ app.get('/api/admin/downloads', admin, async () => {
       engineState: t.state, eta: t.eta ?? null, left: t.amount_left,
       ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending })
   }
-  return { requirements: config.seed, downloads: out }
+  return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb }
 })
+app.get('/api/admin/health', admin, async () => ({ issues: await health(), backup: lastBackup() }))
 app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const id = Number((req.params as any).id)
   const d = db.prepare(`SELECT info_hash FROM downloads WHERE torrent_id=? AND state='active'`).get(id) as any
@@ -304,6 +405,11 @@ app.patch('/api/admin/users/:id', admin, async (req) => {
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id) // sign them out everywhere
   }
   return userRow(db.prepare('SELECT * FROM users WHERE id = ?').get(id))
+})
+app.post('/api/admin/users/:id/invite', admin, async (req) => {
+  const id = Number((req.params as any).id)
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) throw notFound('No such user')
+  return { token: createInvite(id), days: 7 }
 })
 app.delete('/api/admin/users/:id', admin, async (req) => {
   const id = Number((req.params as any).id)
@@ -405,6 +511,7 @@ export async function start() {
     process.exit(1)
   }
   startCrawler()
+  startBackups()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep
 }

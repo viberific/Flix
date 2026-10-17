@@ -98,9 +98,14 @@ function renderTop() {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Torrents &amp; seeding</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Torrents &amp; seeding</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}${profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name) ? '<button id="sw">Switch profile</button>' : '<a href="#/signin">Add another profile</a>'}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
     top.appendChild(m)
-    $('#lo').onclick = async () => { await api('/api/logout', {}); me = null; route() }
+    $('#lo').onclick = async () => {
+      await api('/api/logout', {}).catch(() => {})
+      store.set('profiles', profiles().filter((p) => p.name !== me.name)); me = null
+      if (profiles().length) go('#/profiles'); else route()
+    }
+    const sw = $('#sw'); if (sw) sw.onclick = () => { try { sessionStorage.removeItem('flix.picked') } catch { /* ignore */ } go('#/profiles') }
     const ib = $('#inst'); if (ib) ib.onclick = installApp
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
@@ -121,24 +126,66 @@ function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classLi
 addEventListener('click', () => closeMenu($('.menu')))
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
 
+/* ---------- profiles ("Who's watching?") ---------- */
+// Each profile used on this device keeps its own long-lived sign-in in local storage, so switching never asks for a password.
+const profiles = () => store.get('profiles', [])
+async function rememberProfile() {
+  if (!me) return
+  try {
+    const { token } = await api('/api/device-token', {})
+    store.set('profiles', [...profiles().filter((p) => p.name !== me.name), { name: me.name, token }])
+  } catch { /* the picker just won't list them */ }
+}
+const picked = () => { try { return sessionStorage.getItem('flix.picked') === '1' } catch { return true } }
+const markPicked = () => { try { sessionStorage.setItem('flix.picked', '1') } catch { /* ignore */ } }
+const goHome = () => { history.replaceState(null, '', '#/'); route() }
+let signinHint = ''
+
+function profilesView() {
+  return () => {
+    top.hidden = true
+    const ps = profiles()
+    app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av" style="--h:${hue(p.name)}">${esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
+      <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div></div>`
+    app.querySelectorAll('.who-tile[data-n]').forEach((b) => b.onclick = async () => {
+      const p = ps.find((x) => x.name === b.dataset.n)
+      try { const r = await api('/api/switch', { token: p.token }); me = r.user; markPicked(); goHome() }
+      catch { store.set('profiles', profiles().filter((x) => x.name !== p.name)); signinHint = p.name; go('#/signin') }
+    })
+    const f = $('.who-tile'); if (f) f.focus()
+  }
+}
+
+function joinView(token) {
+  return () => {
+    top.hidden = true
+    app.innerHTML = `<div class="auth-wrap"><div class="auth"><div class="brand">${I.logo}<span>Flix</span></div><h1 style="text-align:center">Signing you in…</h1><p class="dim" style="text-align:center;margin:0" id="jm">One moment.</p></div></div>`
+    api('/api/join', { token }).then(async (r) => { me = r.user; await rememberProfile(); markPicked(); goHome() })
+      .catch((e) => { $('.auth h1').textContent = 'That link didn’t work'; $('#jm').textContent = e.message; $('.auth').insertAdjacentHTML('beforeend', '<a class="btn primary" style="width:100%;display:block;text-align:center;box-sizing:border-box" href="#/signin">Sign in with a password</a>') })
+  }
+}
+
 /* ---------- auth ---------- */
 function authView(needsSetup) {
   return () => {
     app.innerHTML = `<div class="auth-wrap"><form class="auth"><div class="brand">${I.logo}<span>Flix</span></div>
       <h1 style="text-align:center">${needsSetup ? 'Create the admin account' : 'Welcome back'}</h1>
-      <input class="field" name="name" placeholder="Username" autocomplete="username" required>
+      <input class="field" name="name" placeholder="Username" autocomplete="username" value="${esc(signinHint)}" required>
       <input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required>
       <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
     $('form').onsubmit = async (e) => {
       e.preventDefault()
       const f = new FormData(e.target)
-      try { await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') }); route() } catch (err) { $('#err').textContent = err.message; const f = $('form.auth'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake') }
+      try {
+        await api(needsSetup ? '/api/signup' : '/api/login', { name: f.get('name'), password: f.get('password') })
+        me = (await api('/api/me')).user; await rememberProfile(); markPicked(); goHome()
+      } catch (err) { $('#err').textContent = err.message; const f = $('form.auth'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake') }
     }
   }
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}<div class="tt">${esc(s.name)}</div></a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div></div><div class="tt">${esc(c.series)}</div><div class="ts">${esc(c.label)}</div></button>`
 
@@ -178,6 +225,8 @@ async function homeView(q) {
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
     if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
+    if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
+    if (!q && home.because) html += `<h2 class="sec">Because you watched ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
       html += `<h2 class="sec">New releases</h2>` + (series.length ? rowOf(series, tile) : `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet.'}</div>`)
@@ -209,6 +258,7 @@ async function seriesView(id) {
         ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
+        <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         ${series.trailerId ? `<a class="trailer-link" href="#trailer" id="tl">${I.play} Trailer</a>` : `<a class="trailer-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}" target="_blank" rel="noopener noreferrer">${I.play} Find trailer on YouTube</a>`}</div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
@@ -229,6 +279,10 @@ async function seriesView(id) {
       paint()
     })
     const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+    const ml = $('#ml'); if (ml) ml.onclick = async () => {
+      const on = ml.getAttribute('aria-pressed') !== 'true'
+      try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+    }
     const loadTrailer = () => {
       const tr = $('#tr'); if (!tr || tr.querySelector('iframe')) return
       // Loaded only on tap, so Flix never contacts YouTube until someone asks for the trailer.
@@ -243,69 +297,250 @@ async function seriesView(id) {
 }
 
 /* ---------- player ---------- */
+/** Per-device preferences (volume, subtitle and audio language). Quietly does nothing when storage is blocked. */
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('flix.' + k); return v === null ? d : JSON.parse(v) } catch { return d } },
+  set(k, v) { try { localStorage.setItem('flix.' + k, JSON.stringify(v)) } catch { /* private mode */ } },
+}
+
+/** Say what the family needs to hear; the technical text is kept for the admin. */
+function friendly(msg) {
+  if (/out of storage|low on storage/i.test(msg)) return 'The server is out of storage right now. Ask whoever runs Flix to free up some space.'
+  if (/nobody is sharing|no other source|timed out|seeders|metadata|ffmpeg|ffprobe|transcode|playing this|not available|not downloading|swarm/i.test(msg)) return 'This episode isn’t ready to play yet. Try again in a little while, or pick something else.'
+  return msg
+}
+
+const SKIP_RE = /\b(intro|opening|recap|previously)\b/i
+const ICON = {
+  back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
+  fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
+  audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>',
+  cast: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/><path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5M3 20h.01"/></svg>',
+}
+
 function playView(seriesId, season, label) {
   label = decodeURIComponent(label)
   return () => {
     app.innerHTML = `<div class="player" id="pl"><div class="p-bg" id="pbg"></div>
-      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a><div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span><span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
-      <div id="vw"></div>
+      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a><div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span>
+        <button class="icon-btn" id="b10" aria-label="Back 10 seconds" hidden>${ICON.back10}</button><button class="icon-btn" id="f10" aria-label="Forward 10 seconds" hidden>${ICON.fwd10}</button>
+        <div class="p-menu"><button class="icon-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
+        <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
+        <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
+      <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
       <div class="p-wait" id="wait"><img class="art" id="wart" alt="" hidden><div class="ring"></div><div id="msg">Getting your show ready…</div><div class="pline"><i id="pb"></i></div></div></div>`
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
     const wa = $('#wart'); wa.onload = () => { wa.hidden = false }; wa.src = `/api/art/${seriesId}/poster`
-    let alive = true, hls = null, timer = null, idleT = null, cdT = null
-    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { const v = $('video'); if (v && !v.paused) pl.classList.add('idle') }, 3000) }
+    let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
+    let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
+    const avoid = []
+    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused) pl.classList.add('idle') }, 3000) }
     pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
-    cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearTimeout(idleT); hls?.destroy(); top.hidden = !me }
-    const t0 = Date.now()
-    ;(async () => {
+
+    const key = (e) => {
+      if (!v || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
+      const k = e.key
+      if (k === ' ' || k === 'k') { e.preventDefault(); v.paused ? v.play() : v.pause() }
+      else if (k === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
+      else if (k === 'ArrowRight') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+      else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
+      else if (k === 'ArrowDown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1) }
+      else if (k === 'm') v.muted = !v.muted
+      else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : pl.requestFullscreen?.()
+      else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') go(`#/series/${seriesId}`)
+      wake()
+    }
+    addEventListener('keydown', key)
+    cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
+
+    function fail(msg) {
+      if (!alive) return
+      clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
+      $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
+      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(friendly(msg))}</div>${me?.is_admin && friendly(msg) !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
+      $('#again').onclick = () => route()
+    }
+
+    /** Drop a source that is not delivering and ask for the next-best one, without the viewer noticing more than a longer wait. */
+    function switchSource() {
+      avoid.push(play.torrentId); tries++
+      clearInterval(timer); hls?.destroy(); hls = null; if (v) { v.remove(); v = null }
+      $('#msg').textContent = 'Finding a faster source…'; $('#pb').style.width = '4%'
+      t0 = Date.now(); begin()
+    }
+
+    async function begin() {
       try {
-        const play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label })
+        play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid })
         if (!alive) return
-        const { torrentId, fileIndex, position: start } = play
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
-        const base = `/api/stream/${torrentId}/${fileIndex}`
+        const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
+        let slow = 0
         timer = setInterval(async () => {
           const s = await api(base + '/status').catch(() => null)
-          if (!alive || !s || s.error) return
+          if (!alive || !s || s.error || started) return
           $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
-          $('#msg').textContent = Date.now() - t0 > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
+          const waited = Date.now() - t0
+          slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0
+          // Nothing arriving for ~25 s: try another release of the same episode, up to twice.
+          if (waited > 25000 && slow >= 20 && tries < 2) return switchSource()
+          $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
         }, 1000)
-        const info = await api(base + '/info')
-        if (!alive) return
+        await loadInfo(0, play.position)
+      } catch (e) { fail(e.message) }
+    }
+
+    async function loadInfo(a, startAt) {
+      const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
+      info = await api(`${base}/info${a ? '?a=' + a : ''}`)
+      if (!alive) return
+      // A saved audio-language choice (on this device) wins over the file's default track.
+      if (!a) {
+        const want = store.get('audio', null)
+        const i = want ? info.audio.findIndex((t) => t.lang === want) : -1
+        if (i > 0 && info.audio[0].lang !== want) return loadInfo(i, startAt)
+      }
+      attach(startAt)
+      wireSubs(); wireAudio(); wireExtras()
+    }
+
+    function attach(startAt) {
+      hls?.destroy(); hls = null
+      if (!v) {
         $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
-        const v = $('video')
-        v.addEventListener('playing', () => { $('#wait').classList.add('gone'); wake() }, { once: true })
+        v = $('video')
+        const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
+        v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
+        v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake(); for (const id of ['b10', 'f10']) $('#' + id).hidden = false }, { once: true })
         v.addEventListener('pause', () => pl.classList.remove('idle'))
         v.addEventListener('play', wake)
-        if (info.mode === 'hls' && window.Hls?.isSupported()) {
-          hls = new Hls({ maxBufferLength: 60 })
-          hls.loadSource(info.url); hls.attachMedia(v)
-          hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); fail('Something went wrong playing this. Go back and try again.') } })
-        } else v.src = info.url
-        if (start > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = start }, { once: true })
-        let last = 0
-        const report = () => { if (!isFinite(v.duration) && !info.duration) return; api('/api/progress', { torrentId, fileIndex, position: v.currentTime, duration: info.duration || v.duration }).catch(() => {}) }
-        v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); report() } }
-        v.onpause = report
-        v.onended = () => {
-          report()
-          if (!play.next) return go(`#/series/${seriesId}`)
-          const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
-          const box = document.createElement('div'); box.className = 'p-next'
-          box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
-          pl.appendChild(box)
-          const bar = $('#cdb'); let left = 8
-          bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
-          cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
-          $('#nn').onclick = () => go(target)
-          $('#nc').onclick = () => { clearInterval(cdT); box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+        $('#b10').onclick = () => { v.currentTime = Math.max(0, v.currentTime - 10) }
+        $('#f10').onclick = () => { v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+        v.ontimeupdate = () => {
+          if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
+          skipCheck()
+          const dur = info?.duration || v.duration
+          if (!prefetched && dur && (v.currentTime > 120 || v.currentTime / dur > 0.15)) {
+            prefetched = true // start fetching the next episode now, so "Up next" is instant
+            api('/api/prefetch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label }).catch(() => {})
+          }
         }
-      } catch (e) { fail(e.message) }
-    })()
-    function fail(msg) { if (!alive) return; clearInterval(timer); $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('#msg').innerHTML = `<span style="color:#ff8a98">${esc(msg)}</span>`; $('#pb').parentElement.remove() }
+        v.onpause = report
+        v.onended = onEnded
+      }
+      const viaHls = info.mode === 'hls' && window.Hls?.isSupported()
+      // Casting needs a link the TV can open on its own (no cookie), so plain playback uses the signed one where the browser can cast.
+      const url = !viaHls && 'remote' in v ? info.tvUrl : info.url
+      if (viaHls) {
+        hls = new Hls({ maxBufferLength: 60 })
+        hls.loadSource(url); hls.attachMedia(v)
+        hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls?.destroy(); fail('Something went wrong playing this. Go back and try again.') } })
+      } else v.src = url
+      if (startAt > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = startAt }, { once: true })
+      v.play?.().catch(() => {})
+    }
+
+    function report() {
+      if (!v || !play) return
+      if (!isFinite(v.duration) && !info?.duration) return
+      api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration }).catch(() => {})
+    }
+
+    function onEnded() {
+      report()
+      if (!play.next) return go(`#/series/${seriesId}`)
+      const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
+      const box = document.createElement('div'); box.className = 'p-next'
+      box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
+      pl.appendChild(box)
+      const bar = $('#cdb'); let left = 8
+      bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
+      cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
+      $('#nn').onclick = () => go(target); $('#nn').focus()
+      $('#nc').onclick = () => { clearInterval(cdT); box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+    }
+
+    /* subtitles: the browser's own CC menu lists them; we add the tracks, pick a sensible one and remember changes */
+    function wireSubs() {
+      v.querySelectorAll('track').forEach((t) => t.remove())
+      if (!info.subs.length) return
+      const pref = store.get('subs', null) // 'off' | { lang } | null (never chosen)
+      const audioLang = info.audio[info.audioIndex]?.lang
+      let pick = null
+      if (pref === 'off') pick = null
+      else if (pref?.lang) pick = info.subs.find((s) => s.lang === pref.lang && !s.forced) ?? info.subs.find((s) => s.lang === pref.lang)
+      else if (audioLang && audioLang !== 'eng' && audioLang !== 'und') pick = info.subs.find((s) => s.lang === 'eng' && !s.forced) // foreign audio: English subtitles
+      else pick = info.subs.find((s) => s.forced && s.lang === audioLang) ?? null
+      for (const s of info.subs) mountTrack(s, s === pick)
+      let busy = false
+      v.textTracks.onchange = () => {
+        if (busy) return
+        const on = [...v.textTracks].find((t) => t.mode === 'showing')
+        store.set('subs', on ? { lang: on.language || info.subs.find((s) => s.label === on.label)?.lang } : 'off')
+      }
+      // The file is still arriving, so a track only covers what has downloaded; refresh the shown one as it grows.
+      clearInterval(subT)
+      subT = setInterval(async () => {
+        const on = [...v.textTracks].find((t) => t.mode === 'showing')
+        if (!on) return
+        const s = info.subs.find((x) => x.label === on.label)
+        const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
+        if (!s || !st) return
+        busy = true; mountTrack(s, true); setTimeout(() => { busy = false }, 500)
+        if (st.fileProgress >= 1) clearInterval(subT)
+      }, 90000)
+    }
+    function mountTrack(s, show) {
+      v.querySelector(`track[data-n="${s.n}"]`)?.remove()
+      const t = document.createElement('track')
+      t.kind = 'subtitles'; t.label = s.label; t.dataset.n = s.n; t.src = s.url + '?r=' + Date.now()
+      if (s.lang && s.lang !== 'und') t.srclang = s.lang.length === 2 ? s.lang : ''
+      v.appendChild(t)
+      t.track.mode = show ? 'showing' : 'disabled'
+    }
+
+    /* audio language: more than one track means a small menu; picking one restarts the picture at the same spot */
+    function wireAudio() {
+      const btn = $('#aud')
+      btn.hidden = info.audio.length < 2
+      btn.onclick = (e) => {
+        e.stopPropagation()
+        const old = $('.p-menu .menu'); if (old) return closeMenu(old)
+        const m = document.createElement('div'); m.className = 'menu'
+        m.innerHTML = `<div class="who">Audio</div>${info.audio.map((t) => `<button data-n="${t.n}" ${t.n === info.audioIndex ? 'aria-current="true"' : ''}>${t.n === info.audioIndex ? '✓ ' : ''}${esc(t.label || 'Track ' + (t.n + 1))}</button>`).join('')}`
+        $('.p-menu').appendChild(m)
+        m.querySelectorAll('button[data-n]').forEach((b) => b.onclick = async () => {
+          const n = +b.dataset.n; closeMenu(m)
+          if (n === info.audioIndex) return
+          store.set('audio', info.audio[n].lang)
+          const at = v.currentTime
+          try { await loadInfo(n, at) } catch (err) { fail(err.message) }
+        })
+      }
+    }
+
+    /* skip intro (when the file has chapters named like one) and casting */
+    let chapterNow = null
+    function skipCheck() {
+      const c = info?.chapters?.find((c) => SKIP_RE.test(c.title) && v.currentTime >= c.start - 0.5 && v.currentTime < c.end - 2)
+      if (c === chapterNow) return
+      chapterNow = c ?? null
+      const b = $('#skip'); b.hidden = !c
+      if (c) { b.textContent = /recap|previously/i.test(c.title) ? 'Skip recap' : 'Skip intro'; b.onclick = () => { v.currentTime = c.end } }
+    }
+    let castWired = false
+    function wireExtras() {
+      if (castWired || !('remote' in v) || !v.remote?.watchAvailability) return
+      castWired = true
+      v.remote.watchAvailability((ok) => { $('#cast').hidden = !ok }).catch(() => {})
+      $('#cast').onclick = () => v.remote.prompt().catch(() => {})
+    }
+
+    begin()
   }
 }
 
@@ -319,6 +554,7 @@ function ratingPills(all, on, attrs = '') {
 
 async function adminView(tab = 'downloads') {
   const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
+  if (tab === 'downloads') data.health = await api('/api/admin/health').catch(() => ({ issues: [] }))
   return () => {
     app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
       <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Torrents</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
@@ -333,7 +569,13 @@ function downloadsPanel(data, root) {
   const req = data.requirements
   root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
     <p class="dim" style="max-width:66ch">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded for <b style="color:var(--fg)">${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first, and Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
-    <div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+    <div id="tstat"></div><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+  const status = (d, h) => {
+    const disk = d.disk, low = disk && disk.free < d.minFreeGb * 2.5e9
+    const rows = (h?.issues ?? []).map((i) => `<li class="iss ${i.level}"><b>${esc(i.title)}</b><span>${esc(i.detail)}</span>${i.link ? `<a href="${esc(i.link)}">Fix</a>` : ''}</li>`).join('')
+    $('#tstat').innerHTML = `<div class="statusbox">${disk ? `<div class="meter wide ${low ? '' : 'met'}"><span>Storage: ${gb(disk.free)} free of ${gb(disk.total)}${low ? ' (getting low)' : ''}</span><div class="m"><i style="width:${Math.round(((disk.total - disk.free) / disk.total) * 100)}%"></i></div></div>` : ''}
+      ${rows ? `<ul class="issues">${rows}</ul>` : '<div class="dim">Everything looks healthy.</div>'}${h?.backup ? `<div class="dim" style="font-size:12px">Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}</div>` : ''}</div>`
+  }
   const meter = (label, v, max, met) => `<div class="meter wide${met ? ' met' : ''}"><span>${label}</span><div class="m"><i style="width:${Math.min(100, (v / max) * 100)}%"></i></div></div>`
   const card = (x, kind) => {
     const title = esc(x.series), sub = esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name) + (x.resolution ? ' · ' + esc(x.resolution) : '') + (x.is_pack ? ' · whole season' : '')
@@ -364,8 +606,11 @@ function downloadsPanel(data, root) {
       try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until seeded' : 'Failed'; b.disabled = true }
     })
   }
-  draw(data)
-  const t = setInterval(async () => draw(await api('/api/admin/downloads').catch(() => data)), 15000)
+  draw(data); status(data, data.health)
+  const t = setInterval(async () => {
+    const d = await api('/api/admin/downloads').catch(() => data); draw(d)
+    status(d, await api('/api/admin/health').catch(() => data.health))
+  }, 15000)
   cleanup = () => clearInterval(t)
 }
 
@@ -382,8 +627,11 @@ function familyPanel(data, root) {
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
         <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">Reset password</button>
+        <button class="btn" data-act="invite" style="padding:8px 14px">Sign-in link</button>
         ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
-        <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div></div>`).join('')}</div>
+        <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div>
+        <div class="pwrow invrow" hidden><input class="field" readonly aria-label="Sign-in link"><button class="btn primary" data-act="copy" style="padding:10px 16px">Copy</button><button class="btn" data-act="share" style="padding:10px 16px" hidden>Share</button>
+        <span class="dim" style="flex-basis:100%;font-size:13px">Send this to ${esc(u.name)}. Opening it on their phone, tablet or TV signs that device in with no password. It works once and expires in 7 days.</span></div></div>`).join('')}</div>
       <h2 class="sec">Add a family member</h2>
       <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password" required></div>
         <div><div class="dim" style="font-size:13px;margin-bottom:8px">Can watch:</div>${ratingPills(all, all, 'id="newr"')}
@@ -405,6 +653,15 @@ function familyPanel(data, root) {
         const act = b.dataset.act
         if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = '' } catch (e) { msg.textContent = e.message } }
+        else if (act === 'invite') {
+          try {
+            const r = await api(`/api/admin/users/${id}/invite`, {}); const url = `${location.origin}/#/join/${r.token}`
+            const row = $('.invrow', card); row.hidden = false; const f = $('input', row); f.value = url; f.focus(); f.select()
+            if (navigator.share) $('[data-act=share]', row).hidden = false
+          } catch (e) { alert(e.message) }
+        }
+        else if (act === 'copy') { const f = $('.invrow input', card); f.select(); try { await navigator.clipboard.writeText(f.value); b.textContent = 'Copied' } catch { document.execCommand?.('copy'); b.textContent = 'Copied' } setTimeout(() => { b.textContent = 'Copy' }, 2000) }
+        else if (act === 'share') navigator.share({ title: 'Flix', text: `Sign in to Flix as ${u().name}`, url: $('.invrow input', card).value }).catch(() => {})
         else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { alert(e.message) } }
         else if (act === 'rm') {
           if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
@@ -518,6 +775,50 @@ function offlineView(why, isGate) {
   clearTimeout(retryT); retryT = setTimeout(route, isGate ? 15000 : 5000)
 }
 
+/** Admins see a red/amber strip on any page when something needs attention (BTN refused us, disk full, engine down). */
+async function healthBanner() {
+  document.getElementById('hb')?.remove()
+  const h = await api('/api/admin/health').catch(() => null)
+  const bad = (h?.issues ?? []).filter((i) => i.level !== 'info')
+  if (!bad.length || $('.player')) return
+  const first = bad[0]
+  const el = document.createElement('a')
+  el.id = 'hb'; el.className = 'hbanner ' + first.level; el.href = first.link || '#/admin'
+  el.innerHTML = `<b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}`
+  app.prepend(el)
+}
+
+/* ---------- TVs and keyboards: arrow keys move between things, Back goes back ---------- */
+const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
+if (isTv) document.documentElement.classList.add('tv')
+addEventListener('keydown', (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
+  const el = document.activeElement
+  const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
+  if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && !typing && location.hash.length > 2) { history.back(); return }
+  const dir = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]
+  if (!dir || typing) return
+  const onThing = el && el !== document.body
+  if (!onThing && !isTv) return // on a computer with nothing focused, arrows keep scrolling the page
+  const vis = (n) => { const r = n.getBoundingClientRect(); return r.width > 8 && r.height > 8 && r.bottom > 0 && r.top < innerHeight + 400 && getComputedStyle(n).visibility !== 'hidden' }
+  const all = [...document.querySelectorAll('a[href], button:not([disabled]), [tabindex="0"], .tile')].filter((n) => !n.closest('[hidden]') && !n.classList.contains('arrow') && vis(n))
+  const from = onThing ? el.getBoundingClientRect() : { left: innerWidth / 2, right: innerWidth / 2, top: 0, bottom: 0, width: 0, height: 0 }
+  const cx = from.left + from.width / 2, cy = from.top + from.height / 2
+  let best = null, bestScore = Infinity
+  for (const n of all) {
+    if (n === el) continue
+    const r = n.getBoundingClientRect(), dx = r.left + r.width / 2 - cx, dy = r.top + r.height / 2 - cy
+    const along = dx * dir[0] + dy * dir[1], across = Math.abs(dx * dir[1] + dy * dir[0])
+    if (along <= 4 || across > along * 2.5 + 60) continue
+    const score = along + across * 2.5
+    if (score < bestScore) { bestScore = score; best = n }
+  }
+  if (!best) return
+  e.preventDefault()
+  best.focus({ preventScroll: true })
+  best.scrollIntoView({ block: 'center', inline: 'center', behavior: smooth() })
+})
+
 /* ---------- router ---------- */
 async function route() {
   cleanup?.(); cleanup = null
@@ -529,11 +830,16 @@ async function route() {
     return
   }
   me = st.user
+  if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
   renderTop()
   top.classList.toggle('solid', scrollY > 30)
-  if (!me) return swap(authView(st.needsSetup))
   const [path, query] = location.hash.slice(1).split('?')
   const parts = path.split('/').filter(Boolean)
+  if (parts[0] === 'join' && parts[1]) return swap(joinView(parts[1]))
+  if (parts[0] === 'profiles' && profiles().length) return swap(profilesView())
+  if (!me || parts[0] === 'signin') { if (token === navToken) return swap(authView(!me && st.needsSetup)); return }
+  // A shared device asks who is watching each time the app is opened.
+  if (profiles().length > 1 && !picked() && parts[0] !== 'play') { markPicked(); return swap(profilesView()) }
   const slow = app.innerHTML.trim() ? null : setTimeout(() => { if (token === navToken) app.innerHTML = skeleton() }, 200)
   try {
     let render
@@ -544,6 +850,7 @@ async function route() {
     clearTimeout(slow)
     if (token !== navToken) return
     await swap(render)
+    if (me.is_admin && parts[0] !== 'play') healthBanner()
   } catch (e) {
     clearTimeout(slow)
     if (token === navToken) app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}</div></div>`
