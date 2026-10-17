@@ -24,6 +24,9 @@ export const config = {
   seed: { minRatio: 1.0, minHours: 130, mode: 'any' } as { minRatio: number; minHours: number; mode: 'any' | 'all' },
   // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
   art: { allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
+  // The one address Flix should be reached at, e.g. https://umbrel-1.tail16900.ts.net:9443.
+  // Empty (the default) means no redirect: every address serves Flix as before.
+  publicUrl: (env.PUBLIC_URL ?? '').replace(/\/$/, ''),
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
   abandonDays: num('ABANDON_DAYS', 0),
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),

@@ -28,6 +28,34 @@ app.setErrorHandler((err: any, _req, reply) => {
   reply.code(status).send({ error: err.message })
 })
 
+// ---- one address ------------------------------------------------------------
+// Umbrel puts its own HTTPS in front of Flix's plain-HTTP port 8096, and that
+// certificate is only issued for umbrel.local — so https://<tailnet-name>:8096 can
+// never validate and a phone that guesses https first shows a certificate warning.
+// Tailscale Serve on :9443 holds a real certificate for the name and proxies here.
+// With PUBLIC_URL set, every other address is sent there; with it unset (the
+// default) every address serves Flix exactly as before.
+if (config.publicUrl) {
+  const canonical = new URL(config.publicUrl)
+  // The exact Host values that are already the one address (https on the default port
+  // arrives without it).
+  const ok = new Set([canonical.host])
+  if (!canonical.port || canonical.port === '443') ok.add(canonical.hostname)
+  app.addHook('onRequest', async (req, reply) => {
+    const host = String(req.headers.host ?? '').toLowerCase()
+    // Already on the good address — the loop is broken here. Same name on port 8096
+    // is not: that is Umbrel's proxy with its umbrel.local certificate.
+    if (ok.has(host)) return
+    const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]
+    // Loopback (also what the Tailscale proxy dials if it ever stops forwarding the
+    // original Host) and Docker service names, which have no dot
+    // (blofstedt-flix_app_1, app), keep working.
+    if (name === 'localhost' || name === '[::1]' || name.startsWith('127.') || !name.includes('.')) return
+    // 308 so a POST keeps its method and body; only a stale cached shell sends one here.
+    return reply.redirect(config.publicUrl + req.url, 308)
+  })
+}
+
 await app.register(fastifyStatic, { root: join(root, 'public') })
 await app.register(fastifyStatic, { root: join(root, 'node_modules/hls.js/dist'), prefix: '/vendor/', decorateReply: false })
 
