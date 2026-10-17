@@ -80,6 +80,11 @@ export const qb = {
       auto_tmm_enabled: false, max_ratio_enabled: false, max_seeding_time_enabled: false,
       // The Downloads folder is qBittorrent's default too, so anything added by hand lands where Flix looks.
       save_path: config.downloadDir,
+      // Peers have to be able to reach us for BTN's 1:1 ratio. A random port
+      // moves every start, so no port forward on the router survives it: pin
+      // it (QB_LISTEN_PORT, same number the container publishes) and ask the
+      // router to open it with UPnP/NAT-PMP where the router can.
+      listen_port: config.p2pPort, random_port: false, upnp: true,
     }) })
   },
   async version(): Promise<string> { return (await raw('/api/v2/app/version').then((r) => r.text())) },

@@ -17,6 +17,11 @@ export function diskInfo(): { free: number; total: number } | null {
   try { const s = statfsSync(dir); return { free: Number(s.bavail) * Number(s.bsize), total: Number(s.blocks) * Number(s.bsize) } } catch { return null }
 }
 
+/** The box's own address on the home network, when LAN_URL names it: what a port forward on the router has to point at. */
+function lanHost(): string | null {
+  try { return config.lanUrl ? new URL(config.lanUrl).hostname : null } catch { return null }
+}
+
 /** The least free space to leave: the larger of MIN_FREE_GB and MIN_FREE_PCT of the disk. */
 export function freeFloor(d: { total: number }): number { return Math.max(config.minFreeGb * 1e9, (config.minFreePct / 100) * d.total) }
 
@@ -72,7 +77,7 @@ export async function health(): Promise<Issue[]> {
     const r = await Promise.race([qb.reachability().catch(() => null), new Promise<null>((res) => setTimeout(() => res(null), 3000))])
     if (r?.status === 'disconnected') out.push({ level: 'bad', title: 'No internet for downloads', detail: 'qBittorrent reports no network connection, so nothing can download or seed.', link: '#/admin' })
     else if (r?.status === 'firewalled') out.push({ level: 'warn', title: 'Seeding may be limited: the download port looks closed',
-      detail: `qBittorrent hasn't seen anyone connect in${r.port ? ` (port ${r.port})` : ''}; this also shows for the first few minutes after a restart. If it stays, uploads are slow and the 1:1 ratio will take far longer. The 130-hour rule still counts, so torrents stay until that is met. To fix it, forward that port to this server on your router (and publish it in the Umbrel app's docker-compose).`, link: '#/admin' })
+      detail: `qBittorrent hasn't seen anyone connect in${r.port ? ` (port ${r.port})` : ''}; this also shows for the first few minutes after a restart. If it stays, uploads are slow and the 1:1 ratio will take far longer. The 130-hour rule still counts, so torrents stay until that is met. The port is now fixed and the app publishes it, so what is left is your router: it has to send ${r.port ?? 'that port'} (TCP and UDP) to ${lanHost() ?? 'this box'}. Flix asks the router to do that itself, which only works if UPnP is switched on there.`, link: '#/admin' })
   }
   const d = diskInfo()
   if (d) {

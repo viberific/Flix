@@ -31,8 +31,9 @@ If nothing appears after ~10 minutes, check step 1 (key / IP), then the Flix log
 ## 5. Seeding (the BTN rule)
 BTN needs each torrent seeded for 130 hours **or** a 1:1 ratio. The 130 hours always works. The ratio needs other people to be able
 to connect in, which needs the peer port forwarded. In Torrents & seeding, each torrent shows both bars. If the ratio bar barely moves
-but the hours bar does, the port is closed: forward qBittorrent's peer port on your router and publish it in the Umbrel app's
-docker-compose. Torrents are never deleted before one of the two is met.
+but the hours bar does, the port is closed. Flix keeps the peer port fixed (6881 unless `QB_LISTEN_PORT` says otherwise) and the container
+publishes it, so the only thing left is the router: send that port, TCP **and** UDP, to this box (10.0.0.247 on the home network), or leave
+UPnP switched on in the router and let Flix ask for it. Torrents are never deleted before one of the two is met.
 
 ## 6. When something fails
 Tap the **flag** in the player ("Something's wrong"): it tries another source and files a report. Reports (and playback that failed

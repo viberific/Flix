@@ -21,6 +21,12 @@ export const config = {
   dataDir: resolve(env.DATA_DIR ?? './data'),
   // Torrents live straight in the desktop's Downloads folder (so what you download by hand there is the same pile Flix manages); DOWNLOAD_DIR overrides it.
   downloadDir: resolve(env.DOWNLOAD_DIR || userDownloads() || './downloads'),
+  // The port qBittorrent listens on for peers. Fixed rather than random so a
+  // port forward on the router keeps working across restarts (a random port
+  // moves every start and nothing can be forwarded to it). The container
+  // publishes this same number in docker-compose's `ports`, and UPnP asks the
+  // router to open it where the router supports that.
+  p2pPort: num('QB_LISTEN_PORT', 6881),
   btn: {
     apiKey: env.BTN_API_KEY ?? '',
     apiUrl: env.BTN_API_URL ?? 'https://api.broadcasthe.net/',
