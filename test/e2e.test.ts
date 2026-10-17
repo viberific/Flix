@@ -265,7 +265,8 @@ test('retention: kept until watched AND seeded; force-remove refused; removed on
     assert.deepEqual(await sweep(), [hash])
   } finally { config.seed.minHours = orig }
   assert.equal(await qb.info(hash), undefined)
-  assert.ok(!existsSync(join(process.env.DOWNLOAD_DIR!, hash, 'Test.Show.S01E01.mp4')), 'files should be deleted')
+  assert.ok(!existsSync(join(process.env.DOWNLOAD_DIR!, 'Test.Show.S01E01.mp4')), 'files should be deleted')
+  assert.ok(!existsSync(join(process.env.DOWNLOAD_DIR!, hash)), 'and no per-torrent folder is left behind')
 })
 
 test('pending viewer blocks deletion even when seeding is met', async () => {

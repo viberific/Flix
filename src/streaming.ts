@@ -18,14 +18,17 @@ export const getRelease = (id: number) => db.prepare('SELECT * FROM releases WHE
 const adding = new Map<number, Promise<void>>()
 
 /** Make sure the torrent is in the engine (re-adding it if a previous copy was already cleaned up). */
-async function ensureAdded(rel: Release) {
+async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix') {
   const hash = rel.info_hash
+  let from: 'flix' | 'auto' | 'adopted' = origin
   if (await qb.info(hash)) {
     await qb.resume(hash).catch(() => {})
+    // Already in the engine but not ours (downloaded by hand in the Downloads folder): take it over rather than fetch a second copy.
+    if (!db.prepare(`SELECT 1 FROM downloads WHERE torrent_id = ? AND state = 'active'`).get(rel.torrent_id)) { from = 'adopted'; await qb.addTags(hash, 'flix').catch(() => {}) }
   } else {
     assertSpace(Number(rel.size ?? 0))
     const file = await fetchTorrentFile(rel.torrent_link)
-    await qb.add(file, join(config.downloadDir, hash))
+    await qb.add(file, config.downloadDir) // straight into the Downloads folder: qBittorrent puts each torrent in its own named folder there
   }
   // wait for metadata (files list)
   const deadline = Date.now() + 60_000
@@ -35,8 +38,8 @@ async function ensureAdded(rel: Release) {
     if (Date.now() > deadline) throw new Error('Timed out waiting for torrent metadata from the tracker')
     await sleep(400)
   }
-  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (?,?, 'active', ?)
-    ON CONFLICT(torrent_id) DO UPDATE SET state='active', removed_at=NULL, remove_reason=NULL`).run(rel.torrent_id, hash, now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, origin) VALUES (?,?, 'active', ?, ?)
+    ON CONFLICT(torrent_id) DO UPDATE SET origin = CASE WHEN state = 'active' THEN origin ELSE excluded.origin END, state='active', removed_at=NULL, remove_reason=NULL`).run(rel.torrent_id, hash, now(), from)
 }
 
 export function pickVideo(files: QbFile[]): QbFile | undefined {
@@ -59,11 +62,11 @@ function pickFromPack(files: QbFile[], userId: number, torrentId: number, label?
 }
 
 /** Start (or join) a download for a user and return the file to play. */
-export async function startPlayback(userId: number, torrentId: number, fileIndex?: number, opts: { episodeLabel?: string } = {}) {
+export async function startPlayback(userId: number, torrentId: number, fileIndex?: number, opts: { episodeLabel?: string; auto?: boolean } = {}) {
   const rel = getRelease(torrentId)
   if (!rel) throw new Error('Unknown release')
   let p = adding.get(torrentId)
-  if (!p) { p = ensureAdded(rel).finally(() => adding.delete(torrentId)); adding.set(torrentId, p) }
+  if (!p) { p = ensureAdded(rel, opts.auto ? 'auto' : 'flix').finally(() => adding.delete(torrentId)); adding.set(torrentId, p) }
   await p
 
   const files = await qb.files(rel.info_hash)
@@ -97,9 +100,13 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
   }
 
   const t = now()
-  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, file_name, created_at, updated_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(user_id, torrent_id, file_index) DO UPDATE SET updated_at=excluded.updated_at, released_at=NULL`)
-    .run(userId, torrentId, file.index, file.name, t, t)
+  if (opts.auto) { // started ahead of time: never bring back something this person finished or let go of
+    const ex = db.prepare('SELECT watched_at, released_at FROM interests WHERE user_id=? AND torrent_id=? AND file_index=?').get(userId, torrentId, file.index) as any
+    if (ex && (ex.watched_at || ex.released_at)) throw new Error('already finished')
+  }
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, file_name, created_at, updated_at, auto) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(user_id, torrent_id, file_index) DO UPDATE SET updated_at=excluded.updated_at, released_at=NULL, auto=MIN(auto, excluded.auto)`)
+    .run(userId, torrentId, file.index, file.name, t, t, opts.auto ? 1 : 0)
   const row = db.prepare('SELECT position, watched_at FROM interests WHERE user_id=? AND torrent_id=? AND file_index=?').get(userId, torrentId, file.index) as any
   return { torrentId, fileIndex: file.index, name: file.name, size: file.size, position: row?.watched_at ? 0 : row?.position ?? 0 }
 }

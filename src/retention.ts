@@ -2,6 +2,7 @@ import { db, now } from './db.ts'
 import { config } from './config.ts'
 import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
+import { syncFolder, tidyAfterRemoval } from './folder.ts'
 
 export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
 
@@ -16,14 +17,21 @@ export function seedStatus(t: Pick<QbTorrent, 'uploaded' | 'total_size' | 'seedi
 
 export function pendingViewers(torrentId: number): string[] {
   const cutoff = config.abandonDays > 0 ? now() - config.abandonDays * 86400 : -1
+  // Something fetched ahead of time for a person lapses sooner than something they actually started.
+  const autoCutoff = now() - config.auto.expireDays * 86400
   return (db.prepare(`SELECT DISTINCT u.name FROM interests i JOIN users u ON u.id = i.user_id
-    WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.updated_at > ?`).all(torrentId, cutoff) as { name: string }[])
+    WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.updated_at > CASE WHEN i.auto = 1 THEN ? ELSE ? END`).all(torrentId, autoCutoff, cutoff) as { name: string }[])
     .map((r) => r.name)
 }
 
 export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; reasons: string[]; pending: string[]; seed: SeedStatus } {
   const pending = pendingViewers(torrentId)
   const seed = seedStatus(t)
+  // A torrent put in the Downloads folder by hand is not Flix's to delete until somebody has actually watched it
+  // (this holds even if the engine reports nothing downloaded: it may simply have been checked, not fetched, here).
+  const origin = (db.prepare('SELECT origin FROM downloads WHERE torrent_id = ?').get(torrentId) as any)?.origin
+  if (origin === 'adopted' && !db.prepare('SELECT 1 FROM interests WHERE torrent_id = ?').get(torrentId))
+    return { deletable: false, reasons: ['added to the Downloads folder outside Flix; kept until someone has watched it'], pending, seed }
   // A torrent that never got a single byte (no seeders, or the viewer was moved to another source) owes BTN nothing and is
   // not worth keeping; without this a dead torrent would sit in the engine forever, "still downloading".
   if (t.downloaded === 0 && !pending.length) return { deletable: true, reasons: [], pending, seed }
@@ -41,13 +49,16 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
 
 export async function removeDownload(torrentId: number, hash: string, reason: string) {
   stopJobsFor(torrentId)
+  const t = await qb.info(hash).catch(() => undefined)
   await qb.remove(hash, true)
+  if (t) tidyAfterRemoval(t) // the engine deletes the files; sweep up the empty folders it leaves in Downloads
   db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason=? WHERE torrent_id=?`).run(now(), reason, torrentId)
 }
 
 /** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled. */
 export async function sweep(): Promise<string[]> {
   const removed: string[] = []
+  await syncFolder().catch((e) => console.warn(`[folder] ${e.message}`)) // adopt what was downloaded by hand, move old hash-named folders, tidy leftovers
   const rows = db.prepare(`SELECT torrent_id, info_hash, added_at FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string; added_at: number }[]
   for (const d of rows) {
     const t = await qb.info(d.info_hash)

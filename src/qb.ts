@@ -3,7 +3,7 @@ import { config } from './config.ts'
 export interface QbTorrent {
   hash: string; name: string; state: string; progress: number; size: number; total_size: number
   amount_left: number; uploaded: number; downloaded: number; ratio: number; seeding_time: number
-  dlspeed: number; upspeed: number; eta?: number; num_seeds: number; num_leechs: number; save_path: string; added_on: number
+  dlspeed: number; upspeed: number; eta?: number; num_seeds: number; num_leechs: number; save_path: string; content_path?: string; added_on: number; tags?: string
 }
 export interface QbFile { index: number; name: string; size: number; progress: number; priority: number; piece_range: [number, number] }
 
@@ -57,6 +57,8 @@ export const qb = {
     await post('/api/v2/app/setPreferences', { json: JSON.stringify({
       incomplete_files_ext: false, temp_path_enabled: false, preallocate_all: false,
       auto_tmm_enabled: false, max_ratio_enabled: false, max_seeding_time_enabled: false,
+      // The Downloads folder is qBittorrent's default too, so anything added by hand lands where Flix looks.
+      save_path: config.downloadDir,
     }) })
   },
   async version(): Promise<string> { return (await raw('/api/v2/app/version').then((r) => r.text())) },
@@ -69,6 +71,10 @@ export const qb = {
     return { status: t.connection_status ?? 'unknown', port: p.listen_port ?? null, upnp: !!p.upnp }
   },
   async infoAll(): Promise<QbTorrent[]> { return json('/api/v2/torrents/info?tag=flix') },
+  /** Every torrent in the engine, whoever added it. */
+  async listAll(): Promise<QbTorrent[]> { return json('/api/v2/torrents/info') },
+  async addTags(hash: string, tags: string) { await post('/api/v2/torrents/addTags', { hashes: hash, tags }) },
+  async setLocation(hash: string, location: string) { await post('/api/v2/torrents/setLocation', { hashes: hash, location }) },
   async files(hash: string): Promise<QbFile[]> { return json(`/api/v2/torrents/files?hash=${hash}`) },
   async pieceStates(hash: string): Promise<number[]> { return json(`/api/v2/torrents/pieceStates?hash=${hash}`) },
   async properties(hash: string): Promise<{ piece_size: number; save_path: string }> { return json(`/api/v2/torrents/properties?hash=${hash}`) },

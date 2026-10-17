@@ -452,3 +452,68 @@ test('episode pictures: gaps in TMDB are patched from TVmaze, then TMDB\'s other
     assert.equal(info.get('1|4')!.still, null)                                // nobody has one: the show's artwork stands in at display time
   } finally { Object.assign(config.tmdb, { apiUrl: old.api, apiKey: old.key }); config.art.tvmazeUrl = old.tv; config.art.tmdbImages = old.img; srv.close() }
 })
+
+test('downloads folder: removal leaves no empty folders behind, and never touches anything else', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { tidyAfterRemoval } = await import('../src/folder.ts')
+  const root = mkdtempSync(join(tmpdir(), 'flix-dl-'))
+  const old = config.downloadDir; config.downloadDir = root
+  try {
+    mkdirSync(join(root, 'Show.S01.1080p', 'Subs'), { recursive: true })           // emptied by the engine: only folders left
+    mkdirSync(join(root, 'Mine'), { recursive: true }); writeFileSync(join(root, 'Mine', 'notes.txt'), 'x') // somebody else's file in the way
+    mkdirSync(join(root, 'a'.repeat(40), 'Old.Show.S01'), { recursive: true })    // the old <hash>/<name> layout
+    tidyAfterRemoval({ save_path: root, name: 'Show.S01.1080p', content_path: join(root, 'Show.S01.1080p') })
+    assert.equal(existsSync(join(root, 'Show.S01.1080p')), false)
+    tidyAfterRemoval({ save_path: root, name: 'Mine', content_path: join(root, 'Mine') })
+    assert.equal(existsSync(join(root, 'Mine', 'notes.txt')), true, 'a folder with files in it is not ours to remove')
+    tidyAfterRemoval({ save_path: join(root, 'a'.repeat(40)), name: 'Old.Show.S01', content_path: join(root, 'a'.repeat(40), 'Old.Show.S01') })
+    assert.equal(existsSync(join(root, 'a'.repeat(40))), false, 'the empty hash folder goes with it')
+    assert.equal(existsSync(root), true, 'the Downloads folder itself stays')
+    tidyAfterRemoval({ save_path: root, name: '..', content_path: root })
+    assert.equal(existsSync(root), true)
+  } finally { config.downloadDir = old }
+})
+
+test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads stop earlier and respect their limits', async () => {
+  const { freeFloor, assertSpace } = await import('../src/health.ts')
+  const { autoBlocked } = await import('../src/autodl.ts')
+  const { db } = await import('../src/db.ts')
+  assert.equal(freeFloor({ total: 1e12 }), 1e11)  // 10% of 1 TB beats 10 GB
+  assert.equal(freeFloor({ total: 5e10 }), 1e10)  // on a small disk the 10 GB floor applies
+  const keep = { ...config.auto }, pct = config.minFreePct, gbMin = config.minFreeGb
+  config.minFreePct = 0; config.minFreeGb = 0; config.auto.pausePct = 0
+  try {
+    const u = createUser('autoann', 'password123', false).id
+    assert.equal(autoBlocked(u, 1e9), null)
+    config.auto.enabled = false; assert.match(autoBlocked(u, 1)!, /off/); config.auto.enabled = true
+    config.auto.pausePct = 101; assert.match(autoBlocked(u, 1)!, /low/); config.auto.pausePct = 0
+    const ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, auto) VALUES (?,?,?,?,?,1)`)
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8001, 80, 'A', 'A - S01E01', 'x1', 0, 30000000000)`).run()
+    db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (8001, 'x1', 'active', 0)`).run()
+    const t = Math.floor(Date.now() / 1000)
+    ins.run(u, 8001, 0, t, t)
+    assert.match(autoBlocked(u, 25e9)!, /budget/, '30 GB already held + 25 GB is over the 50 GB budget')
+    assert.equal(autoBlocked(u, 5e9), null)
+    for (let i = 1; i < config.auto.perUser; i++) ins.run(u, 8001, i, t, t)
+    assert.match(autoBlocked(u, 1)!, /enough lined up/)
+    db.prepare('UPDATE interests SET updated_at = ? WHERE user_id = ?').run(t - (config.auto.expireDays + 1) * 86400, u)
+    assert.equal(autoBlocked(u, 1), null, 'a week untouched and it no longer counts')
+    const { pendingViewers } = await import('../src/retention.ts')
+    assert.deepEqual(pendingViewers(8001), [], 'and no longer holds the torrent')
+  } finally { config.minFreePct = pct; config.minFreeGb = gbMin; Object.assign(config.auto, keep) }
+})
+
+test('a torrent downloaded by hand is kept until somebody has watched it', async () => {
+  const { whyKept } = await import('../src/retention.ts')
+  const { db } = await import('../src/db.ts')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8101, 81, 'B', 'B - S01E01', 'x2', 0, 1000)`).run()
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, origin) VALUES (8101, 'x2', 'active', 0, 'adopted')`).run()
+  const done = { uploaded: 5000, total_size: 1000, seeding_time: 200 * 3600, downloaded: 0, amount_left: 0 } as any // seeding goal met, and the engine counts nothing downloaded here
+  const k = whyKept(done, 8101)
+  assert.equal(k.deletable, false); assert.match(k.reasons[0], /outside Flix/)
+  const u = createUser('watcher', 'password123', false).id
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,8101,0,1,1,1)`).run(u)
+  assert.equal(whyKept(done, 8101).deletable, true, 'watched to the end and seeded: now it goes like any other')
+})

@@ -17,10 +17,13 @@ export function diskInfo(): { free: number; total: number } | null {
   try { const s = statfsSync(dir); return { free: Number(s.bavail) * Number(s.bsize), total: Number(s.blocks) * Number(s.bsize) } } catch { return null }
 }
 
+/** The least free space to leave: the larger of MIN_FREE_GB and MIN_FREE_PCT of the disk. */
+export function freeFloor(d: { total: number }): number { return Math.max(config.minFreeGb * 1e9, (config.minFreePct / 100) * d.total) }
+
 /** Refuse a download that would leave the disk nearly full; the message is written for the family, not for an admin. */
 export function assertSpace(needBytes: number) {
   const d = diskInfo()
-  if (d && d.free - needBytes < config.minFreeGb * 1e9)
+  if (d && d.free - needBytes < freeFloor(d))
     throw Object.assign(new Error('The server is out of storage right now, so this can’t start. Ask the person who runs Flix to free up some space.'), { statusCode: 507, space: true })
 }
 
@@ -73,9 +76,10 @@ export async function health(): Promise<Issue[]> {
   }
   const d = diskInfo()
   if (d) {
-    const min = config.minFreeGb * 1e9
-    if (d.free < min) out.push({ level: 'bad', title: 'Out of storage', detail: `Only ${gb(d.free)} left, so new shows are refused until space is freed. Finished, seeded torrents are removed automatically; ask people to finish or release what they started.`, link: '#/admin' })
-    else if (d.free < min * 2.5) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} left of ${gb(d.total)}.`, link: '#/admin' })
+    const pct = Math.round((d.free / d.total) * 100)
+    if (d.free < freeFloor(d)) out.push({ level: 'bad', title: 'Please remove some videos: storage is nearly full', detail: `Only ${gb(d.free)} (${pct}%) of ${gb(d.total)} is left, so new shows are refused and nothing is fetched ahead of time. “Free up space” on the Torrents page lists what can go, biggest first. Finished, fully seeded torrents are removed automatically.`, link: '#/admin' })
+    else if (pct < config.warnFreePct) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} (${pct}%) left of ${gb(d.total)}. Shows are no longer fetched ahead of time below ${config.auto.pausePct}%; below ${config.minFreePct}% new ones are refused. “Free up space” on the Torrents page lists what can go.`, link: '#/admin' })
+    else if (config.auto.enabled && pct < config.auto.pausePct) out.push({ level: 'info', title: 'Pre-downloading is paused', detail: `${pct}% of storage is free; next episodes and watchlist shows are not fetched ahead of time below ${config.auto.pausePct}%.` })
   }
   const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number
   if (reported) out.push({ level: 'warn', title: `${reported} playback problem${reported === 1 ? '' : 's'} reported`, detail: 'Someone tapped “Something’s wrong”, or an episode failed to start. The Torrents page lists which.', link: '#/admin' })

@@ -21,6 +21,7 @@ import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
+import { autoForListed, autoNext, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
@@ -236,6 +237,7 @@ app.post('/api/mylist', auth, async (req) => {
   if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
   if (on) db.prepare('INSERT OR IGNORE INTO my_list (user_id, series_id, added_at, seen_at) VALUES (?,?,?,(SELECT MAX(time) FROM releases WHERE series_id = ?))').run(req.user!.id, id, now(), id)
   else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
+  if (on) void autoForListed(req.user!.id, id) // its first unwatched episode starts downloading, within the pre-download limits
   return { inList: !!on }
 })
 
@@ -290,19 +292,11 @@ app.post('/api/watch', auth, async (req) => {
   return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
-const prefetched = new Map<string, number>()
-/** While one episode plays, start fetching the next so "Up next" is instant. Quiet by design: failures are ignored. */
+/** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */
 app.post('/api/prefetch', auth, async (req) => {
   const { seriesId, season, label } = req.body as any
   if (!canViewSeries(req.user, Number(seriesId))) return { ok: false }
-  const eps = buildEpisodes(Number(seriesId), req.user!.id)
-  const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
-  const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
-  if (!next) return { ok: false }
-  const key = `${req.user!.id}:${next.torrentId}:${next.label}`
-  if ((prefetched.get(key) ?? 0) > Date.now() - 600_000) return { ok: true }
-  prefetched.set(key, Date.now())
-  startPlayback(req.user!.id, next.torrentId, undefined, { episodeLabel: next.isPack && next.episode === null ? undefined : next.label }).catch((e) => app.log.info(`prefetch skipped: ${e.message}`))
+  void autoNext(req.user!.id, Number(seriesId), season ?? null, String(label ?? ''))
   return { ok: true }
 })
 
@@ -443,7 +437,7 @@ app.post('/api/release', auth, async (req) => {
 // ---- admin ------------------------------------------------------------------
 const admin = { preHandler: requireAdmin }
 app.get('/api/admin/downloads', admin, async () => {
-  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, r.series, r.group_name, r.resolution, r.is_pack
+  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, d.origin, r.series, r.group_name, r.resolution, r.is_pack
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id ORDER BY d.added_at DESC LIMIT 200`).all() as any[]
   const out = []
   for (const d of rows) {
@@ -455,7 +449,7 @@ app.get('/api/admin/downloads', admin, async () => {
       engineState: t.state, eta: t.eta ?? null, left: t.amount_left,
       ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending })
   }
-  return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb }
+  return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
 })
 /** A viewer tapped "Something's wrong", or playback failed on its own. Quiet duplicates are dropped. */
 app.post('/api/report', auth, async (req) => {
@@ -635,6 +629,7 @@ export async function start() {
   }
   startCrawler()
   startNetworkCrawler()
+  startAutoDownloads()
   startBackups()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep

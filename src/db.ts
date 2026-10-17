@@ -99,4 +99,9 @@ try { db.exec('ALTER TABLE series_net ADD COLUMN lang TEXT') } catch { /* alread
 try { db.exec('ALTER TABLE series_net ADD COLUMN season_counts TEXT') } catch { /* already present */ }
 try { db.exec('ALTER TABLE series_net ADD COLUMN ver INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
 
+// Where a download came from: 'flix' (someone pressed play), 'auto' (started ahead of time) or 'adopted' (already in the Downloads folder, outside Flix).
+try { db.exec(`ALTER TABLE downloads ADD COLUMN origin TEXT NOT NULL DEFAULT 'flix'`) } catch { /* already present */ }
+// 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 30 days.
+try { db.exec('ALTER TABLE interests ADD COLUMN auto INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+
 export const now = () => Math.floor(Date.now() / 1000)

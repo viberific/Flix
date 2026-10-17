@@ -18,7 +18,7 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 ## "Just works" for the family
 
 - **One login, no typing.** Sessions last 180 days and renew while a device is in use. The admin can create a one-time **sign-in link** for each person (Family → *Sign-in link*); opening it signs that device in with no password. Devices remember every profile used on them and ask **Who's watching?** when the app opens. To drop Umbrel's own login in front of Flix, see `docs/umbrel-single-login.md`.
-- **Playback that recovers.** If the chosen release delivers nothing for ~25 s, Flix quietly switches to the next-best release of the same episode (up to twice). While an episode plays, the next one starts downloading, so "Up next" is instant. Errors are written for the family ("isn't ready to play yet"), with the technical text shown to admins only.
+- **Playback that recovers.** If the chosen release delivers nothing for ~25 s, Flix quietly switches to the next-best release of the same episode (up to twice). Once an episode is half watched (or has finished downloading), the next one starts downloading, so "Up next" is instant. Errors are written for the family ("isn't ready to play yet"), with the technical text shown to admins only.
 - **Subtitles and audio.** Embedded text subtitles appear in the player's own CC menu (extracted as they download), with the choice remembered per device; English subtitles turn on by default for non-English audio. Several audio tracks give an audio button. Picture subtitles (PGS/VobSub) can't be shown in a browser. A *Skip intro* / *Skip recap* button appears when the file's chapters are named like one. Also: 10-second back/forward, keyboard shortcuts (space, arrows, F, M), remembered volume.
 - **TVs and casting.** On a TV browser (or with arrow keys once something is focused) the arrow keys move between tiles and Back goes back; the layout scales up on big screens. Where the browser supports casting (Remote Playback) a cast button appears, using a signed, cookie-free link. That only works when the TV can reach this server on the local network, not over Tailscale alone.
 - **Episode titles, summaries and pictures** on each episode (TMDB when a key is set, otherwise TVmaze, which needs no key), also shown in the player and "Up next".
@@ -68,6 +68,14 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 - **Where ratings come from:** always automatic, from **IMDb**. BTN's API has no content rating, and IMDb has no public API (and blocks scraping), so Flix asks [OMDb](https://www.omdbapi.com/), which serves IMDb's certificate and score, by the show's IMDb id (`OMDB_API_KEY`, free; also settable under Settings). Movie-style G/PG/PG-13/R are mapped to TV-G/PG/14/MA. If IMDb has no certificate, Flix falls back to [TMDB](https://www.themoviedb.org/) (US rating, by TVDB id, when `TMDB_API_KEY` is set). The IMDb score shows next to the rating on a show's page. There is no way to set a rating by hand.
 - **Unknown rating = Unrated**, which restricted users do not see unless "Unrated" is ticked for them.
 
+## The Downloads folder, and downloading ahead of time
+
+- **One folder.** Flix saves its torrents straight into the Downloads folder (qBittorrent gives each torrent its own named folder there; older versions used one hash-named folder per torrent, which Flix moves out of the way once nobody is watching). It also sets that folder as qBittorrent's default save path.
+- **Kept in step.** A torrent of a BTN release Flix knows that you download by hand into that folder is **taken over** (shown on the Torrents page as "from your Downloads folder", and playable instantly). It is kept until someone has watched it; it is never deleted unwatched. When Flix removes a torrent, the engine deletes its files and Flix sweeps away the empty folders left behind. Flix never deletes a file it did not download or adopt, and never the folder itself. A torrent that disappears from qBittorrent is dropped from Flix.
+- **Downloading ahead of time** (`src/autodl.ts`), so shows don't buffer for ages, without downloading needlessly: (1) the **next episode** once the current one is half watched, or has finished downloading; (2) the first unwatched episode of a show you add to **My List**; (3) a **new episode** (up in the last 3 days) for someone who has watched everything before it. Because every download has to seed 130 h / 1:1 before it can be deleted, this is cautious: at most 3 per person (`AUTO_PER_USER`), 50 GB in total (`AUTO_MAX_GB`), never a season pack over 15 GB (`AUTO_PACK_MAX_GB`), nothing below 25 % free disk (`AUTO_PAUSE_FREE_PCT`), and one nobody opens lapses after 7 days (`AUTO_EXPIRE_DAYS`) and is then deleted like any other once seeded. Pressing play is never held back by these limits. `AUTO_DOWNLOADS=false` switches it off.
+- **Low storage.** Flix keeps the larger of 10 GB and 10 % of the disk free (`MIN_FREE_GB`, `MIN_FREE_PCT`): below that new shows are refused. The admin sees a warning under 20 % and, under the limit, a banner asking them to remove some videos; the Torrents page then shows **Free up space**: everything finished, biggest first, with Remove buttons for what BTN's seeding rule allows, and what is still seeding listed without one.
+- **Watched means 100 %.** A show counts as watched only when it has played to the end, and a torrent is deleted only after everyone who started it has done so (or released it), it is fully downloaded, and BTN's seeding requirement is met.
+
 ## Torrents & seeding page
 
 Account menu → **Torrents & seeding** (admins): every torrent Flix has pulled, grouped as *Downloading*, *Seeding: requirement not met yet* and *Requirement met*,
@@ -86,7 +94,8 @@ System fonts only, so family devices never contact a font CDN.
 Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 
 1. Run qBittorrent with the Web UI enabled. Flix switches off the `.!qB` suffix and temp dir on startup so files are
-   readable in place. `DOWNLOAD_DIR` must be the same path for both processes.
+   readable in place. `DOWNLOAD_DIR` must be the same path for both processes. By default it is your desktop's **Downloads** folder
+   (`~/Downloads`, or whatever `XDG_DOWNLOAD_DIR` says in `~/.config/user-dirs.dirs`, as on XFCE); set `DOWNLOAD_DIR` to use another.
 2. `cp .env.example .env`, fill in `BTN_API_KEY` and the qBittorrent credentials, then
    `npm install && npm start` (`npm start` reads `.env` automatically).
 3. Open http://localhost:8096 – the first account you create becomes admin. Further users are created by the admin.
