@@ -232,15 +232,16 @@ async function homeView(q) {
   const [list, cont, home] = await Promise.all([
     q ? api('/api/series?q=' + encodeURIComponent(q)) : { series: [] },
     q ? { items: [] } : api('/api/continue'),
-    q ? { new: [], sections: [] } : api('/api/home'),
+    q ? { hero: null, sections: [] } : api('/api/home'),
   ])
-  const series = q ? list.series : home.new
+  const series = q ? list.series : []
+  const featured = q ? null : home.hero // the billboard: top trending show, else the newest streaming original
   const items = cont.items
   return () => {
     let html = ''
-    if (!q && (items[0] || series[0])) {
-      const c = items[0], s = c ? { id: c.seriesId, name: c.series } : series[0]
-      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? (items[0]?.next ? 'Up next' : 'Continue watching') : 'New on BroadcasTheNet'}</div>
+    if (!q && (items[0] || featured)) {
+      const c = items[0], s = c ? { id: c.seriesId, name: c.series } : featured
+      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? (items[0]?.next ? 'Up next' : 'Continue watching') : 'Featured'}</div>
         <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? (c.next ? 'Up next · ' + esc(c.label) : esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched') : 'Tap to see episodes'}</p>
         <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} ${c.next ? 'Play' : 'Resume'}</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
@@ -251,13 +252,13 @@ async function homeView(q) {
     if (!q && home.because) html += `<h2 class="sec">Because you watched ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
-      html += `<h2 class="sec">New releases</h2>` + (series.length ? rowOf(series, tile) : `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet.'}</div>`)
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
+      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
-    const hs = !q && (items[0] ? { id: items[0].seriesId } : series[0])
+    const hs = !q && (items[0] ? { id: items[0].seriesId } : featured)
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hp = $('#hp'); if (hp) hp.onclick = () => go(`#/play/${items[0].seriesId}/${items[0].season ?? 'x'}/${encodeURIComponent(items[0].label)}`)
   }

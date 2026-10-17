@@ -1,5 +1,5 @@
 diff --git a/blofstedt-flix/docker-compose.yml b/blofstedt-flix/docker-compose.yml
-index b0b6033..952b51c 100644
+index b0b6033..decbc86 100644
 --- a/blofstedt-flix/docker-compose.yml
 +++ b/blofstedt-flix/docker-compose.yml
 @@ -6,12 +6,17 @@ services:
@@ -17,12 +17,12 @@ index b0b6033..952b51c 100644
      # version. Bump this tag (and `version` above) only once that tag exists
      # in the registry, or an update will fail with "manifest unknown".
 -    image: ghcr.io/viberific/flix:0.1.8
-+    image: ghcr.io/viberific/flix:0.3.0
++    image: ghcr.io/viberific/flix:0.3.1
      restart: unless-stopped
      environment:
        # The one address Flix will answer on. Every other host name it is
 diff --git a/blofstedt-flix/umbrel-app.yml b/blofstedt-flix/umbrel-app.yml
-index 98662c4..bd2145c 100644
+index 98662c4..813bc58 100644
 --- a/blofstedt-flix/umbrel-app.yml
 +++ b/blofstedt-flix/umbrel-app.yml
 @@ -4,7 +4,7 @@ name: Flix
@@ -30,7 +30,7 @@ index 98662c4..bd2145c 100644
  icon: https://raw.githubusercontent.com/viberific/Autora/main/blofstedt-flix/icon.svg
  category: media
 -version: "0.1.8"
-+version: "0.3.0"
++version: "0.3.1"
  port: 8096
  description: >-
    Flix is a private, Jellyfin-style media server whose only source is
@@ -44,7 +44,7 @@ index 98662c4..bd2145c 100644
  
  
    Everything runs in one container: the app, qBittorrent-nox (BTN only allows
-@@ -45,9 +46,17 @@ repo: https://github.com/viberific/Flix
+@@ -45,9 +46,21 @@ repo: https://github.com/viberific/Flix
  support: https://github.com/viberific/Flix/issues
  gallery: []
  releaseNotes: >-
@@ -68,3 +68,7 @@ index 98662c4..bd2145c 100644
 +  watched, Up next and New episode badges, and works with a TV remote. The
 +  admin sees storage, BTN and seeding health on the Torrents page, with a
 +  banner when something needs attention, and the database is backed up daily.
++  The home screen no longer repeats shows: each appears once, with Trending
++  first, then the newest from Netflix, Disney+ and Apple TV+, then the rest
++  under the one genre that fits best. Installing Flix to the phone's home
++  screen works again (the app manifest is now fetched with the sign-in cookie).

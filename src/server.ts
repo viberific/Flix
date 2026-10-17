@@ -20,6 +20,8 @@ import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
+import { curateHome } from './home.ts'
+import { netInfo, startNetworkCrawler } from './networks.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -185,40 +187,42 @@ app.get('/api/still/:id/:s/:e', auth, async (req, reply) => {
 const NEW_DAYS = 7
 const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[]') as any[]).map((x) => String(x).trim()).filter(Boolean) } catch { return [] } }
 
-/** Netflix-style home: My List, "Because you watched", a "New" row, then one row per genre; every row is newest first. */
+/**
+ * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from Netflix,
+ * Disney+ and Apple TV+, then the rest under one genre each. A show appears once on the whole screen (see home.ts).
+ */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
-  const rows = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
-      WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 400)
-  rows.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
-  const byGenre = new Map<string, any[]>()
-  for (const r of rows) for (const g of new Set(genresOf(r))) {
-    if (!byGenre.has(g)) byGenre.set(g, [])
-    byGenre.get(g)!.push(r)
-  }
+  const all = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
+      WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 1500)
+  all.forEach((r) => { r.genres = genresOf(r) })
+  all.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
   const fresh = now() - NEW_DAYS * 86400
   const clean = ({ genres, ...r }: any) => ({ ...r, isNew: r.latest > fresh })
-  const sections = [...byGenre.entries()].filter(([, l]) => l.length >= 2 || byGenre.size < 4)
-    .sort((a, b) => b[1][0].latest - a[1][0].latest || b[1].length - a[1].length).slice(0, 14)
-    .map(([genre, l]) => ({ title: genre, series: l.slice(0, 30).map(clean) }))
 
   const uid = req.user!.id
   const listed = db.prepare('SELECT series_id, seen_at FROM my_list WHERE user_id = ? ORDER BY added_at DESC').all(uid) as { series_id: number; seen_at: number | null }[]
   // hasNew: something was uploaded for a show on the list since the viewer last opened its page
-  const myList = listed.map((l) => { const r = rows.find((x) => x.id === l.series_id); return r && { ...clean(r), hasNew: l.seen_at !== null && r.latest > l.seen_at } }).filter(Boolean)
+  // A show in Continue Watching is not shown again anywhere else on the screen.
+  const resume = new Set<number>(continueWatching(req.user!).map((c: any) => c.seriesId))
+  const myList = listed.filter((l) => !resume.has(l.series_id)).map((l) => { const r = all.find((x) => x.id === l.series_id); return r && { ...clean(r), hasNew: l.seen_at !== null && r.latest > l.seen_at } }).filter(Boolean) as any[]
+  const taken = new Set<number>([...resume, ...myList.map((r) => r.id)])
 
   // "Because you watched X": other shows sharing X's genres that this person has not started.
   let because: { name: string; series: any[] } | null = null
   const last = db.prepare('SELECT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? ORDER BY i.updated_at DESC LIMIT 1').get(uid) as any
-  const base = last && rows.find((r) => r.id === last.id)
+  const base = last && all.find((r) => r.id === last.id)
   if (base) {
-    const mine = new Set(genresOf(base))
+    const mine = new Set<string>(base.genres)
     const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
-    const rec = rows.filter((r) => !touched.has(r.id)).map((r) => ({ r, score: genresOf(r).filter((g) => mine.has(g)).length })).filter((x) => x.score > 0)
+    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id)).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length })).filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, 20).map((x) => clean(x.r))
-    if (rec.length >= 2) because = { name: base.name, series: rec }
+    if (rec.length >= 2) { because = { name: base.name, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
-  return { new: rows.slice(0, 30).map(clean), sections, checking: unsyncedCount(), myList, because }
+  // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
+  const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
+  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), netInfo(), taken)
+  return { hero: hero && clean(hero), sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
 })
 
 /** Add or remove a show from the viewer's own list. */
@@ -615,6 +619,7 @@ export async function start() {
     process.exit(1)
   }
   startCrawler()
+  startNetworkCrawler()
   startBackups()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep
