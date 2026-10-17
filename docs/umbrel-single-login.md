@@ -36,3 +36,12 @@ only gate in that setup.
 
 Family members should not have to type anything. In Flix: account menu, Family, **Sign-in link** next to their name. Send them
 the link (or open it on their phone/TV). It signs that device in once, with no password, and expires in 7 days.
+
+## Shipping 0.3.0 to Umbrel (order matters)
+
+1. Merge this branch into `main` here. The image workflow publishes `ghcr.io/viberific/flix:0.3.0` (it refuses a version that already exists).
+2. Wait for that workflow to go green. Umbrel fails an update with "manifest unknown" if the manifest names an image that isn't built yet.
+3. In blofstedt/Autora, apply `docs/autora-flix-0.3.0.patch` (`git apply docs/autora-flix-0.3.0.patch`, then commit and push to `main`).
+   It sets `version: "0.3.0"` and the image tag in `blofstedt-flix/`, writes the release notes, and adds `PROXY_AUTH_ADD: "false"` (the single login above).
+   Autora's own "Flix store check" workflow will then confirm that registry, manifest and image tag agree, or open a `release-gap` issue if they don't.
+4. Umbrel offers the update on its next store refresh; open the App Store on the Umbrel, or wait.
