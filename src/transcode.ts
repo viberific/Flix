@@ -124,9 +124,21 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
   }
   clearTimeout(j.idle)
-  j.idle = setTimeout(() => stopJob(key), 15 * 60_000)
+  j.idle = setTimeout(() => stopJob(key), 10 * 60_000)
   await j.ready
   return j.dir
+}
+
+/**
+ * The viewer left the player: the converted copy (temporary, in Flix's own data folder, never in Downloads) is not needed any more, so
+ * it goes after a short grace period rather than lingering. Opening the player again within that time cancels it (touchHls resets the timer).
+ */
+export function releaseHls(torrentId: number, fileIndex: number) {
+  for (const [key, j] of jobs) {
+    if (!key.startsWith(`${torrentId}:${fileIndex}:`)) continue
+    clearTimeout(j.idle)
+    j.idle = setTimeout(() => stopJob(key), 90_000)
+  }
 }
 
 export function touchHls(torrentId: number, fileIndex: number, audio = 0) {
@@ -134,7 +146,7 @@ export function touchHls(torrentId: number, fileIndex: number, audio = 0) {
   const j = jobs.get(key)
   if (!j) return false
   clearTimeout(j.idle)
-  j.idle = setTimeout(() => stopJob(key), 15 * 60_000)
+  j.idle = setTimeout(() => stopJob(key), 10 * 60_000)
   return true
 }
 

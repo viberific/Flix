@@ -4,6 +4,7 @@ import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
 import { syncFolder, tidyAfterRemoval } from './folder.ts'
 import { recordStorage } from './storage.ts'
+import { canView, getRating, parseAllowed } from './ratings.ts'
 
 export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
 
@@ -25,17 +26,34 @@ export function pendingViewers(torrentId: number): string[] {
     .map((r) => r.name)
 }
 
-export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead'; lapsesAt: number | null }
+/**
+ * People who are allowed to watch this torrent's show (admins, unrestricted accounts, or a rating they may see) and have
+ * not yet watched it. Someone who released it ("I don't need this") is counted as done. Nobody being left means everyone who
+ * could have watched it has.
+ */
+export function unwatchedEligible(torrentId: number): string[] {
+  const rel = db.prepare('SELECT series_id FROM releases WHERE torrent_id = ?').get(torrentId) as { series_id: number | null } | undefined
+  const rating = rel?.series_id != null ? getRating(rel.series_id).rating : 'Unrated'
+  const users = db.prepare('SELECT id, name, is_admin, allowed_ratings FROM users').all() as { id: number; name: string; is_admin: number; allowed_ratings: string | null }[]
+  const done = db.prepare('SELECT 1 FROM interests WHERE user_id = ? AND torrent_id = ? AND (watched_at IS NOT NULL OR released_at IS NOT NULL)')
+  return users
+    .filter((u) => canView({ is_admin: u.is_admin, allowed: parseAllowed(u.allowed_ratings) }, rating))
+    .filter((u) => !done.get(u.id, torrentId))
+    .map((u) => u.name)
+    .sort((a, b) => a.localeCompare(b))
+}
+
+export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead' | 'unwatched'; lapsesAt: number | null }
 
 /**
  * Who is keeping a torrent on disk, and why: people partway through it, who have it lined up to watch, or for whom it was fetched
- * ahead of time. Each hold lapses (abandonDays, or a week for ahead-of-time ones) unless they come back to it.
+ * ahead of time, plus anyone allowed to watch it who hasn't yet. Each hold from an interest lapses (abandonDays, or a week for ahead-of-time ones) unless they come back to it.
  */
 export function holdersOf(torrentId: number): Holder[] {
   const rows = db.prepare(`SELECT u.name, i.auto, i.position, i.updated_at FROM interests i JOIN users u ON u.id = i.user_id
     WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL`).all(torrentId) as { name: string; auto: number; position: number; updated_at: number }[]
   const by = new Map<string, Holder>()
-  const rank = { partway: 0, queued: 1, ahead: 2 }
+  const rank = { partway: 0, queued: 1, ahead: 2, unwatched: 3 }
   for (const r of rows) {
     const days = r.auto ? config.auto.expireDays : config.abandonDays
     const lapsesAt = days > 0 ? r.updated_at + days * 86400 : null
@@ -44,6 +62,8 @@ export function holdersOf(torrentId: number): Holder[] {
     const have = by.get(r.name)
     if (!have || rank[state] < rank[have.state]) by.set(r.name, { name: r.name, state, lapsesAt })
   }
+  // Everyone else who is allowed to watch it and has not yet also holds it, whether or not they ever pressed play.
+  for (const name of unwatchedEligible(torrentId)) if (!by.has(name)) by.set(name, { name, state: 'unwatched', lapsesAt: null })
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -62,6 +82,8 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
   const reasons: string[] = []
   if (t.amount_left > 0) reasons.push('still downloading')
   if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
+  const unwatched = unwatchedEligible(torrentId).filter((n) => !pending.includes(n))
+  if (unwatched.length) reasons.push(`not yet watched by everyone who can: ${unwatched.join(', ')}`)
   if (!seed.met) {
     const need: string[] = []
     if (!seed.ratioMet) need.push(`ratio ${seed.ratio.toFixed(2)}/${config.seed.minRatio}`)

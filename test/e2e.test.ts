@@ -7,6 +7,7 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import zlib from 'node:zlib'
 import WebTorrent from 'webtorrent'
 import { Server as Tracker } from 'bittorrent-tracker'
 
@@ -56,6 +57,17 @@ process.env.MIN_FREE_GB = '0'
 let tracker: any, seeder: WebTorrent.Instance, btn: Server, qbProc: ChildProcess
 // 1x1 PNG
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+// A backdrop wide enough to pass the server's check for a usable banner (at least 900px wide and 1.5x wider than tall).
+const BACKDROP = (() => {
+  const w = 1280, h = 360
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(4); head.writeUInt32BE(data.length)
+    const body = Buffer.concat([Buffer.from(type), data]), crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(body))
+    return Buffer.concat([head, body, crc])
+  }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 0 // 8-bit greyscale
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(Buffer.alloc((w + 1) * h))), chunk('IEND', Buffer.alloc(0))])
+})()
 let posterFetches = 0
 const media: Record<string, { path: string; torrent: Buffer; hash: string; data: Buffer }> = {}
 let cookie = ''
@@ -111,7 +123,7 @@ before(async () => {
       res.setHeader('content-type', 'application/json')
       return void res.end(JSON.stringify(req.url.includes('i=tt0903747') && req.url.includes('apikey=omdbkey') ? { Response: 'True', Rated: 'TV-14', imdbRating: '8.1' } : { Response: 'False', Error: 'Incorrect IMDb ID.' }))
     }
-    if (req.method === 'GET' && req.url === '/tmdbimg/w1280/bd.png') { res.setHeader('content-type', 'image/png'); res.end(PNG); return }
+    if (req.method === 'GET' && req.url === '/tmdbimg/w1280/bd.png') { res.setHeader('content-type', 'image/png'); res.end(BACKDROP); return }
     if (req.method === 'GET' && req.url === '/img/poster.png') { posterFetches++; res.setHeader('content-type', 'application/octet-stream'); res.end(PNG); return }
     if (req.method === 'GET' && req.url?.startsWith('/dl/')) {
       const i = Number(req.url.split('/')[2].split('?')[0]) - 1000
@@ -187,7 +199,7 @@ test('artwork: cached on the server, served locally, BTN image URL never reaches
   assert.equal(posterFetches, 1, 'second view must come from the cache')
   // BTN has no banner, so the backup source (TMDB's backdrop) fills in; kinds nobody can supply are a plain 404.
   const bn = await api('/api/art/77/banner')
-  assert.equal(bn.status, 200); assert.ok(Buffer.from(await bn.arrayBuffer()).equals(PNG))
+  assert.equal(bn.status, 200); assert.ok(Buffer.from(await bn.arrayBuffer()).equals(BACKDROP))
   assert.equal((await api('/api/art/77/trailer')).status, 404)
   assert.equal((await api('/api/art/77/nonsense')).status, 404)
 })

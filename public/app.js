@@ -56,6 +56,8 @@ const I = {
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
   next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/></svg>',
+  down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleY(-1)"><path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
   // The F's middle arm is a play button. Same artwork as /icon.svg.
@@ -93,34 +95,35 @@ function skeleton() {
 function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
-  top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
-    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form><span class="sp"></span>
+  top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
     <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
-  if (cur) { q.value = cur; sf.classList.add('has') }
-  // Live search: the results land as you type, without a page navigation, so the field keeps focus and the caret.
+  if (cur) q.value = cur
+  // Live search: what Flix already knows lands almost at once, then BTN's results fill in. Neither navigates or swaps the
+  // page, so the field keeps focus and the caret, and a slow answer never overwrites a newer one.
   let liveT = 0, liveN = 0
+  const show = (render, v) => { if (!/^#?\/?(\?|$)/.test(location.hash)) return; history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/'); render() }
   q.oninput = () => {
-    sf.classList.toggle('has', !!q.value)
     clearTimeout(liveT)
-    const v = q.value.trim()
+    const v = q.value.trim(), mine = ++liveN
     liveT = setTimeout(async () => {
-      const mine = ++liveN
-      const render = await homeView(v).catch(() => null)
-      if (!render || mine !== liveN) return
-      history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/')
-      swap(render)
-    }, 220)
+      if (!v) { const r = await homeView('').catch(() => null); if (r && mine === liveN) { show(r, v); window.scrollTo({ top: 0, behavior: 'instant' }) } return }
+      const quick = await homeView(v, true).catch(() => null)
+      if (quick && mine === liveN) show(quick, v)
+      if (v.length < 2) return
+      const full = await homeView(v).catch(() => null)
+      if (full && mine === liveN) show(full, v)
+    }, 120)
   }
-  // Collapsed, the field is only as wide as its icon, so tapping it has to open (focus) the input itself.
-  sf.onclick = () => q.focus()
   sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
   $('#av').onclick = (e) => {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Torrents &amp; seeding</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}${profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name) ? '<button id="sw">Switch profile</button>' : '<a href="#/signin">Add another profile</a>'}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
+    const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${many ? '<button id="sw">Profile</button>' : '<a href="#/signin">Profile</a>'}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
@@ -131,6 +134,55 @@ function renderTop() {
     const ib = $('#inst'); if (ib) ib.onclick = installApp
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
+}
+/* ---------- the Flix sound ---------- */
+/**
+ * Flix's own sound, made entirely in the browser (Web Audio) so there is no sound file to ship: a breath of air that rises, three
+ * bright glass-bell notes climbing a pentatonic scale, and a warm major chord that blooms under the last one and fades out. Nothing
+ * percussive, so it is nothing like the familiar two-drum-hit streaming jingles. Played as the player opens, which happens on a
+ * tap, so the browser allows it. It never throws: no audio support, or a browser that insists on a tap first, is just a silent intro.
+ */
+let audioCtx = null
+function flixSting() {
+  try {
+    if (store.get('sting', true) === false) return
+    const AC = window.AudioContext || window.webkitAudioContext
+    if (!AC) return
+    audioCtx ??= new AC()
+    const c = audioCtx
+    if (c.state === 'suspended') c.resume().catch(() => {})
+    const t = c.currentTime + 0.05
+    const out = c.createGain(); out.gain.value = 0.8
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4
+    out.connect(comp); comp.connect(c.destination)
+    const env = (g, at, peak, attack, decay) => { g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(peak, at + attack); g.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay) }
+    // 1. A rising breath: noise through a band-pass that sweeps upward, swelling into the first note.
+    const len = Math.floor(c.sampleRate * 0.7), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0)
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1
+    const air = c.createBufferSource(); air.buffer = buf
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2.5
+    bp.frequency.setValueAtTime(500, t); bp.frequency.exponentialRampToValueAtTime(5200, t + 0.6)
+    const ag = c.createGain(); env(ag, t, 0.16, 0.5, 0.12)
+    air.connect(bp); bp.connect(ag); ag.connect(out); air.start(t); air.stop(t + 0.75)
+    // 2. Glass bells: a sine carrier whose pitch is wobbled by a second sine (FM) for the metallic ring, decaying slowly.
+    const bell = (f, at, peak, ring) => {
+      const car = c.createOscillator(), mod = c.createOscillator(), mg = c.createGain(), g = c.createGain()
+      car.type = 'sine'; car.frequency.value = f; mod.type = 'sine'; mod.frequency.value = f * 3.5
+      mg.gain.setValueAtTime(f * 1.6, at); mg.gain.exponentialRampToValueAtTime(f * 0.05, at + ring * 0.6)
+      mod.connect(mg); mg.connect(car.frequency)
+      env(g, at, peak, 0.006, ring); car.connect(g); g.connect(out)
+      car.start(at); mod.start(at); car.stop(at + ring + 0.1); mod.stop(at + ring + 0.1)
+    }
+    const n1 = t + 0.5, n2 = n1 + 0.16, n3 = n2 + 0.16
+    bell(587.33, n1, 0.34, 0.9)    // D5
+    bell(880.0, n2, 0.34, 1.0)     // A5
+    bell(1479.98, n3, 0.38, 1.7)   // F#6
+    // 3. A warm D major chord (triangle waves, soft) that swells under the last bell and fades.
+    for (const [f, peak] of [[146.83, 0.2], [220.0, 0.14], [293.66, 0.12], [369.99, 0.09]]) {
+      const o = c.createOscillator(), g = c.createGain(); o.type = 'triangle'; o.frequency.value = f
+      env(g, n2, peak, 0.35, 1.6); o.connect(g); g.connect(out); o.start(n2); o.stop(n2 + 2.1)
+    }
+  } catch { /* silent intro */ }
 }
 /* ---------- install ---------- */
 let installEvt = null
@@ -259,9 +311,9 @@ function wireRows(root) {
   root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
-async function homeView(q) {
+async function homeView(q, local = false) {
   const [list, cont, home] = await Promise.all([
-    q ? api('/api/series?q=' + encodeURIComponent(q)) : { series: [] },
+    q ? api('/api/series?q=' + encodeURIComponent(q) + (local ? '&local=1' : '')) : { series: [] },
     q ? { items: [] } : api('/api/continue'),
     q ? { hero: null, sections: [] } : api('/api/home'),
   ])
@@ -280,13 +332,16 @@ async function homeView(q) {
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
-    if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
+    // The billboard already shows the first thing to resume, so the row holds only the rest.
+    const more = !q && items[0] ? items.slice(1) : items
+    if (more.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(more, contTile)}`
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
-    if (!q && home.because) html += `<h2 class="sec">Because you watched ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
+    if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
+    if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
-      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
+      if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
@@ -329,6 +384,7 @@ async function seriesView(id) {
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
+        <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
@@ -355,6 +411,13 @@ async function seriesView(id) {
       const on = ml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
+    const tu = $('#tu'), td = $('#td')
+    const vote = async (b, v) => {
+      const next = b.getAttribute('aria-pressed') === 'true' ? 0 : v // tapping the same thumb again takes it back
+      try { await api('/api/vote', { seriesId: +id, vote: next }); tu.setAttribute('aria-pressed', String(next === 1)); td.setAttribute('aria-pressed', String(next === -1)) } catch (e) { alert(e.message) }
+    }
+    if (tu) tu.onclick = () => vote(tu, 1)
+    if (td) td.onclick = () => vote(td, -1)
     const ids = series.trailerIds?.length ? series.trailerIds : series.trailerId ? [series.trailerId] : []
     const loadTrailer = async () => {
       const tr = $('#tr'); if (!tr || tr.querySelector('iframe') || tr.dataset.busy) return
@@ -414,11 +477,11 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
-      <div class="p-wait" id="wait"><img class="art" id="wart" alt="" hidden><div class="ring"></div><div id="msg">Getting your show ready…</div><div class="pline"><i id="pb"></i></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="burst"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div><div class="pline"><i id="pb"></i></div></div></div>`
+    flixSting()
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
-    const wa = $('#wart'); wa.onload = () => { wa.hidden = false }; wa.src = `/api/art/${seriesId}/poster`
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     const avoid = []
@@ -453,13 +516,13 @@ function playView(seriesId, season, label) {
     }, { passive: false, capture: true })
     pl.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null }, { passive: true, capture: true })
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
-      $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
+      $('.mark')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
       $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(friendly(msg))}</div>${me?.is_admin && friendly(msg) !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
         <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
       $('#again').onclick = () => route()
@@ -496,11 +559,11 @@ function playView(seriesId, season, label) {
           if (!alive || !s || s.error || started) return
           $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
           const waited = Date.now() - t0
-          slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0
+          slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0 // one tick is half a second
           // Nothing arriving for ~25 s: try another release of the same episode, up to twice.
-          if (waited > 25000 && slow >= 20 && tries < 2) return switchSource()
-          $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : 'Getting your show ready…'
-        }, 1000)
+          if (waited > 25000 && slow >= 40 && tries < 2) return switchSource()
+          $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : ''
+        }, 500)
         await loadInfo(0, play.position)
       } catch (e) { fail(e.message) }
     }
@@ -716,13 +779,35 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-async function adminView(tab = 'downloads') {
-  const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
-  if (tab === 'downloads') { data.health = await api('/api/admin/health').catch(() => ({ issues: [] })); data.reports = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports }
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent']]
+const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
+
+/** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
+async function settingsView(section = 'torrents') {
+  const [downloads, health, reports, family, conns] = await Promise.all([
+    api('/api/admin/downloads'), api('/api/admin/health').catch(() => ({ issues: [] })), api('/api/admin/reports').catch(() => ({ reports: [] })),
+    api('/api/admin/users'), api('/api/admin/settings'),
+  ])
+  downloads.health = health; downloads.reports = reports.reports
   return () => {
-    app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
-      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Torrents</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
-    ;(tab === 'family' ? familyPanel : tab === 'settings' ? settingsPanel : downloadsPanel)(data, $('#adm-body'))
+    app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Settings</h1>
+      <nav class="snav" aria-label="Settings sections"><div class="pills">${SETTINGS_PILLS.map(([id, l]) => `<a class="pill" href="#/settings/${id}" data-s="${id}">${l}</a>`).join('')}</div></nav>
+      <section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
+    downloadsPanel(downloads, $('#s-torrents')); familyPanel(family, $('#s-family')); settingsPanel(conns, $('#s-conn'))
+    const pills = [...app.querySelectorAll('.snav .pill')]
+    const jump = (id, smoothly) => { const el = document.getElementById('s-' + id); if (el) el.scrollIntoView({ block: 'start', behavior: smoothly ? 'smooth' : 'instant' }) }
+    pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); jump(p.dataset.s, !rmq.matches) })
+    // Highlight the section being read: the last one whose top has scrolled up under the pills.
+    const onScroll = () => {
+      let cur = SETTINGS_PILLS[0][0]
+      for (const [id] of SETTINGS_PILLS) { const el = document.getElementById('s-' + id); if (el && el.getBoundingClientRect().top <= 150) cur = id }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) cur = SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
+      pills.forEach((p) => { const on = p.dataset.s === cur; p.setAttribute('aria-selected', String(on)); if (on && p.scrollIntoView) { const box = p.parentElement; box.scrollTo({ left: p.offsetLeft - (box.clientWidth - p.offsetWidth) / 2, behavior: 'auto' }) } })
+    }
+    addEventListener('scroll', onScroll, { passive: true })
+    const prev = cleanup; cleanup = () => { prev?.(); removeEventListener('scroll', onScroll) }
+    if (section !== 'torrents') requestAnimationFrame(() => jump(section, false))
+    onScroll()
   }
 }
 
@@ -779,7 +864,7 @@ function storageChart(el, h) {
 
 function downloadsPanel(data, root) {
   const req = data.requirements
-  root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
+  root.innerHTML = `<h2 class="stitle2">Torrents &amp; seeding</h2>
     <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it to the end. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
     <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
     <div id="trep"></div>
@@ -815,9 +900,9 @@ function downloadsPanel(data, root) {
       body = `<div class="meters">${meter(`Ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1`, x.ratio, req.minRatio, x.ratio >= req.minRatio)}${meter(`${x.seedHours.toFixed(1)} h of ${req.minHours} h seeded`, x.seedHours, req.minHours, x.seedHours >= req.minHours)}</div>
         <div class="dim sm">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
     }
-    const rs = (x.reasons || []).filter((r) => !/^BTN seeding|^waiting for/.test(r) && r !== 'still downloading')
-    const when = (h) => ({ partway: 'partway through', queued: 'lined up to watch', ahead: 'fetched ahead of time' }[h.state]) + (h.lapsesAt ? `, lapses in ${dur(h.lapsesAt - Date.now() / 1000)}` : '')
-    // Who is keeping it on disk. Their hold lapses if they never come back to it, so one person who loses interest can't keep it forever.
+    const rs = (x.reasons || []).filter((r) => !/^BTN seeding|^waiting for|^not yet watched by/.test(r) && r !== 'still downloading')
+    const when = (h) => ({ partway: 'partway through', queued: 'lined up to watch', ahead: 'fetched ahead of time', unwatched: 'can watch it, hasn’t yet' }[h.state]) + (h.lapsesAt ? `, lapses in ${dur(h.lapsesAt - Date.now() / 1000)}` : '')
+    // Who is keeping it on disk. Anyone allowed to watch it who hasn't yet holds it too. A hold from starting it lapses if they never come back to it.
     const held = (x.holders || []).length ? `<div class="sm"><span class="dim">Held by</span> ${x.holders.map((h) => `<b>${esc(h.name)}</b> <span class="dim">(${when(h)})</span>`).join(', ')}</div>` : x.deletable ? '' : '<div class="dim sm">Held by nobody.</div>'
     const why = (x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : '') + held + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
     return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
@@ -864,9 +949,9 @@ function familyPanel(data, root) {
   let users = data.users
   const onList = (u) => u.allowed ?? all
   const paint = () => {
-    root.innerHTML = `<h1 style="font-size:32px">Family</h1>
+    root.innerHTML = `<h2 class="stitle2">Family</h2>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
-      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → Ratings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
         <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
@@ -940,33 +1025,32 @@ function settingsPanel(data, root) {
   let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
-    root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
-      <h2 class="sec">BroadcasTheNet</h2>
+    root.innerHTML = `<div id="s-btn" class="ssec"><h2 class="stitle2">BroadcasTheNet</h2>
       <p class="dim" style="max-width:66ch">Flix talks to BTN with an API key, not your BTN username and password. Find the key in your BTN profile settings. BTN also only accepts a key from IP addresses you have approved on their site, so approve this server's address there if the test fails.</p>
       <form id="bf" class="person"><div class="dim" id="bs" role="status">${state}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="bm" role="status"></div></form>
-      <h2 class="sec">Ratings from IMDb</h2>
+      </div><div id="s-ratings" class="ssec"><h2 class="stitle2">Ratings from IMDb</h2>
       <p class="dim" style="max-width:66ch">Every show's content rating (TV-Y to TV-MA) and IMDb score are looked up automatically, through OMDb, which serves IMDb's data. Get a free key at omdbapi.com (it must be activated from the email they send). Without it Flix falls back to TMDB for the rating, and shows are Unrated when neither knows.</p>
       <form id="of" class="person"><div class="dim">${om.configured ? `Key set (ends in <code>${esc(om.hint)}</code>)${om.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste OMDb API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="ot" ${om.configured ? '' : 'disabled'}>Test connection</button>${om.source === 'settings' ? '<button type="button" class="btn" id="oc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="om" role="status"></div></form>
-      <h2 class="sec">TMDB (recommended)</h2>
+      </div><div id="s-tmdb" class="ssec"><h2 class="stitle2">TMDB (recommended)</h2>
       <p class="dim" style="max-width:66ch">A free TMDB v3 API key tells Flix which service each show is on, its language and season lengths, what is trending, and supplies summaries and artwork. It is also the fallback for content ratings.</p>
       <form id="tf" class="person"><div class="dim">${tm.configured ? `Key set (ends in <code>${esc(tm.hint)}</code>)${tm.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="tm" role="status"></div></form>
-      <h2 class="sec">qBittorrent</h2>
+      </div><div id="s-qb" class="ssec"><h2 class="stitle2">qBittorrent</h2>
       <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
       <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
         <div class="row-form"><input class="field" name="url" value="${esc(qbs.url)}" placeholder="http://127.0.0.1:8080" autocomplete="off" required>
           <input class="field" name="user" value="${esc(qbs.user)}" placeholder="Username" autocomplete="off" required>
           <input class="field" name="pass" type="password" placeholder="${qbs.passwordSet ? 'Password (unchanged)' : 'Password'}" autocomplete="new-password"></div>
         <div class="row-form"><button class="btn primary">Save</button><button type="button" class="btn" id="qt">Test connection</button>${qbs.source === 'settings' ? '<button type="button" class="btn" id="qc">Use server environment</button>' : ''}</div>
-        <div class="dim" id="qm" role="status"></div></form>`
+        <div class="dim" id="qm" role="status"></div></form></div>`
     wire()
   }
   const wire = () => {
@@ -1062,7 +1146,7 @@ async function healthBanner() {
   const first = bad[0]
   const el = document.createElement('div')
   el.id = 'hb'; el.className = 'hbanner ' + first.level
-  el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/admin')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
+  el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/settings')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
   el.querySelector('.hbx').addEventListener('click', () => {
     const s = hbDismissed()
     for (const i of bad) s.add(hbKey(i))
@@ -1130,7 +1214,7 @@ async function route() {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
-    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' || parts[1] === 'settings' ? parts[1] : 'downloads')
+    else if ((parts[0] === 'settings' || parts[0] === 'admin') && me.is_admin) render = await settingsView(parts[0] === 'admin' ? LEGACY_SECTION[parts[1] ?? ''] ?? 'torrents' : SETTINGS_PILLS.some(([id]) => id === parts[1]) ? parts[1] : 'torrents')
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return

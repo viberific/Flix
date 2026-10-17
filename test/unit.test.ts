@@ -307,7 +307,9 @@ test('home: only the seven services, every row exactly ten, trending first, no s
   assert.equal(titles[0], 'Trending shows')
   assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Netflix') && titles.indexOf('New on Netflix') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
   assert.ok(!titles.includes('New on Showcase') && !titles.includes('New on Apple TV+'), 'a service with no shows has no row')
-  const ids = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
+  // Genre and "More to watch" rows are filled from the whole library, so shows outside the services appear there; the billboard and the
+  // trending and service rows are only ever shows on one of the seven.
+  const ids = [hero!.id, ...sections.filter((s) => s.title === 'Trending shows' || s.title.startsWith('New on ')).flatMap((s) => s.series.map((r) => r.id))]
   assert.ok(ids.every((i) => net.get(i)!.streamer), 'nothing from outside the seven services')
   const crave = sections.find((s) => s.title === 'New on Crave')
   assert.ok(!crave, 'four Crave shows cannot make ten, even topped up from the same service')
@@ -317,7 +319,8 @@ test('home: a service with a few shows is topped up from shows already shown rat
   const rows: any[] = [], net = new Map<number, any>()
   for (let i = 1; i <= 14; i++) { rows.push(row(i, ['Drama'])); net.set(i, info('Netflix', `2020-01-${String(i).padStart(2, '0')}`, i <= 12 ? i : null)) }
   const { sections } = curateHome(rows, net)
-  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on Netflix'])
+  // Two rows is under the four a page needs, so a "Newest additions" row (which may repeat shows) makes up the numbers.
+  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on Netflix', 'Newest additions'])
   for (const s of sections) assert.equal(s.series.length, ROW_SIZE)
   const mine = new Set([1, 2, 3, 4, 5])
   const above = curateHome(rows, net, mine).sections[0].series
@@ -325,7 +328,7 @@ test('home: a service with a few shows is topped up from shows already shown rat
   assert.ok(above.slice(0, 5).every((r) => !mine.has(r.id)), 'shows already above (My List) only come back last, to fill the row')
 })
 
-test('home: genre rows only appear with ten shows not yet shown, and nothing shows when too little is known', () => {
+test('home: genre rows only appear with ten shows not yet shown, and no rows when too little is known', () => {
   const rows: any[] = [], net = new Map<number, any>()
   for (let i = 1; i <= 90; i++) { rows.push(row(i, [i % 2 ? 'Drama' : 'Comedy'])); net.set(i, info(['HBO', 'Netflix', 'Apple TV+'][i % 3], `2021-01-${String((i % 28) + 1).padStart(2, '0')}`)) }
   const { hero, sections } = curateHome(rows, net)
@@ -335,7 +338,8 @@ test('home: genre rows only appear with ten shows not yet shown, and nothing sho
   const dupes = ids.length - new Set(ids).size
   assert.ok(dupes <= 4, `repeats only come from topping up a thin row (${dupes})`)
   const none = curateHome([row(1, ['Drama']), row(2, ['Drama'])], new Map())
-  assert.equal(none.hero, null); assert.deepEqual(none.sections, [])
+  assert.deepEqual(none.sections, []) // too little to make any row
+  assert.ok(none.hero, 'but the billboard still shows the newest show, rather than an empty page')
 })
 
 test('library: only English-language shows, and a season is judged against its real length', async () => {
@@ -516,7 +520,30 @@ test('a torrent downloaded by hand is kept until somebody has watched it', async
   assert.equal(k.deletable, false); assert.match(k.reasons[0], /outside Flix/)
   const u = createUser('watcher', 'password123', false).id
   db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,8101,0,1,1,1)`).run(u)
-  assert.equal(whyKept(done, 8101).deletable, true, 'watched to the end and seeded: now it goes like any other')
+  const others = (db.prepare('SELECT id FROM users WHERE id != ?').all(u) as { id: number }[]).map((r) => r.id)
+  if (others.length) assert.match(whyKept(done, 8101).reasons.join(' '), /not yet watched by everyone who can/, 'one viewer is not enough while others could watch it')
+  for (const o of others) db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,8101,0,1,1,1)`).run(o)
+  assert.equal(whyKept(done, 8101).deletable, true, 'everyone who can watch it has, and it is seeded: now it goes like any other')
+})
+
+test('a torrent waits only for the users whose ratings let them watch it', async () => {
+  const { unwatchedEligible } = await import('../src/retention.ts')
+  const { db } = await import('../src/db.ts')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8201, 82, 'M', 'M - S01E01', 'x3', 0, 1000)`).run()
+  db.prepare(`INSERT OR REPLACE INTO series_meta (series_id, rating, source, fetched_at) VALUES (82, 'TV-MA', 'imdb', 0)`).run()
+  const kid = createUser('kidtest', 'password123', false, ['TV-Y']).id
+  const adult = createUser('adulttest', 'password123', false).id
+  const waiting = unwatchedEligible(8201)
+  assert.ok(!waiting.includes('kidtest'), 'a user who may not see TV-MA is not waited for')
+  assert.ok(waiting.includes('adulttest'))
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, released_at) VALUES (?,8201,0,1,1,1)`).run(adult)
+  assert.ok(!unwatchedEligible(8201).includes('adulttest'), 'releasing it counts as done')
+  void kid
+  const { holdersOf } = await import('../src/retention.ts')
+  const held = holdersOf(8201).map((h) => h.name)
+  assert.ok(held.includes('adulttest') === false && !held.includes('kidtest'), 'released, or not allowed: holds nothing')
+  assert.ok(held.length > 0 || unwatchedEligible(8201).length === 0, 'everyone else allowed to watch it holds it, not only whoever pressed play')
+  assert.ok(holdersOf(8201).every((h) => h.state === 'unwatched'))
 })
 
 test('storage graph: a year of daily points that rise and fall as downloads come and go, real samples taking over once recorded', async () => {
@@ -553,9 +580,12 @@ test('held by: who keeps a torrent on disk, each hold lapsing if they never come
   ins.run(d, 0, t, t - 40 * 86400, 600, 0, null, null)            // gave up 40 days ago: lapsed
   ins.run(d, 1, t, t, 0, 0, t, null)                              // finished: not a hold
   const h = holdersOf(9701)
-  assert.deepEqual(h.map((x) => [x.name, x.state]), [['holda', 'partway'], ['holdb', 'queued'], ['holdc', 'ahead']])
-  assert.ok(h[0].lapsesAt! > t && h[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
-  assert.ok(h[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
+  const ours = h.filter((x) => x.name.startsWith('hold'))
+  assert.deepEqual(ours.map((x) => [x.name, x.state]), [['holda', 'partway'], ['holdb', 'queued'], ['holdc', 'ahead']], 'holdd finished it, so holds nothing')
+  assert.ok(h.filter((x) => !x.name.startsWith('hold')).every((x) => x.state === 'unwatched' && x.lapsesAt === null), 'everyone else who can watch it and has not holds it too')
+  assert.ok(h.length > ours.length, 'including accounts that never pressed play')
+  assert.ok(ours[0].lapsesAt! > t && ours[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
+  assert.ok(ours[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
 })
 
 const { addRefusal } = await import('../src/qb.ts')
@@ -578,4 +608,23 @@ test('add response: the older plain-text and empty replies are accepted', () => 
   assert.equal(addRefusal(true, 'Ok.'), null)
   assert.equal(addRefusal(true, ''), null)
   assert.equal(addRefusal(true, 'not json at all'), null)
+})
+
+test('taste: thumbs steer genres and hide downvoted shows, but the newest still lead', async () => {
+  const { tasteOf, tasteSort } = await import('../src/taste.ts')
+  const { db, now } = await import('../src/db.ts')
+  const genres: Record<number, string[]> = { 1: ['Comedy'], 2: ['Comedy'], 3: ['Horror'], 4: ['Horror'] }
+  const u = createUser('taster', 'password123', false).id
+  db.prepare('INSERT INTO votes (user_id, series_id, vote, voted_at) VALUES (?,?,?,?)').run(u, 1, 1, now())
+  db.prepare('INSERT INTO votes (user_id, series_id, vote, voted_at) VALUES (?,?,?,?)').run(u, 3, -1, now() - 5)
+  const t = tasteOf(u, (id) => genres[id] ?? [])
+  assert.deepEqual([...t.hidden], [3])
+  assert.equal(t.lastLiked, 1)
+  assert.ok(t.fit(['Comedy']) > 0 && t.fit(['Horror']) < 0 && t.fit(['Drama']) === 0)
+  const row = (id: number) => ({ id, genres: genres[id] })
+  // Newest first: 4 (Horror, disliked genre), then 2 (Comedy). A liked genre lifts a show one place, not ten.
+  assert.deepEqual(tasteSort([row(4), row(2)], t).map((r) => r.id), [2, 4])
+  const many = [row(4), ...Array.from({ length: 40 }, (_, i) => ({ id: 100 + i, genres: ['Comedy'] })), row(2)]
+  assert.equal(tasteSort(many, t, 30).at(-1)!.id, 2, 'beyond the freshest window nothing is promoted')
+  assert.equal(tasteSort([row(4), row(2)], undefined).map((r) => r.id).join(), '4,2', 'no taste, no change')
 })

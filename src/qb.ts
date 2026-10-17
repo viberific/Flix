@@ -126,6 +126,13 @@ export const qb = {
   async filePrio(hash: string, ids: number[], priority: number) {
     if (ids.length) await post('/api/v2/torrents/filePrio', { hash, id: ids.join('|'), priority: String(priority) })
   },
+  /** Start now, whatever the engine's queue limits say, and go to the front of the queue: used for a torrent somebody is waiting on. */
+  async prioritize(hash: string) {
+    await post('/api/v2/torrents/setForceStart', { hashes: hash, value: 'true' }).catch(() => {})
+    await post('/api/v2/torrents/topPrio', { hashes: hash }).catch(() => {}) // errors when queueing is off; nothing to do then
+  },
+  /** Ask the trackers for peers again right away instead of waiting out the announce interval. */
+  async reannounce(hash: string) { await post('/api/v2/torrents/reannounce', { hashes: hash }).catch(() => {}) },
   async resume(hash: string) { await post('/api/v2/torrents/resume', { hashes: hash }).catch(() => post('/api/v2/torrents/start', { hashes: hash })) },
   async remove(hash: string, deleteFiles: boolean) { await post('/api/v2/torrents/delete', { hashes: hash, deleteFiles: String(deleteFiles) }) },
 }

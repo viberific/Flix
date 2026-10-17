@@ -35,13 +35,18 @@ async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix') {
       if (!(await qb.info(hash).catch(() => undefined))) throw e
     }
   }
+  // Somebody is waiting on this one (not a quiet ahead-of-time fetch): skip the engine's queue and find peers now.
+  if (origin === 'flix') {
+    const cur = await qb.info(hash).catch(() => undefined)
+    if (!cur || cur.progress < 1) { void qb.reannounce(hash); void qb.prioritize(hash) } // one already on disk needs neither
+  }
   // wait for metadata (files list)
   const deadline = Date.now() + 60_000
   for (;;) {
     const files = await qb.files(hash).catch(() => [] as QbFile[])
     if (files.length) break
     if (Date.now() > deadline) throw new Error('Timed out waiting for torrent metadata from the tracker')
-    await sleep(400)
+    await sleep(200)
   }
   db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, origin) VALUES (?,?, 'active', ?, ?)
     ON CONFLICT(torrent_id) DO UPDATE SET origin = CASE WHEN state = 'active' THEN origin ELSE excluded.origin END, state='active', removed_at=NULL, remove_reason=NULL`).run(rel.torrent_id, hash, now(), from)
@@ -128,7 +133,7 @@ async function layoutFor(hash: string): Promise<Layout> {
 
 async function pieces(hash: string): Promise<number[]> {
   const c = pieceCache.get(hash)
-  if (c && Date.now() - c.at < 600) return c.states
+  if (c && Date.now() - c.at < 250) return c.states
   const states = await qb.pieceStates(hash)
   pieceCache.set(hash, { at: Date.now(), states })
   return states
@@ -153,7 +158,7 @@ async function waitForBytes(hash: string, fileIndex: number, start: number, end:
     for (let i = first; i <= last; i++) if (states[i] !== 2) { ok = false; break }
     if (ok) return
     if (Date.now() > deadline) throw new StreamTimeout('Timed out waiting for data (no seeders?)')
-    await sleep(350)
+    await sleep(200)
   }
 }
 

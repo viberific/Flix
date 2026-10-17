@@ -12,7 +12,7 @@ import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, releaseHls, subtitleVtt, touchHls } from './transcode.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -22,8 +22,9 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { storageHistory } from './storage.ts'
-import { autoForListed, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { autoForListed, autoNext, autoWarm, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
+import { tasteOf, tasteSort } from './taste.ts'
 import { holdersOf, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -127,13 +128,19 @@ const isListed = (r: { id: number }) => listable().has(r.id)
 /** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
 const ensureSynced = (id: number) => syncSeries(id).then(() => ensureNet(id)).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
 
+const btnSearched = new Map<string, number>()
 app.get('/api/series', auth, async (req) => {
-  const { q } = req.query as { q?: string }
+  const { q, local } = req.query as { q?: string; local?: string }
   const f = ratingClause(req.user)
   const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
-  if (q && q.trim().length >= 2) {
-    await searchBtn(q.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
+  // `local` answers from what Flix already knows, instantly; the page follows up without it to bring in BTN's results.
+  // A term searched on BTN in the last few minutes is not asked again.
+  const term = q?.trim().toLowerCase() ?? ''
+  if (!local && term.length >= 2 && (btnSearched.get(term) ?? 0) < Date.now() - 300_000) {
+    btnSearched.set(term, Date.now())
+    if (btnSearched.size > 500) btnSearched.delete(btnSearched.keys().next().value!)
+    await searchBtn(q!.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
     // A search only brings back some of a show's releases; read the rest of the top few matches (and their language and season lengths) so their seasons can be judged.
     const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id) || !db.prepare('SELECT 1 FROM series_net WHERE series_id = ?').get(r.id)).slice(0, 5)
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
@@ -167,9 +174,11 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerIds = d?.trailers.length ? d.trailers : [youtubeId(trailer) ?? youtubeId(d?.trailer)].filter((x): x is string => !!x)
   const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
+  const episodes = buildEpisodes(id, req.user!.id)
+  void autoWarm(req.user!.id, episodes) // quietly starts what they would resume, so Play is near-instant
   return {
-    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
-    episodes: withInfo(id, buildEpisodes(id, req.user!.id)),
+    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), vote: (db.prepare('SELECT vote FROM votes WHERE user_id = ? AND series_id = ?').get(req.user!.id, id) as any)?.vote ?? 0, year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
+    episodes: withInfo(id, episodes),
   }
 })
 
@@ -205,6 +214,7 @@ app.get('/api/home', auth, async (req) => {
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 1500)
   all.forEach((r) => { r.genres = genresOf(r) })
   all.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
+  const taste = tasteOf(req.user!.id, (id) => all.find((r) => r.id === id)?.genres ?? [])
   const fresh = now() - NEW_DAYS * 86400
   const clean = ({ genres, ...r }: any) => ({ ...r, isNew: r.latest > fresh })
 
@@ -217,21 +227,46 @@ app.get('/api/home', auth, async (req) => {
   const taken = new Set<number>([...resume, ...myList.map((r) => r.id)])
 
   // "Because you watched X": other shows sharing X's genres that this person has not started.
-  let because: { name: string; series: any[] } | null = null
+  let because: { name: string; liked: boolean; series: any[] } | null = null
   const last = db.prepare('SELECT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? ORDER BY i.updated_at DESC LIMIT 1').get(uid) as any
-  const base = last && all.find((r) => r.id === last.id)
+  // The last show they gave a thumbs up to leads over the last one they watched.
+  const base = (taste.lastLiked != null && all.find((r) => r.id === taste.lastLiked)) || (last && all.find((r) => r.id === last.id))
+  const likedBase = !!base && base.id === taste.lastLiked
   if (base) {
     const mine = new Set<string>(base.genres)
     const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
-    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && net.get(r.id)?.streamer).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length })).filter((x) => x.score > 0)
+    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && net.get(r.id)?.streamer).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length + 0.5 * taste.fit(r.genres) })).filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, ROW_SIZE).map((x) => clean(x.r))
-    if (rec.length === ROW_SIZE) { because = { name: base.name, series: rec }; rec.forEach((r) => taken.add(r.id)) }
+    if (rec.length === ROW_SIZE) { because = { name: base.name, liked: likedBase, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
   // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
   const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
-  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), net, taken)
+  // A show watched all the way through is not recommended again (it stays in My List and search, and shows what is new in it there).
+  const finished = new Set<number>()
+  for (const r of db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NOT NULL').all(uid) as { id: number }[]) {
+    const eps = buildEpisodes(r.id, uid)
+    if (eps.length && eps.every((e) => e.watched)) finished.add(r.id)
+  }
+  // "Picked for you": the freshest shows that suit their taste, when they have given any thumbs or finished enough to tell.
+  let picked: any[] | null = null
+  if (taste.genres.size) {
+    const cands = all.filter((r) => !started.has(r.id) && !finished.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && taste.fit(r.genres) > 0.2)
+    const rows = tasteSort(cands, taste, 40).slice(0, ROW_SIZE)
+    if (rows.length === ROW_SIZE) { picked = rows.map(clean); rows.forEach((r) => taken.add(r.id)) }
+  }
+  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
   const listIds = listed.map((l) => l.series_id)
-  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
+  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because, picked }
+})
+
+/** Thumbs up (1), thumbs down (-1) or clear (0) for a show. Feeds the home screen's picks. */
+app.post('/api/vote', auth, async (req) => {
+  const { seriesId, vote } = (req.body ?? {}) as any
+  const id = Number(seriesId), v = Number(vote)
+  if (!Number.isInteger(id) || !canViewSeries(req.user, id) || ![-1, 0, 1].includes(v)) throw notFound()
+  if (v) db.prepare('INSERT INTO votes (user_id, series_id, vote, voted_at) VALUES (?,?,?,?) ON CONFLICT(user_id, series_id) DO UPDATE SET vote = excluded.vote, voted_at = excluded.voted_at').run(req.user!.id, id, v, now())
+  else db.prepare('DELETE FROM votes WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
+  return { vote: v }
 })
 
 /** Add or remove a show from the viewer's own list. */
@@ -316,6 +351,13 @@ app.post('/api/prefetch', auth, async (req) => {
 app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   const { t, f } = req.params as any
   return (await bufferStatus(+t, +f)) ?? { error: 'not ready' }
+})
+
+/** The player was closed: drop the temporary converted copy (if there was one) after a short grace period. */
+app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
+  const { t, f } = req.params as any
+  releaseHls(+t, +f)
+  return { ok: true }
 })
 
 const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInteger(n) && n >= 0 && n < 32 ? n : 0 }

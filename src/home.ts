@@ -1,4 +1,5 @@
 import { STREAMERS, primaryGenre, type NetRow } from './networks.ts'
+import { tasteSort, type Taste } from './taste.ts'
 
 export interface HomeRow { id: number; name: string; poster: string | null; banner: string | null; genres: string[]; latest: number; rating?: string; [k: string]: unknown }
 export interface Section { title: string; series: HomeRow[] }
@@ -22,7 +23,7 @@ const byAir = (net: Map<number, NetRow>) => (a: HomeRow, b: HomeRow) =>
  * enough others to fill a row. When a service has only a few, its row is topped up with shows already shown elsewhere rather than
  * left short; a row that still cannot reach ROW_SIZE is dropped.
  */
-export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set<number> = new Set()): { hero: HomeRow | null; sections: Section[] } {
+export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set<number> = new Set(), taste?: Taste): { hero: HomeRow | null; sections: Section[] } {
   const used = new Set(taken)
   const eligible = rows.filter((r) => net.get(r.id)?.streamer)
   const newest = byAir(net)
@@ -41,7 +42,7 @@ export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set
    */
   const row = (title: string, primary: HomeRow[], fallback: HomeRow[] = [], repeats = true, min = ROW_SIZE) => {
     const all = [...new Map([...primary, ...fallback].map((r) => [r.id, r])).values()]
-    const fresh = all.filter((r) => !used.has(r.id))
+    const fresh = tasteSort(all.filter((r) => !used.has(r.id)), taste)
     const picked = [...fresh, ...(repeats ? all.filter((r) => used.has(r.id)) : [])].slice(0, ROW_SIZE)
     if (picked.length < min) return
     picked.forEach((r) => used.add(r.id))
@@ -58,7 +59,8 @@ export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set
   for (const r of rows) { const g = primaryGenre(r.genres); if (g) (groups.get(g) ?? groups.set(g, []).get(g)!).push(r) }
   const streamed = (a: HomeRow, b: HomeRow) => (Number(!!net.get(b.id)?.streamer) - Number(!!net.get(a.id)?.streamer)) || newest(a, b)
   const unseen = (l: HomeRow[]) => l.filter((r) => !used.has(r.id)).length
-  const genres = [...groups.entries()].filter(([, l]) => unseen(l) >= GENRE_MIN).sort((a, b) => unseen(b[1]) - unseen(a[1])).slice(0, MAX_GENRE_ROWS)
+  const liking = (g: string) => taste?.genres.get(g) ?? 0
+  const genres = [...groups.entries()].filter(([g, l]) => unseen(l) >= GENRE_MIN && liking(g) > -1).sort((a, b) => (liking(b[0]) > 0 ? 1 : 0) - (liking(a[0]) > 0 ? 1 : 0) || unseen(b[1]) - unseen(a[1])).slice(0, MAX_GENRE_ROWS)
   for (const [g, l] of genres) row(g, l.sort(streamed), [], false, GENRE_MIN)
   // Whatever is left, so the page is never a billboard over an empty screen.
   const rest = [...rows].filter((r) => r.poster).sort(streamed)

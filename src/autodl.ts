@@ -74,6 +74,17 @@ export async function autoNext(userId: number, seriesId: number, season: number 
   return next ? autoFetch(userId, next, why) : false
 }
 
+/**
+ * A person opened a show they are partway through: the episode they would resume is the one they are about to play, so get it started
+ * now, before they tap Play. Only for a show with real progress, and under all the usual limits of an ahead-of-time fetch.
+ */
+export async function autoWarm(userId: number, eps: Episode[]) {
+  const started = eps.some((e) => e.watched || e.position > 30)
+  if (!started) return false
+  const target = eps.find((e) => !e.watched && e.position > 30 && e.available) ?? eps.slice(eps.map((e) => e.watched).lastIndexOf(true) + 1).find((e) => e.available && !e.watched)
+  return target && (!target.onServer || target.isPack) ? autoFetch(userId, target, 'opened the show') : false
+}
+
 /** A show just added to My List: its first unwatched episode, unless that means a big season pack. */
 export async function autoForListed(userId: number, seriesId: number) {
   if (!seasonsOf(seriesId)) return false
