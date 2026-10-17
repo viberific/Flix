@@ -24,7 +24,7 @@ import { ROW_SIZE, curateHome } from './home.ts'
 import { storageHistory } from './storage.ts'
 import { autoForListed, autoNext, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
-import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { holdersOf, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -457,7 +457,7 @@ app.get('/api/admin/downloads', admin, async () => {
     const k = whyKept(t, d.torrent_id)
     out.push({ ...d, progress: t.progress, size: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
       engineState: t.state, eta: t.eta ?? null, left: t.amount_left,
-      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending })
+      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id) })
   }
   return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
 })

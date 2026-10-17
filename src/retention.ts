@@ -25,6 +25,28 @@ export function pendingViewers(torrentId: number): string[] {
     .map((r) => r.name)
 }
 
+export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead'; lapsesAt: number | null }
+
+/**
+ * Who is keeping a torrent on disk, and why: people partway through it, who have it lined up to watch, or for whom it was fetched
+ * ahead of time. Each hold lapses (abandonDays, or a week for ahead-of-time ones) unless they come back to it.
+ */
+export function holdersOf(torrentId: number): Holder[] {
+  const rows = db.prepare(`SELECT u.name, i.auto, i.position, i.updated_at FROM interests i JOIN users u ON u.id = i.user_id
+    WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL`).all(torrentId) as { name: string; auto: number; position: number; updated_at: number }[]
+  const by = new Map<string, Holder>()
+  const rank = { partway: 0, queued: 1, ahead: 2 }
+  for (const r of rows) {
+    const days = r.auto ? config.auto.expireDays : config.abandonDays
+    const lapsesAt = days > 0 ? r.updated_at + days * 86400 : null
+    if (lapsesAt !== null && lapsesAt <= now()) continue // lapsed: no longer holds it
+    const state: Holder['state'] = r.position > 30 ? 'partway' : r.auto ? 'ahead' : 'queued'
+    const have = by.get(r.name)
+    if (!have || rank[state] < rank[have.state]) by.set(r.name, { name: r.name, state, lapsesAt })
+  }
+  return [...by.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
 export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; reasons: string[]; pending: string[]; seed: SeedStatus } {
   const pending = pendingViewers(torrentId)
   const seed = seedStatus(t)

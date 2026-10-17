@@ -486,16 +486,17 @@ test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads
   config.minFreePct = 0; config.minFreeGb = 0; config.auto.pausePct = 0
   try {
     const u = createUser('autoann', 'password123', false).id
-    assert.equal(autoBlocked(u, 1e9), null)
+    assert.equal(autoBlocked(u, 1e6), null)
     config.auto.enabled = false; assert.match(autoBlocked(u, 1)!, /off/); config.auto.enabled = true
     config.auto.pausePct = 101; assert.match(autoBlocked(u, 1)!, /low/); config.auto.pausePct = 0
     const ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, auto) VALUES (?,?,?,?,?,1)`)
-    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8001, 80, 'A', 'A - S01E01', 'x1', 0, 30000000000)`).run()
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8001, 80, 'A', 'A - S01E01', 'x1', 0, 30000000)`).run()
     db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (8001, 'x1', 'active', 0)`).run()
     const t = Math.floor(Date.now() / 1000)
     ins.run(u, 8001, 0, t, t)
-    assert.match(autoBlocked(u, 25e9)!, /budget/, '30 GB already held + 25 GB is over the 50 GB budget')
-    assert.equal(autoBlocked(u, 5e9), null)
+    config.auto.maxGb = 0.05 // a 50 MB budget keeps the test independent of how much disk the machine has
+    assert.match(autoBlocked(u, 25e6)!, /budget/, '30 MB already held + 25 MB is over the 50 MB budget')
+    assert.equal(autoBlocked(u, 5e6), null)
     for (let i = 1; i < config.auto.perUser; i++) ins.run(u, 8001, i, t, t)
     assert.match(autoBlocked(u, 1)!, /enough lined up/)
     db.prepare('UPDATE interests SET updated_at = ? WHERE user_id = ?').run(t - (config.auto.expireDays + 1) * 86400, u)
@@ -538,4 +539,21 @@ test('storage graph: a year of daily points that rise and fall as downloads come
   assert.equal(real.points.at(-1)![1], 6e9, 'measured numbers win from the first sample on')
   assert.equal(real.points.find((p) => p[0] > at - 40 * day && p[0] < at - 30 * day)![1], 4e9, 'earlier days stay estimated')
   recordStorage(1)
+})
+
+test('held by: who keeps a torrent on disk, each hold lapsing if they never come back', async () => {
+  const { holdersOf } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (9701, 97, 'K', 'K - S01E01', 'k1', 0, 1000)`).run()
+  const a = createUser('holda', 'password123', false).id, b = createUser('holdb', 'password123', false).id, c = createUser('holdc', 'password123', false).id, d = createUser('holdd', 'password123', false).id
+  const t = now(), ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, position, auto, watched_at, released_at) VALUES (?,9701,?,?,?,?,?,?,?)`)
+  ins.run(a, 0, t, t - 3 * 86400, 600, 0, null, null)            // partway through
+  ins.run(b, 0, t, t, 0, 0, null, null)                           // lined up
+  ins.run(c, 0, t, t, 0, 1, null, null)                           // fetched ahead of time
+  ins.run(d, 0, t, t - 40 * 86400, 600, 0, null, null)            // gave up 40 days ago: lapsed
+  ins.run(d, 1, t, t, 0, 0, t, null)                              // finished: not a hold
+  const h = holdersOf(9701)
+  assert.deepEqual(h.map((x) => [x.name, x.state]), [['holda', 'partway'], ['holdb', 'queued'], ['holdc', 'ahead']])
+  assert.ok(h[0].lapsesAt! > t && h[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
+  assert.ok(h[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
 })
