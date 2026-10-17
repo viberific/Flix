@@ -8,6 +8,7 @@ import { qb, type QbFile } from './qb.ts'
 import { fetchTorrentFile } from './btn/client.ts'
 import { isVideo, parseEpisodeTag } from './btn/parse.ts'
 import { assertSpace } from './health.ts'
+import { SUBFILE } from './transcode.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -87,6 +88,7 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
       (db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? AND watched_at IS NULL AND released_at IS NULL').all(torrentId) as any[]).map((r) => r.file_index),
     )
     wanted.add(file.index)
+    for (const f of files) if (SUBFILE.test(f.name)) wanted.add(f.index) // tiny, and the player offers them as subtitles
     const toEnable = files.filter((f) => wanted.has(f.index) && f.priority === 0).map((f) => f.index)
     const toSkip = files.filter((f) => !wanted.has(f.index) && f.priority !== 0 && f.progress === 0).map((f) => f.index)
     await qb.filePrio(rel.info_hash, toSkip, 0)

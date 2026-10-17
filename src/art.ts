@@ -72,7 +72,7 @@ async function limited<T>(fn: () => Promise<T>): Promise<T> {
 const inflight = new Map<string, Promise<{ path: string; type: string } | null>>()
 const failed = new Map<string, number>()
 
-export type ArtKind = 'poster' | 'banner' | 'trailer'
+export type ArtKind = 'poster' | 'banner' | 'trailer' | 'still'
 
 // ---- backup artwork -------------------------------------------------------------------------------------
 // BTN's own poster/banner come first. When they are missing, or BTN's image host refuses us, the lookup below finds
@@ -138,7 +138,7 @@ function trailerIdFor(seriesId: number): string | null {
 }
 
 /** Where to try getting this picture from, best first. Later entries are only looked up when the earlier ones fail. */
-async function* sources(seriesId: number, kind: ArtKind): AsyncGenerator<string> {
+async function* sources(seriesId: number, kind: Exclude<ArtKind, 'still'>): AsyncGenerator<string> {
   if (kind === 'trailer') {
     const id = trailerIdFor(seriesId)
     if (id) { yield `${config.art.youtubeImages}/${id}/maxresdefault.jpg`; yield `${config.art.youtubeImages}/${id}/hqdefault.jpg` }
@@ -182,8 +182,14 @@ async function fetchCached(url: string, seriesId: number, kind: ArtKind) {
   return p
 }
 
+/** An episode's still image (a frame from the episode), cached like the other artwork. */
+export async function getStill(seriesId: number, season: number, episode: number) {
+  const r = db.prepare('SELECT still FROM episode_info WHERE series_id = ? AND season = ? AND episode = ?').get(seriesId, season, episode) as { still: string | null } | undefined
+  return r?.still ? fetchCached(r.still, seriesId, 'still') : null
+}
+
 /** Cached artwork for a series, downloading it on first use and trying the backup sources when one fails. Null when there is none. */
-export async function getArt(seriesId: number, kind: ArtKind) {
+export async function getArt(seriesId: number, kind: Exclude<ArtKind, 'still'>) {
   for await (const url of sources(seriesId, kind)) {
     const got = await fetchCached(url, seriesId, kind)
     if (got) return got

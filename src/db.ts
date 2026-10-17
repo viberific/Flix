@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS my_list (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, series_id INTEGER NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (user_id, series_id)
 );
 `)
+db.exec(`
+-- Titles, summaries and stills per episode (TMDB, or TVmaze when there is no TMDB key).
+CREATE TABLE IF NOT EXISTS episode_info (
+  series_id INTEGER NOT NULL, season INTEGER NOT NULL, episode INTEGER NOT NULL,
+  name TEXT, overview TEXT, still TEXT, runtime INTEGER, PRIMARY KEY (series_id, season, episode)
+);
+CREATE TABLE IF NOT EXISTS episode_info_sync (series_id INTEGER PRIMARY KEY, fetched_at INTEGER NOT NULL);
+-- "Something's wrong" taps and automatic playback failures, for the admin.
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, torrent_id INTEGER, series_id INTEGER, label TEXT,
+  kind TEXT NOT NULL, message TEXT, created_at INTEGER NOT NULL, resolved_at INTEGER
+);
+`)
+try { db.exec('ALTER TABLE users ADD COLUMN pin_hash TEXT') } catch { /* already present */ }
+try { db.exec('ALTER TABLE my_list ADD COLUMN seen_at INTEGER') } catch { /* already present */ }
 try { db.exec('ALTER TABLE releases ADD COLUMN youtube_trailer TEXT') } catch { /* already present */ }
 // Last episode a multi-episode file covers (S01E01E02 -> 2); null for everything else.
 try { db.exec('ALTER TABLE releases ADD COLUMN episode_end INTEGER') } catch { /* already present */ }

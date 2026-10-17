@@ -64,12 +64,21 @@ export async function health(): Promise<Issue[]> {
   }
   const v = await Promise.race([qb.version().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 3000))])
   if (!v) out.push({ level: 'bad', title: 'The download engine is not answering', detail: 'qBittorrent can’t be reached, so nothing can play. Check that Flix is running, or fix the address under Settings.', link: '#/admin/settings' })
+  if (v) {
+    // BTN's 1:1 ratio needs other people to be able to connect to us. Behind a closed router/container port, only the 130 hours can be met.
+    const r = await Promise.race([qb.reachability().catch(() => null), new Promise<null>((res) => setTimeout(() => res(null), 3000))])
+    if (r?.status === 'disconnected') out.push({ level: 'bad', title: 'No internet for downloads', detail: 'qBittorrent reports no network connection, so nothing can download or seed.', link: '#/admin' })
+    else if (r?.status === 'firewalled') out.push({ level: 'warn', title: 'Seeding may be limited: the download port looks closed',
+      detail: `qBittorrent hasn't seen anyone connect in${r.port ? ` (port ${r.port})` : ''}; this also shows for the first few minutes after a restart. If it stays, uploads are slow and the 1:1 ratio will take far longer. The 130-hour rule still counts, so torrents stay until that is met. To fix it, forward that port to this server on your router (and publish it in the Umbrel app's docker-compose).`, link: '#/admin' })
+  }
   const d = diskInfo()
   if (d) {
     const min = config.minFreeGb * 1e9
     if (d.free < min) out.push({ level: 'bad', title: 'Out of storage', detail: `Only ${gb(d.free)} left, so new shows are refused until space is freed. Finished, seeded torrents are removed automatically; ask people to finish or release what they started.`, link: '#/admin' })
     else if (d.free < min * 2.5) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} left of ${gb(d.total)}.`, link: '#/admin' })
   }
+  const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number
+  if (reported) out.push({ level: 'warn', title: `${reported} playback problem${reported === 1 ? '' : 's'} reported`, detail: 'Someone tapped “Something’s wrong”, or an episode failed to start. The Torrents page lists which.', link: '#/admin' })
   if (!config.tmdb.apiKey) out.push({ level: 'info', title: 'Content ratings are manual', detail: 'Add a free TMDB key under Settings so kids’ accounts hide unsuitable shows automatically.', link: '#/admin/settings' })
   const left = unsyncedCount()
   if (config.btn.apiKey && left > 0) out.push({ level: 'info', title: 'Still building the library', detail: `${left} show${left === 1 ? '' : 's'} left to check with BTN. The home page fills in as they finish.` })

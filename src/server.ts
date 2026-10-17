@@ -5,15 +5,17 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
-import { createInvite, createUser, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setSessionCookie, tvToken, userCount, userFor, userForTvToken } from './auth.ts'
+import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setSessionCookie, tvToken, userCount, userFor, userForTvToken } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { cleanHlsCache, ensureHls, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
-import { artPathSql, getArt } from './art.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
+import { parseEpisodeTag } from './btn/parse.ts'
+import { artPathSql, getArt, getStill } from './art.ts'
+import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
@@ -48,7 +50,13 @@ app.post('/api/login', async (req, reply) => {
 app.post('/api/device-token', { preHandler: requireUser }, async (req) => ({ token: newSession(req.user!.id) }))
 app.post('/api/switch', async (req, reply) => {
   const token = String((req.body as any)?.token ?? '')
-  if (!sessionUser(token)) return reply.code(401).send({ error: 'That profile needs to sign in again' })
+  const uid = sessionUser(token)
+  if (!uid) return reply.code(401).send({ error: 'That profile needs to sign in again' })
+  if (userFor(req)?.id !== uid) { // moving between profiles; a PIN guards the one being opened
+    const ok = pinOk(uid, (req.body as any)?.pin)
+    if (ok === 'locked') return reply.code(429).send({ error: 'Too many wrong tries. Wait a few minutes.', pin: true })
+    if (!ok) return reply.code(403).send({ error: (req.body as any)?.pin ? 'Wrong PIN' : 'PIN needed', pin: true })
+  }
   setSessionCookie(reply, token)
   return { user: userFor({ headers: { cookie: `flix_session=${token}` } } as any) }
 })
@@ -113,9 +121,10 @@ app.get('/api/series/:id', auth, async (req) => {
   const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
   if (!info) throw notFound()
   // First visit: give the lookup a moment so the trailer is already there; otherwise it finishes in the background.
-  const looking = queueDetails(id)
-  if (!getDetails(id)) await Promise.race([looking, new Promise((r) => setTimeout(r, 4000))])
+  const looking = Promise.all([queueDetails(id), queueEpisodeInfo(id)])
+  if (!getDetails(id) || !episodeInfoFor(id).size) await Promise.race([looking, new Promise((r) => setTimeout(r, 4000))])
   const d = getDetails(id)
+  db.prepare('UPDATE my_list SET seen_at = ? WHERE user_id = ? AND series_id = ?').run(info.latest, req.user!.id, id) // clears the "new episode" badge
   let genres: string[] = []
   try { genres = JSON.parse(info.genres ?? '[]') } catch { /* none */ }
   const { trailer, ...rest } = info
@@ -123,8 +132,26 @@ app.get('/api/series/:id', auth, async (req) => {
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   return {
     series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
-    episodes: buildEpisodes(id, req.user!.id),
+    episodes: withInfo(id, buildEpisodes(id, req.user!.id)),
   }
+})
+
+/** Add each episode's title, summary, length and still image when we know them. */
+function withInfo<T extends { season: number | null; episode: number | null }>(seriesId: number, eps: T[]) {
+  const info = episodeInfoFor(seriesId)
+  return eps.map((e) => {
+    const i = e.season !== null && e.episode !== null ? info.get(`${e.season}|${e.episode}`) : undefined
+    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: i?.still ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null }
+  })
+}
+
+/** An episode's still image from our own cache. */
+app.get('/api/still/:id/:s/:e', auth, async (req, reply) => {
+  const { id, s, e } = req.params as any
+  if (!canViewSeries(req.user, Number(id))) return reply.code(404).send({ error: 'no image' })
+  const art = await getStill(Number(id), Number(s), Number(e))
+  if (!art) return reply.code(404).send({ error: 'no image' })
+  return reply.type(art.type).header('cache-control', 'private, max-age=604800').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
 })
 
 const NEW_DAYS = 7
@@ -148,8 +175,9 @@ app.get('/api/home', auth, async (req) => {
     .map(([genre, l]) => ({ title: genre, series: l.slice(0, 30).map(clean) }))
 
   const uid = req.user!.id
-  const listed = new Set((db.prepare('SELECT series_id FROM my_list WHERE user_id = ? ORDER BY added_at DESC').all(uid) as any[]).map((r) => r.series_id))
-  const myList = [...listed].map((id) => rows.find((r) => r.id === id)).filter(Boolean).map(clean)
+  const listed = db.prepare('SELECT series_id, seen_at FROM my_list WHERE user_id = ? ORDER BY added_at DESC').all(uid) as { series_id: number; seen_at: number | null }[]
+  // hasNew: something was uploaded for a show on the list since the viewer last opened its page
+  const myList = listed.map((l) => { const r = rows.find((x) => x.id === l.series_id); return r && { ...clean(r), hasNew: l.seen_at !== null && r.latest > l.seen_at } }).filter(Boolean)
 
   // "Because you watched X": other shows sharing X's genres that this person has not started.
   let because: { name: string; series: any[] } | null = null
@@ -170,7 +198,7 @@ app.post('/api/mylist', auth, async (req) => {
   const { seriesId, on } = req.body as any
   const id = Number(seriesId)
   if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
-  if (on) db.prepare('INSERT OR IGNORE INTO my_list VALUES (?,?,?)').run(req.user!.id, id, now())
+  if (on) db.prepare('INSERT OR IGNORE INTO my_list (user_id, series_id, added_at, seen_at) VALUES (?,?,?,(SELECT MAX(time) FROM releases WHERE series_id = ?))').run(req.user!.id, id, now(), id)
   else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
   return { inList: !!on }
 })
@@ -221,7 +249,9 @@ app.post('/api/watch', auth, async (req) => {
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
   const next = eps.slice(i + 1).find((e) => e.available)
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
-  return { ...play, seriesName, quality: ep.quality, title: ep.label, next: next ? { season: next.season, label: next.label } : null }
+  const titles = episodeInfoFor(Number(seriesId))
+  const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
+  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
 const prefetched = new Map<string, number>()
@@ -259,8 +289,31 @@ app.get('/api/stream/:t/:f/info', guarded, async (req) => {
   return {
     mode: direct ? 'direct' : 'hls', url: `${base}/${path}`, tvUrl: tv, duration: p.duration, audioIndex: a, hdr: p.hdr,
     audio: p.audio, chapters: p.chapters,
-    subs: p.subs.map((s) => ({ n: s.n, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })),
+    subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
   }
+})
+
+/** Subtitle files shipped beside the video (".srt" etc.): in a season pack only the ones for this episode. Needs the file fully downloaded to be read. */
+async function externalSubs(t: number, f: number, base: string) {
+  const fi = await fileInfo(t, f).catch(() => null)
+  if (!fi) return []
+  const mine = parseEpisodeTag(fi.file.name.split('/').pop()!)
+  return fi.layout.files.filter((x) => SUBFILE.test(x.name)).filter((x) => {
+    if (!fi.rel.is_pack) return true
+    const tag = parseEpisodeTag(x.name.split('/').pop()!) ?? parseEpisodeTag(x.name)
+    return !!mine && !!tag && tag.season === mine.season && mine.episode >= tag.episode && mine.episode <= tag.episodeEnd
+  }).map((x) => { const g = guessSubLang(x.name); return { n: `x${x.index}`, lang: g.lang, label: g.label, forced: g.forced, default: false, url: `${base}/xsubs/${x.index}.vtt` } })
+}
+
+app.get('/api/stream/:t/:f/xsubs/:file', guarded, async (req, reply) => {
+  const { t, f, file } = req.params as any
+  const m = /^(\d{1,4})\.vtt$/.exec(file)
+  const fi = m ? await fileInfo(+t, +f) : null
+  const sub = fi?.layout.files.find((x) => x.index === Number(m![1]) && SUBFILE.test(x.name))
+  if (!fi || !sub) return reply.code(404).send({ error: 'no such subtitle' })
+  const ready = sub.progress >= 1
+  reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', ready ? '1' : '0')
+  return ready ? fileSubtitleVtt(join(fi.layout.savePath, sub.name)) : 'WEBVTT\n\n'
 })
 
 /** An embedded text subtitle as WebVTT. While the file is still arriving it covers what has arrived; x-flix-complete says when to stop asking. */
@@ -366,6 +419,28 @@ app.get('/api/admin/downloads', admin, async () => {
   }
   return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb }
 })
+/** A viewer tapped "Something's wrong", or playback failed on its own. Quiet duplicates are dropped. */
+app.post('/api/report', auth, async (req) => {
+  const b = (req.body ?? {}) as any
+  const torrentId = Number.isInteger(Number(b.torrentId)) && Number(b.torrentId) > 0 ? Number(b.torrentId) : null
+  const seriesId = Number.isInteger(Number(b.seriesId)) && Number(b.seriesId) > 0 ? Number(b.seriesId) : null
+  const kind = b.kind === 'auto' ? 'auto' : 'manual'
+  const label = String(b.label ?? '').slice(0, 40), message = String(b.message ?? '').slice(0, 300)
+  const dup = db.prepare('SELECT 1 FROM reports WHERE user_id = ? AND torrent_id IS ? AND label = ? AND kind = ? AND created_at > ? AND resolved_at IS NULL').get(req.user!.id, torrentId, label, kind, now() - 600)
+  if (!dup) db.prepare('INSERT INTO reports (user_id, torrent_id, series_id, label, kind, message, created_at) VALUES (?,?,?,?,?,?,?)').run(req.user!.id, torrentId, seriesId, label, kind, message, now())
+  return { ok: true }
+})
+app.get('/api/admin/reports', admin, async () => ({
+  reports: db.prepare(`SELECT p.id, p.kind, p.label, p.message, p.created_at, u.name AS user, r.series, r.group_name, r.resolution, r.seeders
+    FROM reports p LEFT JOIN users u ON u.id = p.user_id LEFT JOIN releases r ON r.torrent_id = p.torrent_id
+    WHERE p.resolved_at IS NULL ORDER BY p.created_at DESC LIMIT 100`).all(),
+}))
+app.post('/api/admin/reports/resolve', admin, async (req) => {
+  const id = (req.body as any)?.id
+  if (id === 'all') db.prepare('UPDATE reports SET resolved_at = ? WHERE resolved_at IS NULL').run(now())
+  else db.prepare('UPDATE reports SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL').run(now(), Number(id))
+  return { ok: true }
+})
 app.get('/api/admin/health', admin, async () => ({ issues: await health(), backup: lastBackup() }))
 app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const id = Number((req.params as any).id)
@@ -378,11 +453,11 @@ app.delete('/api/admin/downloads/:id', admin, async (req) => {
   await removeDownload(id, d.info_hash, 'removed by admin')
   return { ok: true }
 })
-const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings) })
+const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number
 
 app.get('/api/admin/users', admin, async () => ({
-  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings FROM users ORDER BY id').all() as any[]).map(userRow),
+  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash FROM users ORDER BY id').all() as any[]).map(userRow),
   ratings: RATINGS, ratingLookup: !!config.tmdb.apiKey,
 }))
 app.post('/api/admin/users', admin, async (req) => {
@@ -399,6 +474,7 @@ app.patch('/api/admin/users/:id', admin, async (req) => {
     if (!b.isAdmin && u.is_admin && adminCount() <= 1) throw Object.assign(new Error('There must always be at least one admin'), { statusCode: 400 })
     db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(b.isAdmin ? 1 : 0, id)
   }
+  if ('pin' in b) setPin(id, b.pin === null || b.pin === '' ? null : String(b.pin))
   if (b.password !== undefined) {
     if (String(b.password).length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
     db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(String(b.password)), id)

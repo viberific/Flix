@@ -1,5 +1,5 @@
-import { db } from './db.ts'
-import { META_JOIN, ratingClause } from './ratings.ts'
+import { db, now } from './db.ts'
+import { META_JOIN, canViewSeries, ratingClause } from './ratings.ts'
 import type { User } from './auth.ts'
 import { isAlive, pickRelease, qualityLabel } from './pick.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
@@ -75,5 +75,21 @@ export function continueWatching(user: User) {
     WHERE i.user_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.position > 30 AND ${f.sql} ORDER BY i.updated_at DESC LIMIT 40`).all(user.id, ...f.params) as any[])
     .map(({ is_pack, file_name, ...r }) => ({ ...r, ...episodeKey({ season: r.season, label: r.label, is_pack, file_name }) }))
   const seen = new Set<string>()
-  return rows.filter((r) => (seen.has(r.seriesId + r.label) ? false : (seen.add(r.seriesId + r.label), true))).slice(0, 12)
+  const started = rows.filter((r) => (seen.has(r.seriesId + r.label) ? false : (seen.add(r.seriesId + r.label), true))).slice(0, 12)
+  return [...started, ...nextUp(user, new Set(started.map((r) => r.seriesId)))].slice(0, 12)
+}
+
+/** For shows the viewer finished an episode of recently and has not carried on with: the next episode, ready to press. */
+function nextUp(user: User, skip: Set<number>) {
+  const recent = db.prepare(`SELECT r.series_id AS id, r.series AS name, MAX(i.watched_at) AS w FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
+    WHERE i.user_id = ? AND i.watched_at IS NOT NULL AND i.watched_at > ? GROUP BY r.series_id ORDER BY w DESC LIMIT 8`).all(user.id, now() - 60 * 86400) as { id: number; name: string }[]
+  const out: any[] = []
+  for (const s of recent) {
+    if (skip.has(s.id) || !seasonsOf(s.id) || !canViewSeries(user, s.id)) continue
+    const eps = buildEpisodes(s.id, user.id)
+    const last = eps.map((e) => e.watched).lastIndexOf(true)
+    const next = last < 0 ? undefined : eps.slice(last + 1).find((e) => e.available && !e.watched)
+    if (next) out.push({ seriesId: s.id, series: s.name, poster: `/api/art/${s.id}/poster`, season: next.season, label: next.label, position: 0, duration: 0, next: true })
+  }
+  return out
 }

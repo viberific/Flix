@@ -63,6 +63,11 @@ export const qb = {
   async info(hash: string): Promise<QbTorrent | undefined> {
     return (await json<QbTorrent[]>(`/api/v2/torrents/info?hashes=${hash}`))[0]
   },
+  /** 'connected' (others can reach us), 'firewalled' (we can download but nobody can connect to us) or 'disconnected', plus the peer port. */
+  async reachability(): Promise<{ status: string; port: number | null; upnp: boolean }> {
+    const [t, p] = await Promise.all([json<{ connection_status?: string }>('/api/v2/transfer/info'), json<{ listen_port?: number; upnp?: boolean }>('/api/v2/app/preferences').catch(() => ({} as any))])
+    return { status: t.connection_status ?? 'unknown', port: p.listen_port ?? null, upnp: !!p.upnp }
+  },
   async infoAll(): Promise<QbTorrent[]> { return json('/api/v2/torrents/info?tag=flix') },
   async files(hash: string): Promise<QbFile[]> { return json(`/api/v2/torrents/files?hash=${hash}`) },
   async pieceStates(hash: string): Promise<number[]> { return json(`/api/v2/torrents/pieceStates?hash=${hash}`) },

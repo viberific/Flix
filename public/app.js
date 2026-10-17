@@ -41,7 +41,7 @@ async function api(path, body, method, timeoutMs) {
     throw new Error(`Flix answered ${res.status}${res.statusText ? ' ' + res.statusText : ''}.`)
   }
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || res.statusText)
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, pin: !!data.pin })
   return data
 }
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -149,11 +149,33 @@ function profilesView() {
       <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div></div>`
     app.querySelectorAll('.who-tile[data-n]').forEach((b) => b.onclick = async () => {
       const p = ps.find((x) => x.name === b.dataset.n)
-      try { const r = await api('/api/switch', { token: p.token }); me = r.user; markPicked(); goHome() }
-      catch { store.set('profiles', profiles().filter((x) => x.name !== p.name)); signinHint = p.name; go('#/signin') }
+      let pin, msg = ''
+      for (;;) {
+        try { const r = await api('/api/switch', { token: p.token, pin }); me = r.user; markPicked(); return goHome() }
+        catch (e) {
+          if (!e.pin) { store.set('profiles', profiles().filter((x) => x.name !== p.name)); signinHint = p.name; return go('#/signin') }
+          if (e.status === 429) { msg = e.message; pin = await askPin(p.name, msg, true); if (pin === null) return; continue }
+          pin = await askPin(p.name, pin ? e.message : ''); if (pin === null) return
+        }
+      }
     })
     const f = $('.who-tile'); if (f) f.focus()
   }
+}
+
+/** A small "enter your PIN" box. Resolves with the digits, or null when cancelled. */
+function askPin(name, error = '', locked = false) {
+  return new Promise((done) => {
+    const m = document.createElement('div'); m.className = 'pin-modal'
+    m.innerHTML = `<form class="pin-box" role="dialog" aria-label="PIN for ${esc(name)}"><b>${esc(name)}’s PIN</b><input class="field" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" aria-label="PIN" ${locked ? 'disabled' : ''}>
+      <div class="err" role="alert">${esc(error)}</div><div class="row-form"><button type="button" class="btn" id="pc">Cancel</button><button class="btn primary" ${locked ? 'disabled' : ''}>OK</button></div></form>`
+    document.body.appendChild(m)
+    const f = $('input', m); f.focus()
+    const end = (v) => { m.remove(); done(v) }
+    m.querySelector('form').onsubmit = (e) => { e.preventDefault(); if (f.value.length >= 4) end(f.value) }
+    $('#pc', m).onclick = () => end(null)
+    m.addEventListener('keydown', (e) => { if (e.key === 'Escape') end(null) })
+  })
 }
 
 function joinView(token) {
@@ -185,9 +207,9 @@ function authView(needsSetup) {
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge ep">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
-  <div style="position:relative">${art(c.poster, c.series)}<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div></div><div class="tt">${esc(c.series)}</div><div class="ts">${esc(c.label)}</div></button>`
+  <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
 function rowOf(items, html) {
   return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
@@ -218,9 +240,9 @@ async function homeView(q) {
     let html = ''
     if (!q && (items[0] || series[0])) {
       const c = items[0], s = c ? { id: c.seriesId, name: c.series } : series[0]
-      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? 'Continue watching' : 'New on BroadcasTheNet'}</div>
-        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched' : 'Tap to see episodes'}</p>
-        <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} Resume</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
+      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? (items[0]?.next ? 'Up next' : 'Continue watching') : 'New on BroadcasTheNet'}</div>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? (c.next ? 'Up next · ' + esc(c.label) : esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched') : 'Tap to see episodes'}</p>
+        <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} ${c.next ? 'Play' : 'Resume'}</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
@@ -257,7 +279,7 @@ async function seriesView(id) {
       <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
         ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}${hero.title ? ' · ' + esc(hero.title) : ''}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         ${series.trailerId ? `<a class="trailer-link" href="#trailer" id="tl">${I.play} Trailer</a>` : `<a class="trailer-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}" target="_blank" rel="noopener noreferrer">${I.play} Find trailer on YouTube</a>`}</div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
@@ -267,9 +289,11 @@ async function seriesView(id) {
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const paint = () => {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
-        <span class="play">${I.play}</span><span><span class="en">${esc(e.label)}</span><br>
-        <span class="es">${e.available ? (e.onServer ? 'Ready to watch' : e.isPack ? 'Part of the full season download' : '') : 'Not available right now'}</span></span>
-        <span>${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</button>`).join('')
+        <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
+        <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
+          <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', e.available ? (e.onServer ? 'Ready to watch' : e.isPack ? 'Part of the full season download' : '') : 'Not available right now'].filter(Boolean).join(' · ')}</span>
+          ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
+        <span>${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => go1(seasons.get(cur)[+b.dataset.i]))
     }
     paint()
@@ -315,6 +339,7 @@ const ICON = {
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>',
+  flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></svg>',
   cast: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/><path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5M3 20h.01"/></svg>',
 }
 
@@ -326,6 +351,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn" id="b10" aria-label="Back 10 seconds" hidden>${ICON.back10}</button><button class="icon-btn" id="f10" aria-label="Forward 10 seconds" hidden>${ICON.fwd10}</button>
         <div class="p-menu"><button class="icon-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
         <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
+        <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
       <div class="p-wait" id="wait"><img class="art" id="wart" alt="" hidden><div class="ring"></div><div id="msg">Getting your show ready…</div><div class="pline"><i id="pb"></i></div></div></div>`
@@ -357,6 +383,7 @@ function playView(seriesId, season, label) {
 
     function fail(msg) {
       if (!alive) return
+      api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
       $('.ring')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
       $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(friendly(msg))}</div>${me?.is_admin && friendly(msg) !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
@@ -364,19 +391,29 @@ function playView(seriesId, season, label) {
       $('#again').onclick = () => route()
     }
 
+    const sendReport = (kind, message) => api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind, message }).catch(() => {})
+
     /** Drop a source that is not delivering and ask for the next-best one, without the viewer noticing more than a longer wait. */
-    function switchSource() {
-      avoid.push(play.torrentId); tries++
-      clearInterval(timer); hls?.destroy(); hls = null; if (v) { v.remove(); v = null }
-      $('#msg').textContent = 'Finding a faster source…'; $('#pb').style.width = '4%'
+    function switchSource(why = 'No data arrived, so another source was tried') {
+      sendReport('auto', why)
+      report()
+      avoid.push(play.torrentId); tries++; started = false
+      clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null; if (v) { v.remove(); v = null }
+      $('.p-next')?.remove()
+      $('#wait').classList.remove('gone'); $('#msg').textContent = 'Finding a faster source…'; $('#pb').style.width = '4%'
       t0 = Date.now(); begin()
+    }
+    $('#rep').onclick = () => {
+      if (tries >= 3) { sendReport('manual', 'Reported with no other source left'); $('#rep').hidden = true; return }
+      sendReport('manual', 'Viewer tapped Something’s wrong'); switchSource('Viewer tapped Something’s wrong')
     }
 
     async function begin() {
       try {
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid })
         if (!alive) return
-        $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label
+        $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
+        $('#rep').hidden = false
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
         let slow = 0
@@ -455,7 +492,7 @@ function playView(seriesId, season, label) {
       if (!play.next) return go(`#/series/${seriesId}`)
       const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
       const box = document.createElement('div'); box.className = 'p-next'
-      box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
+      box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}${nx.title ? ' · ' + esc(nx.title) : ''}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
       pl.appendChild(box)
       const bar = $('#cdb'); let left = 8
       bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
@@ -554,7 +591,7 @@ function ratingPills(all, on, attrs = '') {
 
 async function adminView(tab = 'downloads') {
   const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
-  if (tab === 'downloads') data.health = await api('/api/admin/health').catch(() => ({ issues: [] }))
+  if (tab === 'downloads') { data.health = await api('/api/admin/health').catch(() => ({ issues: [] })); data.reports = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports }
   return () => {
     app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
       <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Torrents</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
@@ -569,7 +606,7 @@ function downloadsPanel(data, root) {
   const req = data.requirements
   root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
     <p class="dim" style="max-width:66ch">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded for <b style="color:var(--fg)">${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first, and Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
-    <div id="tstat"></div><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+    <div id="tstat"></div><div id="trep"></div><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
   const status = (d, h) => {
     const disk = d.disk, low = disk && disk.free < d.minFreeGb * 2.5e9
     const rows = (h?.issues ?? []).map((i) => `<li class="iss ${i.level}"><b>${esc(i.title)}</b><span>${esc(i.detail)}</span>${i.link ? `<a href="${esc(i.link)}">Fix</a>` : ''}</li>`).join('')
@@ -606,10 +643,22 @@ function downloadsPanel(data, root) {
       try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until seeded' : 'Failed'; b.disabled = true }
     })
   }
-  draw(data); status(data, data.health)
+  const reports = (list) => {
+    $('#trep').innerHTML = list.length ? `<h2 class="sec">Reported problems</h2><div class="rep-list">${list.map((r) => `<div class="rep"><div><b>${esc(r.series || 'Unknown show')}</b> ${esc(r.label || '')}
+        <small>· ${esc(r.user || '?')} · ${ago(r.created_at)} · ${r.kind === 'auto' ? 'failed on its own' : 'reported by a viewer'}</small>
+        <div class="dim" style="font-size:13px">${r.group_name ? esc(r.group_name) + ' · ' + esc(r.resolution || '') + ' · ' + (r.seeders ?? 0) + ' seeders' : ''}${r.message ? ' · ' + esc(r.message) : ''}</div></div>
+        <button class="btn" data-dis="${r.id}" style="padding:7px 12px">Dismiss</button></div>`).join('')}</div>
+      <button class="btn" data-dis="all" style="margin-top:10px;padding:7px 12px">Dismiss all</button>` : ''
+    $('#trep').querySelectorAll('[data-dis]').forEach((b) => b.onclick = async () => {
+      await api('/api/admin/reports/resolve', { id: b.dataset.dis === 'all' ? 'all' : +b.dataset.dis }).catch(() => {})
+      reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
+    })
+  }
+  draw(data); status(data, data.health); reports(data.reports ?? [])
   const t = setInterval(async () => {
     const d = await api('/api/admin/downloads').catch(() => data); draw(d)
     status(d, await api('/api/admin/health').catch(() => data.health))
+    reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
   }, 15000)
   cleanup = () => clearInterval(t)
 }
@@ -628,8 +677,11 @@ function familyPanel(data, root) {
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
         <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">Reset password</button>
         <button class="btn" data-act="invite" style="padding:8px 14px">Sign-in link</button>
+        <button class="btn" data-act="pin" style="padding:8px 14px">${u.hasPin ? 'Change PIN' : 'Set PIN'}</button>
         ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
         <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div>
+        <div class="pwrow pinrow" hidden><input class="field" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="4 to 8 digits" autocomplete="off"><button class="btn primary" data-act="pinsave" style="padding:10px 16px">Save</button>${u.hasPin ? '<button class="btn" data-act="pinclear" style="padding:10px 16px">Remove PIN</button>' : ''}
+        <span class="dim" style="flex-basis:100%;font-size:13px">Asked when someone switches to ${esc(u.name)} on a shared device, so kids can’t open an adult’s profile. A password or sign-in link still works.</span></div>
         <div class="pwrow invrow" hidden><input class="field" readonly aria-label="Sign-in link"><button class="btn primary" data-act="copy" style="padding:10px 16px">Copy</button><button class="btn" data-act="share" style="padding:10px 16px" hidden>Share</button>
         <span class="dim" style="flex-basis:100%;font-size:13px">Send this to ${esc(u.name)}. Opening it on their phone, tablet or TV signs that device in with no password. It works once and expires in 7 days.</span></div></div>`).join('')}</div>
       <h2 class="sec">Add a family member</h2>
@@ -653,6 +705,10 @@ function familyPanel(data, root) {
         const act = b.dataset.act
         if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = '' } catch (e) { msg.textContent = e.message } }
+        else if (act === 'pin') { const row = $('.pinrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
+        else if (act === 'pinsave' || act === 'pinclear') {
+          try { await patch(id, { pin: act === 'pinclear' ? null : $('.pinrow input', card).value }); paint() } catch (e) { alert(e.message) }
+        }
         else if (act === 'invite') {
           try {
             const r = await api(`/api/admin/users/${id}/invite`, {}); const url = `${location.origin}/#/join/${r.token}`

@@ -1,5 +1,6 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { config } from './config.ts'
@@ -135,6 +136,32 @@ export function touchHls(torrentId: number, fileIndex: number, audio = 0) {
   clearTimeout(j.idle)
   j.idle = setTimeout(() => stopJob(key), 15 * 60_000)
   return true
+}
+
+// ---- subtitle files that sit beside the video in the torrent ------------------------------------------
+export const SUBFILE = /\.(srt|ass|ssa|vtt)$/i
+const TWO: Record<string, string> = { en: 'eng', es: 'spa', fr: 'fre', de: 'ger', it: 'ita', pt: 'por', ru: 'rus', ja: 'jpn', ko: 'kor', zh: 'chi', nl: 'dut', sv: 'swe', no: 'nor', da: 'dan', fi: 'fin', pl: 'pol', tr: 'tur', ar: 'ara', he: 'heb', hi: 'hin', cs: 'cze', hu: 'hun', el: 'gre', th: 'tha' }
+/** A language guessed from a subtitle file name like "Show.S01E01.English.srt" or "2_Spanish.srt". 'und' when there is no clue. */
+export function guessSubLang(name: string): { lang: string; label: string; forced: boolean } {
+  const base = name.split('/').pop()!.replace(SUBFILE, '')
+  const toks = base.toLowerCase().split(/[^a-z]+/).filter(Boolean)
+  const byName = Object.entries(LANG).find(([, n]) => toks.includes(n.toLowerCase()))?.[0]
+  const code = byName ?? toks.find((t) => LANG[t] && t !== 'und') ?? toks.map((t) => TWO[t]).find(Boolean) ?? 'und'
+  const forced = toks.includes('forced')
+  return { lang: code, forced, label: [code === 'und' ? 'Subtitles' : langName(code), forced ? 'Forced' : '', toks.includes('sdh') || toks.includes('cc') ? 'CC' : ''].filter(Boolean).join(' · ') }
+}
+const xvtt = new Map<string, string>()
+/** A subtitle file as WebVTT. Not valid UTF-8 means an old Windows code page, so say so to ffmpeg. */
+export async function fileSubtitleVtt(path: string): Promise<string> {
+  const hit = xvtt.get(path)
+  if (hit !== undefined) return hit
+  const buf = await readFile(path)
+  let utf8 = true
+  try { new TextDecoder('utf-8', { fatal: true }).decode(buf) } catch { utf8 = false }
+  const r = await execFileP('ffmpeg', ['-v', 'error', ...(utf8 ? [] : ['-sub_charenc', 'CP1252']), '-i', path, '-f', 'webvtt', '-'], { timeout: 60_000, maxBuffer: 16 << 20 })
+    .catch((e) => { console.warn(`[subs] ${path}: ${String(e.stderr || e.message).slice(0, 200)}`); return { stdout: VTT_HEAD } })
+  xvtt.set(path, r.stdout || VTT_HEAD)
+  return xvtt.get(path)!
 }
 
 // ---- subtitles ------------------------------------------------------------------------------------------

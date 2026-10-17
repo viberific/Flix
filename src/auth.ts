@@ -49,6 +49,24 @@ export function sessionUser(token: string): number | null {
   return r ? r.user_id : null
 }
 
+// ---- profile PINs: guard "switch profile" on a shared device (a password or sign-in link still works anywhere) ----
+export const hasPin = (userId: number) => !!(db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(userId) as any)?.pin_hash
+export function setPin(userId: number, pin: string | null) {
+  if (pin !== null && !/^\d{4,8}$/.test(pin)) throw Object.assign(new Error('A PIN is 4 to 8 digits'), { statusCode: 400 })
+  db.prepare('UPDATE users SET pin_hash = ? WHERE id = ?').run(pin === null ? null : hashPassword(pin), userId)
+}
+const pinFails = new Map<number, number[]>()
+/** True when there is no PIN, or this one is right. Five wrong tries in ten minutes locks the profile for the rest of that window. */
+export function pinOk(userId: number, pin: string | undefined): boolean | 'locked' {
+  const row = db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(userId) as any
+  if (!row?.pin_hash) return true
+  const recent = (pinFails.get(userId) ?? []).filter((t) => t > Date.now() - 600_000)
+  if (recent.length >= 5) return 'locked'
+  if (typeof pin === 'string' && /^\d{4,8}$/.test(pin) && verifyPassword(pin, row.pin_hash)) { pinFails.delete(userId); return true }
+  pinFails.set(userId, [...recent, Date.now()])
+  return false
+}
+
 // ---- one-time sign-in links ---------------------------------------------------------------------------
 
 /** The admin gives this to a family member (a link or QR code); opening it signs that device in as them. Valid 7 days, once. */
