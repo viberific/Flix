@@ -277,12 +277,12 @@ function renderTop() {
 }
 /* ---------- the Flix sound ---------- */
 /**
- * Flix's own sound, made entirely in the browser (Web Audio) so there is no sound file to ship: a breath of air that rises, three
- * bright glass-bell notes climbing a pentatonic scale, and a warm major chord that blooms under the last one and fades out. Nothing
- * percussive, so it is nothing like the familiar two-drum-hit streaming jingles. Played as the player opens, which happens on a
- * tap, so the browser allows it. It never throws: no audio support, or a browser that insists on a tap first, is just a silent intro.
+ * Flix's own sound, made entirely in the browser (Web Audio) so there is no sound file to ship: two soft, rounded mallet notes rising
+ * a fourth, and a warm, slightly detuned add9 pad that blooms under the second one and settles away, all through a gentle low-pass
+ * and a small synthetic room reverb so nothing is bright or sharp. Played as the player opens, which happens on a tap, so the
+ * browser allows it. It never throws: no audio support, or a browser that insists on a tap first, is just a silent intro.
  */
-let audioCtx = null
+let audioCtx = null, roomIR = null
 function flixSting() {
   try {
     if (store.get('sting', true) === false) return
@@ -292,35 +292,45 @@ function flixSting() {
     const c = audioCtx
     if (c.state === 'suspended') c.resume().catch(() => {})
     const t = c.currentTime + 0.05
-    const out = c.createGain(); out.gain.value = 0.8
-    const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4
-    out.connect(comp); comp.connect(c.destination)
-    const env = (g, at, peak, attack, decay) => { g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(peak, at + attack); g.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay) }
-    // 1. A rising breath: noise through a band-pass that sweeps upward, swelling into the first note.
-    const len = Math.floor(c.sampleRate * 0.7), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0)
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1
-    const air = c.createBufferSource(); air.buffer = buf
-    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2.5
-    bp.frequency.setValueAtTime(500, t); bp.frequency.exponentialRampToValueAtTime(5200, t + 0.6)
-    const ag = c.createGain(); env(ag, t, 0.16, 0.5, 0.12)
-    air.connect(bp); bp.connect(ag); ag.connect(out); air.start(t); air.stop(t + 0.75)
-    // 2. Glass bells: a sine carrier whose pitch is wobbled by a second sine (FM) for the metallic ring, decaying slowly.
-    const bell = (f, at, peak, ring) => {
-      const car = c.createOscillator(), mod = c.createOscillator(), mg = c.createGain(), g = c.createGain()
-      car.type = 'sine'; car.frequency.value = f; mod.type = 'sine'; mod.frequency.value = f * 3.5
-      mg.gain.setValueAtTime(f * 1.6, at); mg.gain.exponentialRampToValueAtTime(f * 0.05, at + ring * 0.6)
-      mod.connect(mg); mg.connect(car.frequency)
-      env(g, at, peak, 0.006, ring); car.connect(g); g.connect(out)
-      car.start(at); mod.start(at); car.stop(at + ring + 0.1); mod.stop(at + ring + 0.1)
+    // Master: a soft overall level, a low-pass that rounds off any edge, and a gentle compressor.
+    const out = c.createGain(); out.gain.value = 0.55
+    const tone = c.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 3200; tone.Q.value = 0.5
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -20; comp.ratio.value = 3; comp.attack.value = 0.02
+    out.connect(tone); tone.connect(comp); comp.connect(c.destination)
+    // A small room: decaying stereo noise as the impulse response, mixed in quietly so the notes have air around them.
+    if (!roomIR) {
+      const len = Math.floor(c.sampleRate * 2.4); roomIR = c.createBuffer(2, len, c.sampleRate)
+      for (let ch = 0; ch < 2; ch++) { const d = roomIR.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 3.2 }
     }
-    const n1 = t + 0.5, n2 = n1 + 0.16, n3 = n2 + 0.16
-    bell(587.33, n1, 0.34, 0.9)    // D5
-    bell(880.0, n2, 0.34, 1.0)     // A5
-    bell(1479.98, n3, 0.38, 1.7)   // F#6
-    // 3. A warm D major chord (triangle waves, soft) that swells under the last bell and fades.
-    for (const [f, peak] of [[146.83, 0.2], [220.0, 0.14], [293.66, 0.12], [369.99, 0.09]]) {
-      const o = c.createOscillator(), g = c.createGain(); o.type = 'triangle'; o.frequency.value = f
-      env(g, n2, peak, 0.35, 1.6); o.connect(g); g.connect(out); o.start(n2); o.stop(n2 + 2.1)
+    const verb = c.createConvolver(); verb.buffer = roomIR
+    const wet = c.createGain(); wet.gain.value = 0.42
+    verb.connect(wet); wet.connect(tone)
+    const send = (node) => { node.connect(out); node.connect(verb) }
+    // 1. Mallet notes: a sine with faint upper partials, a soft (not instant) attack and a long, smooth decay.
+    const mallet = (f, at, peak, ring) => {
+      const g = c.createGain(); g.gain.setValueAtTime(0.0001, at)
+      g.gain.exponentialRampToValueAtTime(peak, at + 0.018); g.gain.exponentialRampToValueAtTime(0.0001, at + ring)
+      send(g)
+      for (const [mul, lvl, len] of [[1, 1, 1], [2, 0.12, 0.45], [3.98, 0.03, 0.18]]) {
+        const o = c.createOscillator(), pg = c.createGain(); o.type = 'sine'; o.frequency.value = f * mul
+        pg.gain.setValueAtTime(lvl, at); pg.gain.exponentialRampToValueAtTime(lvl * 0.001, at + ring * len)
+        o.connect(pg); pg.connect(g); o.start(at); o.stop(at + ring + 0.05)
+      }
+    }
+    const n1 = t + 0.18, n2 = n1 + 0.3
+    mallet(440.0, n1, 0.32, 1.4)    // A4
+    mallet(587.33, n2, 0.36, 2.4)   // D5
+    // 2. A warm D add9 pad: pairs of slightly detuned sines through a low-pass that opens as it swells and closes as it fades.
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.7
+    lp.frequency.setValueAtTime(500, n2); lp.frequency.exponentialRampToValueAtTime(2200, n2 + 0.7); lp.frequency.exponentialRampToValueAtTime(600, n2 + 2.8)
+    const pad = c.createGain(); pad.gain.setValueAtTime(0.0001, n2)
+    pad.gain.exponentialRampToValueAtTime(0.22, n2 + 0.6); pad.gain.setTargetAtTime(0.0001, n2 + 1.1, 0.55)
+    lp.connect(pad); send(pad)
+    for (const [f, lvl] of [[146.83, 0.5], [220.0, 0.38], [369.99, 0.3], [659.25, 0.16]]) {
+      for (const cents of [-7, 7]) {
+        const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = f; o.detune.value = cents
+        g.gain.value = lvl; o.connect(g); g.connect(lp); o.start(n2); o.stop(n2 + 4)
+      }
     }
   } catch { /* silent intro */ }
 }
@@ -638,7 +648,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="burst"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div><div class="pline"><i id="pb"></i></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
     top.hidden = true
     const pl = $('#pl')
@@ -683,7 +693,7 @@ function playView(seriesId, season, label) {
       if (!alive) return
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
-      $('.mark')?.remove(); $('#wait').classList.remove('gone'); $('.pline')?.remove()
+      $('.mark')?.remove(); $('#wait').classList.remove('gone')
       $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(friendly(msg))}</div>${me?.is_admin && friendly(msg) !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
         <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
       $('#again').onclick = () => route()
@@ -698,7 +708,7 @@ function playView(seriesId, season, label) {
       avoid.push(play.torrentId); tries++; started = false
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null; if (v) { v.remove(); v = null }
       $('.p-next')?.remove()
-      $('#wait').classList.remove('gone'); $('#msg').textContent = 'Finding a faster source…'; $('#pb').style.width = '4%'
+      $('#wait').classList.remove('gone'); $('#msg').textContent = 'Finding a faster source…'
       t0 = Date.now(); begin()
     }
     $('#rep').onclick = () => {
@@ -718,7 +728,6 @@ function playView(seriesId, season, label) {
         timer = setInterval(async () => {
           const s = await api(base + '/status').catch(() => null)
           if (!alive || !s || s.error || started) return
-          $('#pb').style.width = Math.max(4, s.bufferedPct) + '%'
           const waited = Date.now() - t0
           slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0 // one tick is half a second
           // Nothing arriving for ~25 s: try another release of the same episode, up to twice.
@@ -901,7 +910,7 @@ function playView(seriesId, season, label) {
       try {
         await castHere(at)
         clearInterval(timer); clearInterval(subT); clearInterval(cdT); hls?.destroy(); hls = null
-        $('#wait').classList.remove('gone'); $('.pline')?.remove(); $('.mark')?.remove()
+        $('#wait').classList.remove('gone'); $('.mark')?.remove()
         $('#msg').innerHTML = `Playing on ${esc(casting.device)}<div style="display:flex;gap:10px;justify-content:center;margin-top:16px"><button class="btn" id="cstop">Play on this phone</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
         $('#cstop').onclick = () => { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* gone */ } ; setTimeout(route, 500) }
       } catch { attach(at) }
