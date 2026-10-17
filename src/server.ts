@@ -14,7 +14,7 @@ import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbAp
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
-import { artPathSql, getArt, getStill } from './art.ts'
+import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
@@ -164,7 +164,7 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   return {
-    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
+    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: withInfo(id, buildEpisodes(id, req.user!.id)),
   }
 })
@@ -251,6 +251,15 @@ const torrentGuard = async (req: any, reply: any) => {
   if (sid !== undefined && !canViewSeries(req.user, sid)) return reply.code(404).send({ error: 'Not found' })
 }
 const guarded = { preHandler: [requireUser, torrentGuard] }
+
+/** A cast member's photo from our own cache. */
+app.get('/api/cast/:id/:i', auth, async (req, reply) => {
+  const { id, i } = req.params as any
+  if (!canViewSeries(req.user, Number(id))) return reply.code(404).send({ error: 'no image' })
+  const art = await getCastPhoto(Number(id), Number(i))
+  if (!art) return reply.code(404).send({ error: 'no image' })
+  return reply.type(art.type).header('cache-control', 'private, max-age=604800').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
+})
 
 /** Artwork is served from our own cache; the browser never talks to BTN's image host. */
 app.get('/api/art/:id/:kind', auth, async (req, reply) => {

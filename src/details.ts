@@ -6,8 +6,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS series_details (
 )`)
 // Every trailer worth trying, best first, each checked to be playable when found (a JSON array of YouTube ids). NULL = not looked up this way yet.
 try { db.exec('ALTER TABLE series_details ADD COLUMN trailers TEXT') } catch { /* already present */ }
+// Which version of the lookup wrote the row; older rows are read again (2 added the cast's photos).
+try { db.exec('ALTER TABLE series_details ADD COLUMN v INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
 
-export interface Details { overview: string | null; cast: { name: string; role: string }[]; trailer: string | null; trailers: string[]; year: number | null }
+export interface Details { overview: string | null; cast: { name: string; role: string; photo?: string | null }[]; trailer: string | null; trailers: string[]; year: number | null }
 
 const YT_ID = /^[\w-]{11}$/
 /** The 11-character YouTube video id out of a bare id or any youtube URL; null when it isn't one. */
@@ -61,8 +63,8 @@ const pending = new Set<number>()
 /** Fill in summary, cast and a trailer (TMDB by TVDB id when keyed, else a YouTube search) when we have none or only a stale copy. */
 export function queueDetails(seriesId: number): Promise<void> {
   if (pending.has(seriesId)) return Promise.resolve()
-  const have = db.prepare('SELECT fetched_at, trailers FROM series_details WHERE series_id = ?').get(seriesId) as any
-  if (have && have.fetched_at > now() - 14 * 86400 && have.trailers !== null) return Promise.resolve()
+  const have = db.prepare('SELECT fetched_at, trailers, v FROM series_details WHERE series_id = ?').get(seriesId) as any
+  if (have && have.fetched_at > now() - 14 * 86400 && have.trailers !== null && have.v >= 2) return Promise.resolve()
   if ((failedAt.get(seriesId) ?? 0) > Date.now() - 6 * 3600_000) return Promise.resolve()
   pending.add(seriesId)
   return (async () => {
@@ -72,7 +74,7 @@ export function queueDetails(seriesId: number): Promise<void> {
       let d: any = null
       const id = config.tmdb.apiKey && t.tvdb_id ? (await tmdb(`/find/${t.tvdb_id}?external_source=tvdb_id`)).tv_results?.[0]?.id : null
       if (id) d = await tmdb(`/tv/${id}?append_to_response=aggregate_credits,videos`)
-      const cast = (d?.aggregate_credits?.cast ?? []).slice(0, 12).map((c: any) => ({ name: String(c.name), role: String(c.roles?.[0]?.character ?? '') }))
+      const cast = (d?.aggregate_credits?.cast ?? []).slice(0, 12).map((c: any) => ({ name: String(c.name), role: String(c.roles?.[0]?.character ?? ''), photo: c.profile_path ? `${config.art.tmdbImages}/w185${c.profile_path}` : null }))
       const vids = (d?.videos?.results ?? []).filter((v: any) => v.site === 'YouTube' && YT_ID.test(v.key))
       const year = Number(String(d?.first_air_date ?? '').slice(0, 4)) || null
       // Every candidate, best first: BTN's own link, TMDB's trailers then teasers, then a YouTube search. The first few that actually play are kept.
@@ -85,7 +87,7 @@ export function queueDetails(seriesId: number): Promise<void> {
         if (!id || trailers.length >= 4) continue
         if (await trailerPlayable(id)) trailers.push(id)
       }
-      db.prepare('INSERT OR REPLACE INTO series_details (series_id, overview, cast_json, trailer, year, fetched_at, trailers) VALUES (?,?,?,?,?,?,?)').run(seriesId, d?.overview || null, JSON.stringify(cast), trailers[0] ?? null, year, now(), JSON.stringify(trailers))
+      db.prepare('INSERT OR REPLACE INTO series_details (series_id, overview, cast_json, trailer, year, fetched_at, trailers, v) VALUES (?,?,?,?,?,?,?,2)').run(seriesId, d?.overview || null, JSON.stringify(cast), trailers[0] ?? null, year, now(), JSON.stringify(trailers))
     } catch (e: any) { failedAt.set(seriesId, Date.now()); console.warn(`[details] series ${seriesId}: ${e.message}`) }
     finally { pending.delete(seriesId) }
   })()

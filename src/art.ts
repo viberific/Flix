@@ -191,6 +191,12 @@ export async function getStill(seriesId: number, season: number, episode: number
   return own ?? (await getArt(seriesId, 'banner')) ?? (await getArt(seriesId, 'poster'))
 }
 
+/** An actor's photo (TMDB's, from the show's cast list), cached like the other artwork. Null when the cast member has none. */
+export async function getCastPhoto(seriesId: number, index: number) {
+  const url = getDetails(seriesId)?.cast[index]?.photo
+  return url ? fetchCached(url, seriesId, 'still') : null
+}
+
 /** Cached artwork for a series, downloading it on first use and trying the backup sources when one fails. Null when there is none. */
 export async function getArt(seriesId: number, kind: Exclude<ArtKind, 'still'>) {
   for await (const url of sources(seriesId, kind)) {

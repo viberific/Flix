@@ -104,9 +104,9 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 
 - Seeking far beyond the downloaded part waits for the sequential download to reach it (qBittorrent cannot
   prioritise arbitrary pieces).
-- Subtitles inside the file only: separate `.srt` files in a torrent are not picked up yet. While a file is still downloading, subtitles cover what has arrived and refresh every 90 s.
+- Subtitles come from the file itself and from `.srt`/`.ass`/`.vtt` files shipped beside it; picture subtitles (PGS, VobSub) can't be shown in a browser, and a release with no subtitles has none (Flix does not look them up elsewhere). While a file is still downloading, subtitles cover what has arrived and refresh every 90 s.
 - Casting works only where the TV can reach the server directly (see above); HLS (transcoded) playback in Chrome uses MSE, which the browser can't hand to a cast device.
-- "Whole season" is judged from what BTN has: Flix does not know a currently airing season's final episode count, so a season with E01–E06 and nothing missing counts as whole.
+- "Whole season" is judged against the season's length from TMDB/TVmaze (the season on the air counts what has aired so far); when neither knows the length, single episodes running unbroken from E01 count as whole.
 - Trailers are found automatically (BTN, then TMDB, then a YouTube search). The still image on the show page is fetched by the server; the viewer's browser only contacts YouTube once someone taps play.
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set
   `ABANDON_DAYS` to auto-release inactive viewers.

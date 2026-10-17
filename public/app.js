@@ -319,7 +319,7 @@ async function seriesView(id) {
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
-      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
+      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <h2 class="sec">Episodes</h2><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const paint = () => {
@@ -421,10 +421,24 @@ function playView(seriesId, season, label) {
       else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
       else if (k === 'ArrowDown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1) }
       else if (k === 'm') v.muted = !v.muted
+      else if (k === 'z') setFill(!fill)
       else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : pl.requestFullscreen?.()
       else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') go(`#/series/${seriesId}`)
       wake()
     }
+    // Pinch out to fill the screen (the edges are cropped a little), pinch in to fit it again; Z does the same on a keyboard. Remembered on this device.
+    // object-fit rather than a zoom, so the captions stay inside the screen.
+    let fill = store.get('fill', false), pinch = null
+    const setFill = (on) => { fill = on; store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
+    const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+    pl.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), done: false } }, { passive: true, capture: true })
+    pl.addEventListener('touchmove', (e) => {
+      if (!pinch || e.touches.length !== 2) return
+      e.preventDefault() // not the page's own pinch-zoom
+      const k = spread(e.touches) / pinch.d
+      if (!pinch.done && (k > 1.15 || k < 0.87)) { pinch.done = true; setFill(k > 1) }
+    }, { passive: false, capture: true })
+    pl.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null }, { passive: true, capture: true })
     addEventListener('keydown', key)
     cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
 
@@ -497,6 +511,7 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
         v = $('video')
+        if (fill) v.style.objectFit = 'cover'
         const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
         v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake(); for (const id of ['b10', 'f10']) $('#' + id).hidden = false }, { once: true })
