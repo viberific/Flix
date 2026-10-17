@@ -283,7 +283,9 @@ async function homeView(q, local = false) {
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
-    if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
+    // The billboard already shows the first thing to resume, so the row holds only the rest.
+    const more = !q && items[0] ? items.slice(1) : items
+    if (more.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(more, contTile)}`
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
     if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
     if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
