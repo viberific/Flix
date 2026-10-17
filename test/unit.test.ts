@@ -517,3 +517,25 @@ test('a torrent downloaded by hand is kept until somebody has watched it', async
   db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,8101,0,1,1,1)`).run(u)
   assert.equal(whyKept(done, 8101).deletable, true, 'watched to the end and seeded: now it goes like any other')
 })
+
+test('storage graph: a year of daily points that rise and fall as downloads come and go, real samples taking over once recorded', async () => {
+  const { db } = await import('../src/db.ts')
+  const { storageHistory, recordStorage } = await import('../src/storage.ts')
+  db.exec('DELETE FROM downloads; DELETE FROM storage_samples') // earlier tests left theirs
+  const day = 86400, at = Math.floor(Date.UTC(2026, 5, 15, 12) / 1000)
+  const rel = db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (?,?,?,?,?,0,?)`)
+  const dl = db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, removed_at) VALUES (?,?,?,?,?)`)
+  rel.run(9501, 95, 'G', 'G - S01E01', 'g1', 10e9); dl.run(9501, 'g1', 'removed', at - 200 * day, at - 100 * day)   // 10 GB for 100 days, then cleared
+  rel.run(9502, 96, 'H', 'H - S01E01', 'g2', 4e9); dl.run(9502, 'g2', 'active', at - 50 * day, null)               // 4 GB since, still there
+  const h = storageHistory(at)
+  assert.equal(h.points.length, 365); assert.equal(h.since, null)
+  const near = (d: number) => h.points.reduce((b, p) => (Math.abs(p[0] - (at - d * day)) < Math.abs(b[0] - (at - d * day)) ? p : b))[1]
+  assert.equal(near(300), 0); assert.equal(near(150), 10e9); assert.equal(near(75), 0); assert.equal(near(10), 4e9)
+  assert.ok(h.points.every((p, i) => i === 0 || p[0] > h.points[i - 1][0]), 'in time order')
+  db.prepare('INSERT INTO storage_samples (ts, bytes) VALUES (?,?)').run(at - 2 * day, 6e9)
+  const real = storageHistory(at)
+  assert.equal(real.since, at - 2 * day)
+  assert.equal(real.points.at(-1)![1], 6e9, 'measured numbers win from the first sample on')
+  assert.equal(real.points.find((p) => p[0] > at - 40 * day && p[0] < at - 30 * day)![1], 4e9, 'earlier days stay estimated')
+  recordStorage(1)
+})

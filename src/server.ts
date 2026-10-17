@@ -21,6 +21,7 @@ import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
+import { storageHistory } from './storage.ts'
 import { autoForListed, autoNext, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
@@ -483,6 +484,7 @@ app.post('/api/admin/reports/resolve', admin, async (req) => {
   return { ok: true }
 })
 app.get('/api/admin/health', admin, async () => ({ issues: await health(), backup: lastBackup() }))
+app.get('/api/admin/storage', admin, async () => ({ ...storageHistory(), disk: diskInfo() }))
 app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const id = Number((req.params as any).id)
   const d = db.prepare(`SELECT info_hash FROM downloads WHERE torrent_id=? AND state='active'`).get(id) as any

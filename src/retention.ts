@@ -3,6 +3,7 @@ import { config } from './config.ts'
 import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
 import { syncFolder, tidyAfterRemoval } from './folder.ts'
+import { recordStorage } from './storage.ts'
 
 export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
 
@@ -60,18 +61,23 @@ export async function sweep(): Promise<string[]> {
   const removed: string[] = []
   await syncFolder().catch((e) => console.warn(`[folder] ${e.message}`)) // adopt what was downloaded by hand, move old hash-named folders, tidy leftovers
   const rows = db.prepare(`SELECT torrent_id, info_hash, added_at FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string; added_at: number }[]
+  let onDisk = 0 // what the engine holds for Flix's downloads, for the storage graph
   for (const d of rows) {
     const t = await qb.info(d.info_hash)
     if (!t) { // vanished from the engine (manually deleted) -> reflect it
       db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
       continue
     }
+    const held = t.size * t.progress
+    onDisk += held
     if (d.added_at > now() - config.sweepGraceSec) continue // just added: its first viewer's interest may not be written yet
     if (whyKept(t, d.torrent_id).deletable) {
       await removeDownload(d.torrent_id, d.info_hash, 'all viewers done and seeding requirement met')
       removed.push(d.info_hash)
+      onDisk -= held
     }
   }
+  try { recordStorage(onDisk) } catch (e: any) { console.warn(`[storage] ${e.message}`) }
   return removed
 }
 

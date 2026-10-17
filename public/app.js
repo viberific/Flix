@@ -664,79 +664,131 @@ async function adminView(tab = 'downloads') {
 const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
 const ago = (t) => { const d = Math.floor(Date.now() / 1000) - t; return d < 3600 ? Math.max(1, Math.round(d / 60)) + ' min ago' : d < 86400 ? Math.round(d / 3600) + ' h ago' : Math.round(d / 86400) + ' d ago' }
 
+/** Twelve months of the space Flix's downloads take: an SVG line with a hover crosshair, and the same numbers as a table. */
+function storageChart(el, h) {
+  const pts = h.points
+  const W = Math.max(300, el.clientWidth || 720), H = 220, L = 46, R = 14, T = 14, B = 26 // drawn at the real width, so text is never stretched
+  const max = Math.max(...pts.map((p) => p[1]), 1)
+  const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000].map((g) => g * 1e9).find((s) => max * 1.08 / s <= 4) ?? 1e13
+  const top = Math.max(step, Math.ceil((max * 1.05) / step) * step)
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0]
+  const x = (t) => L + ((t - t0) / (t1 - t0 || 1)) * (W - L - R)
+  const y = (b) => T + (1 - b / top) * (H - T - B)
+  const unit = (b) => (top >= 1e12 ? (b / 1e12).toFixed(1) + ' TB' : Math.round(b / 1e9) + ' GB')
+  const line = (list) => list.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)} ${y(p[1]).toFixed(1)}`).join('')
+  // Before real measuring began the line is an estimate (from when downloads were added and removed): drawn dashed.
+  const cut = h.since ? pts.findIndex((p) => p[0] >= h.since) : -1
+  const est = cut === -1 ? pts : pts.slice(0, cut + 1), real = cut === -1 ? [] : pts.slice(cut)
+  const yTicks = []; for (let v = 0; v <= top + 1; v += step) yTicks.push(v)
+  const months = []
+  for (let d = new Date(t0 * 1000), m = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); m.getTime() / 1000 < t1; m = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1))) months.push(m)
+  const narrow = W < 520
+  const fmt = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  const first = pts.findIndex((p) => p[1] > 0)
+  const summary = first === -1 ? 'Nothing has been downloaded in the last 12 months.' : `Now ${unit(pts[pts.length - 1][1])}; the most was ${unit(max)} over the last 12 months.`
+  el.innerHTML = `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Space used by downloads over the last 12 months. ${esc(summary)}">
+      ${yTicks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="ax" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${unit(v)}</text>`).join('')}
+      ${months.map((m, i) => (narrow && i % 2 ? '' : `<text class="ax" x="${x(m.getTime() / 1000).toFixed(1)}" y="${H - 6}" text-anchor="middle">${m.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC' })}</text>`)).join('')}
+      <path class="area" d="${line(pts)}L${x(t1).toFixed(1)} ${y(0)}L${x(t0).toFixed(1)} ${y(0)}Z"/>
+      ${est.length > 1 ? `<path class="ln est" d="${line(est)}"/>` : ''}${real.length > 1 ? `<path class="ln" d="${line(real)}"/>` : ''}
+      <g id="cx" hidden><line class="cross" y1="${T}" y2="${H - B}"/><circle r="5" class="dot"/></g>
+      <rect class="hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"/></svg><div class="tip" id="ctip" hidden></div></div>
+    <div class="dim chart-note">${esc(summary)}${!h.since ? ' Estimated from when downloads were added and removed.' : h.since > t0 ? ` Dashed: estimated from when downloads were added and removed, before ${esc(fmt(h.since))}.` : ''}</div>
+    <details class="hist"><summary>View as a table</summary><div class="card-box"><table class="plain"><thead><tr><th>Month end</th><th>Space used</th></tr></thead><tbody>${months.concat([new Date(t1 * 1000)]).slice(-13).map((m, i, a) => {
+      const at = i === a.length - 1 ? t1 : m.getTime() / 1000 - 1, p = [...pts].reverse().find((q) => q[0] <= at) ?? pts[0]
+      return `<tr><td>${i === a.length - 1 ? 'Now' : m.toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' })}</td><td>${gb(p[1])}</td></tr>`
+    }).join('')}</tbody></table></div></details>`
+  const svg = $('svg', el), cx = $('#cx', el), tip = $('#ctip', el), box = $('.chart', el)
+  const move = (e) => {
+    const r = svg.getBoundingClientRect(), t = t0 + (((e.clientX - r.left) / r.width) * W - L) / (W - L - R) * (t1 - t0)
+    const p = pts.reduce((best, q) => (Math.abs(q[0] - t) < Math.abs(best[0] - t) ? q : best), pts[0])
+    cx.hidden = false; $('.cross', cx).setAttribute('x1', x(p[0])); $('.cross', cx).setAttribute('x2', x(p[0]))
+    const dot = $('.dot', cx); dot.setAttribute('cx', x(p[0])); dot.setAttribute('cy', y(p[1]))
+    tip.hidden = false; tip.innerHTML = `<b>${gb(p[1])}</b><span>${esc(fmt(p[0]))}${!h.since || p[0] < h.since ? ' · estimated' : ''}</span>`
+    const px = (x(p[0]) / W) * box.clientWidth
+    tip.style.left = Math.min(Math.max(px, 70), box.clientWidth - 70) + 'px'
+  }
+  const hide = () => { cx.hidden = true; tip.hidden = true }
+  const hit = $('.hit', el); hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move); hit.addEventListener('pointerleave', hide)
+}
+
 function downloadsPanel(data, root) {
   const req = data.requirements
   root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
-    <p class="dim" style="max-width:66ch">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded for <b style="color:var(--fg)">${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first, and Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
-    <div id="tstat"></div><div id="tspace"></div><div id="trep"></div><p class="dim" id="tfolder" style="font-size:13px"></p><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
-  const status = (d, h) => {
-    const disk = d.disk, low = disk && (disk.free / disk.total) * 100 < d.warnFreePct
-    const rows = (h?.issues ?? []).map((i) => `<li class="iss ${i.level}"><b>${esc(i.title)}</b><span>${esc(i.detail)}</span>${i.link ? `<a href="${esc(i.link)}">Fix</a>` : ''}</li>`).join('')
-    $('#tstat').innerHTML = `<div class="statusbox">${disk ? `<div class="meter wide ${low ? '' : 'met'}"><span>Storage: ${gb(disk.free)} free of ${gb(disk.total)}${low ? ' (getting low)' : ''}</span><div class="m"><i style="width:${Math.round(((disk.total - disk.free) / disk.total) * 100)}%"></i></div></div>` : ''}
-      ${rows ? `<ul class="issues">${rows}</ul>` : '<div class="dim">Everything looks healthy.</div>'}${h?.backup ? `<div class="dim" style="font-size:12px">Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}</div>` : ''}</div>`
+    <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it to the end. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
+    <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
+    <div id="trep"></div>
+    <h2 class="sec">Downloads</h2><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+  const shortName = (x) => esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name)
+  const storage = (d, h) => {
+    const disk = d.disk, pct = disk ? Math.round((disk.free / disk.total) * 100) : 100
+    const state = !disk ? '' : disk.free < Math.max(d.minFreeGb * 1e9, (d.minFreePct / 100) * disk.total) ? ['bad', 'Almost full'] : pct < d.warnFreePct ? ['warn', 'Getting low'] : ['ok', 'Healthy']
+    const issues = (h?.issues ?? []).map((i) => `<li class="iss ${i.level}"><b>${esc(i.title)}</b><span>${esc(i.detail)}</span>${i.link ? `<a href="${esc(i.link)}">Fix</a>` : ''}</li>`).join('')
+    // Everything finished that could go, biggest first. Torrents still short of their seeding goal are listed but cannot be removed (BTN's rule).
+    const fin = disk && state[0] !== 'ok' ? d.downloads.filter((x) => x.state === 'active' && !x.missing && x.left === 0).sort((a, b) => b.size - a.size) : []
+    const ok = fin.filter((x) => x.seedMet), wait = fin.filter((x) => !x.seedMet)
+    const row = (x, action) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}${x.is_pack ? ' · whole season' : ''}</span><div class="dim sm">${action.note}</div></div><span class="size">${gb(x.size)}</span>${action.btn ?? '<span></span>'}</li>`
+    const space = fin.length ? `<div class="sub-h">Free up space</div>
+      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${pct}% is free. Below ${d.minFreePct}% new shows are refused; below ${d.autoPausePct}% nothing is fetched ahead of time. ${ok.length ? `Removing everything under “Ready to remove” frees ${gb(ok.reduce((s, x) => s + x.size, 0))}.` : 'Nothing can be removed right now.'}</p>
+      ${ok.length ? `<div class="dim sm cap">Ready to remove</div><ul class="trows">${ok.map((x) => row(x, { note: x.waitingFor?.length ? `Seeding goal met · ${esc(x.waitingFor.join(', '))} hasn’t finished it` : 'Seeding goal met · everyone is done', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">${x.waitingFor?.length ? 'Remove anyway' : 'Remove'}</button>` })).join('')}</ul>` : ''}
+      ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}` : ''
+    $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
+    $('#tinfo').innerHTML = `${space}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
+      <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
   }
+  let chartData = null, lastHealth = data.health
   const meter = (label, v, max, met) => `<div class="meter wide${met ? ' met' : ''}"><span>${label}</span><div class="m"><i style="width:${Math.min(100, (v / max) * 100)}%"></i></div></div>`
   const card = (x, kind) => {
-    const title = esc(x.series), sub = esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name) + (x.resolution ? ' · ' + esc(x.resolution) : '') + (x.is_pack ? ' · whole season' : '') + (x.origin === 'auto' ? ' · fetched ahead of time' : x.origin === 'adopted' ? ' · from your Downloads folder' : '')
+    const sub = shortName(x) + (x.resolution ? ' · ' + esc(x.resolution) : '') + (x.is_pack ? ' · whole season' : '') + (x.origin === 'auto' ? ' · fetched ahead of time' : x.origin === 'adopted' ? ' · from your Downloads folder' : '')
     let badge, body = ''
-    if (x.missing) { badge = '<span class="badge warn">not in qBittorrent</span>'; body = '<div class="dim">Flix lost track of this torrent in the download engine; it will be tidied up shortly.</div>' }
+    if (x.missing) { badge = '<span class="badge warn">Missing</span>'; body = '<div class="dim sm">Flix lost track of this torrent in the download engine; it will be tidied up shortly.</div>' }
     else if (kind === 'dl') {
       badge = `<span class="badge info">Downloading ${Math.round(x.progress * 100)}%</span>`
       body = `<div class="meter wide met"><span>${gb(x.size * x.progress)} of ${gb(x.size)}${x.dlspeed ? ' · ' + mbps(x.dlspeed) : ''}${x.eta && x.dlspeed ? ' · ' + dur(x.eta) + ' left' : ''}${!x.dlspeed ? ' · waiting for peers (' + x.seeds + ' seeders)' : ''}</span><div class="m"><i style="width:${x.progress * 100}%"></i></div></div>`
     } else {
-      badge = x.seedMet ? '<span class="badge ok">Seeding requirement met</span>' : '<span class="badge warn">Seeding · not there yet</span>'
+      badge = x.seedMet ? '<span class="badge ok">Goal met</span>' : '<span class="badge warn">Seeding</span>'
       body = `<div class="meters">${meter(`Ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1`, x.ratio, req.minRatio, x.ratio >= req.minRatio)}${meter(`${x.seedHours.toFixed(1)} h of ${req.minHours} h seeded`, x.seedHours, req.minHours, x.seedHours >= req.minHours)}</div>
-        <div class="dim" style="font-size:13px">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
+        <div class="dim sm">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
     }
     const rs = (x.reasons || []).filter((r) => !/^BTN seeding/.test(r) && r !== 'still downloading')
-    const why = x.deletable ? '<div class="dim" style="font-size:13px">Done: will be removed on the next sweep.</div>' : rs.length ? `<div class="dim" style="font-size:13px">Kept: ${esc(rs.join(' · '))}</div>` : ''
-    return `<div class="tcard rise"><div class="thead"><div><b>${title}</b><div class="dim" style="font-size:13px">${sub}</div></div>${badge}</div>${body}${why}
-      <div class="tfoot"><span class="dim" style="font-size:12px">Added ${ago(x.added_at)}</span><button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button></div></div>`
-  }
-  // When storage runs low: everything finished that could go, biggest first. Seeding-incomplete torrents are listed but cannot be removed (BTN's rule).
-  const space = (d) => {
-    const disk = d.disk, pct = disk ? Math.round((disk.free / disk.total) * 100) : 100
-    if (!disk || pct >= d.warnFreePct) { $('#tspace').innerHTML = ''; return }
-    const fin = d.downloads.filter((x) => x.state === 'active' && !x.missing && x.left === 0).sort((a, b) => b.size - a.size)
-    const ok = fin.filter((x) => x.seedMet), wait = fin.filter((x) => !x.seedMet)
-    const name = (x) => `<b>${esc(x.series)}</b> <span class="dim">${esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name)}${x.is_pack ? ' · whole season' : ''}</span>`
-    $('#tspace').innerHTML = `<div class="statusbox"><h2 class="sec" style="margin-top:0">Free up space</h2>
-      <p class="dim" style="max-width:66ch">${pct}% of storage is free (${gb(disk.free)}). Below ${d.minFreePct}% new shows are refused; below ${d.autoPausePct}% nothing is fetched ahead of time. ${ok.length ? `Removing everything below would free ${gb(ok.reduce((s, x) => s + x.size, 0))}.` : 'Nothing can be removed right now.'}</p>
-      ${ok.length ? `<h3 style="font-size:15px;margin:14px 0 6px">Safe to remove now</h3><ul class="issues">${ok.map((x) => `<li class="iss ${x.waitingFor?.length ? 'warn' : 'info'}"><span>${name(x)}<br><span class="dim" style="font-size:13px">${gb(x.size)} · seeding requirement met${x.waitingFor?.length ? ` · ${esc(x.waitingFor.join(', '))} hasn’t finished it` : ' · everyone is done'}</span></span><button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">${x.waitingFor?.length ? 'Remove anyway' : 'Remove'}</button></li>`).join('')}</ul>` : ''}
-      ${wait.length ? `<h3 style="font-size:15px;margin:14px 0 6px">Can’t be removed yet (BTN seeding rule)</h3><ul class="issues">${wait.map((x) => `<li class="iss info"><span>${name(x)}<br><span class="dim" style="font-size:13px">${gb(x.size)} · ${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1</span></span></li>`).join('')}</ul>` : ''}</div>`
+    const why = x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : ''
+    return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
+      <div class="tfoot"><span class="dim sm">Added ${ago(x.added_at)}</span><button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button></div></div>`
   }
   const draw = (d) => {
-    space(d)
-    $('#tfolder').innerHTML = d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''
     const act = d.downloads.filter((x) => x.state === 'active'), gone = d.downloads.filter((x) => x.state !== 'active')
     const dl = act.filter((x) => !x.missing && x.left > 0), seed = act.filter((x) => !x.missing && x.left === 0 && !x.seedMet), done = act.filter((x) => !x.missing && x.left === 0 && x.seedMet), miss = act.filter((x) => x.missing)
-    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding, goal not yet met'], [done.length, 'seeding goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
-    const sec = (title, list, kind) => list.length ? `<h2 class="sec">${title}</h2><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
+    storage(d, lastHealth)
+    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding'], [done.length, 'goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
+    const sec = (title, list, kind) => list.length ? `<div class="sub-h">${title}</div><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
     $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
-      + sec('Downloading', dl, 'dl') + sec('Seeding: requirement not met yet', seed, 'seed') + sec('Requirement met', done, 'seed') + sec('Needs attention', miss, 'dl')
-    $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><div class="card-box"><table><tbody>${gone.slice(0, 50).map((x) => `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)}</span></td><td class="dim">${esc(x.remove_reason || '')}</td><td class="dim">${x.removed_at ? ago(x.removed_at) : ''}</td></tr>`).join('')}</tbody></table></div></details>` : ''
+      + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
+    $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><ul class="trows">${gone.slice(0, 50).map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}</span><div class="dim sm">${esc(x.remove_reason || '')}</div></div><span class="size dim">${x.removed_at ? ago(x.removed_at) : ''}</span><span></span></li>`).join('')}</ul></details>` : ''
     root.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
-      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until seeded' : 'Failed'; b.disabled = true }
+      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
     })
   }
   const reports = (list) => {
-    $('#trep').innerHTML = list.length ? `<h2 class="sec">Reported problems</h2><div class="rep-list">${list.map((r) => `<div class="rep"><div><b>${esc(r.series || 'Unknown show')}</b> ${esc(r.label || '')}
-        <small>· ${esc(r.user || '?')} · ${ago(r.created_at)} · ${r.kind === 'auto' ? 'failed on its own' : 'reported by a viewer'}</small>
-        <div class="dim" style="font-size:13px">${r.group_name ? esc(r.group_name) + ' · ' + esc(r.resolution || '') + ' · ' + (r.seeders ?? 0) + ' seeders' : ''}${r.message ? ' · ' + esc(r.message) : ''}</div></div>
-        <button class="btn" data-dis="${r.id}" style="padding:7px 12px">Dismiss</button></div>`).join('')}</div>
-      <button class="btn" data-dis="all" style="margin-top:10px;padding:7px 12px">Dismiss all</button>` : ''
+    $('#trep').innerHTML = list.length ? `<h2 class="sec">Reported problems</h2><ul class="trows">${list.map((r) => `<li class="trow"><div><b>${esc(r.series || 'Unknown show')}</b> <span class="dim">${esc(r.label || '')}</span>
+        <div class="dim sm">${esc(r.user || '?')} · ${ago(r.created_at)} · ${r.kind === 'auto' ? 'failed on its own' : 'reported by a viewer'}${r.group_name ? ' · ' + esc(r.group_name) + ' · ' + esc(r.resolution || '') + ' · ' + (r.seeders ?? 0) + ' seeders' : ''}${r.message ? ' · ' + esc(r.message) : ''}</div></div><span></span>
+        <button class="btn sm-btn" data-dis="${r.id}">Dismiss</button></li>`).join('')}</ul>
+      <button class="btn sm-btn" data-dis="all" style="margin-top:10px">Dismiss all</button>` : ''
     $('#trep').querySelectorAll('[data-dis]').forEach((b) => b.onclick = async () => {
       await api('/api/admin/reports/resolve', { id: b.dataset.dis === 'all' ? 'all' : +b.dataset.dis }).catch(() => {})
       reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
     })
   }
-  draw(data); status(data, data.health); reports(data.reports ?? [])
+  const loadChart = async () => { chartData = await api('/api/admin/storage').catch(() => chartData); if (chartData) storageChart($('#tchart'), chartData) }
+  draw(data); reports(data.reports ?? []); loadChart()
   const t = setInterval(async () => {
-    const d = await api('/api/admin/downloads').catch(() => data); draw(d)
-    status(d, await api('/api/admin/health').catch(() => data.health))
+    const d = await api('/api/admin/downloads').catch(() => data)
+    lastHealth = await api('/api/admin/health').catch(() => lastHealth); draw(d)
     reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
   }, 15000)
-  cleanup = () => clearInterval(t)
+  const t2 = setInterval(loadChart, 300000)
+  let rz; const onResize = () => { clearTimeout(rz); rz = setTimeout(() => chartData && storageChart($('#tchart'), chartData), 150) }
+  addEventListener('resize', onResize)
+  cleanup = () => { clearInterval(t); clearInterval(t2); clearTimeout(rz); removeEventListener('resize', onResize) }
 }
 
 function familyPanel(data, root) {
