@@ -307,7 +307,9 @@ test('home: only the seven services, every row exactly ten, trending first, no s
   assert.equal(titles[0], 'Trending shows')
   assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Netflix') && titles.indexOf('New on Netflix') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
   assert.ok(!titles.includes('New on Showcase') && !titles.includes('New on Apple TV+'), 'a service with no shows has no row')
-  const ids = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
+  // Genre and "More to watch" rows are filled from the whole library, so shows outside the services appear there; the billboard and the
+  // trending and service rows are only ever shows on one of the seven.
+  const ids = [hero!.id, ...sections.filter((s) => s.title === 'Trending shows' || s.title.startsWith('New on ')).flatMap((s) => s.series.map((r) => r.id))]
   assert.ok(ids.every((i) => net.get(i)!.streamer), 'nothing from outside the seven services')
   const crave = sections.find((s) => s.title === 'New on Crave')
   assert.ok(!crave, 'four Crave shows cannot make ten, even topped up from the same service')
@@ -317,7 +319,8 @@ test('home: a service with a few shows is topped up from shows already shown rat
   const rows: any[] = [], net = new Map<number, any>()
   for (let i = 1; i <= 14; i++) { rows.push(row(i, ['Drama'])); net.set(i, info('Netflix', `2020-01-${String(i).padStart(2, '0')}`, i <= 12 ? i : null)) }
   const { sections } = curateHome(rows, net)
-  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on Netflix'])
+  // Two rows is under the four a page needs, so a "Newest additions" row (which may repeat shows) makes up the numbers.
+  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on Netflix', 'Newest additions'])
   for (const s of sections) assert.equal(s.series.length, ROW_SIZE)
   const mine = new Set([1, 2, 3, 4, 5])
   const above = curateHome(rows, net, mine).sections[0].series
@@ -325,7 +328,7 @@ test('home: a service with a few shows is topped up from shows already shown rat
   assert.ok(above.slice(0, 5).every((r) => !mine.has(r.id)), 'shows already above (My List) only come back last, to fill the row')
 })
 
-test('home: genre rows only appear with ten shows not yet shown, and nothing shows when too little is known', () => {
+test('home: genre rows only appear with ten shows not yet shown, and no rows when too little is known', () => {
   const rows: any[] = [], net = new Map<number, any>()
   for (let i = 1; i <= 90; i++) { rows.push(row(i, [i % 2 ? 'Drama' : 'Comedy'])); net.set(i, info(['HBO', 'Netflix', 'Apple TV+'][i % 3], `2021-01-${String((i % 28) + 1).padStart(2, '0')}`)) }
   const { hero, sections } = curateHome(rows, net)
@@ -335,7 +338,8 @@ test('home: genre rows only appear with ten shows not yet shown, and nothing sho
   const dupes = ids.length - new Set(ids).size
   assert.ok(dupes <= 4, `repeats only come from topping up a thin row (${dupes})`)
   const none = curateHome([row(1, ['Drama']), row(2, ['Drama'])], new Map())
-  assert.equal(none.hero, null); assert.deepEqual(none.sections, [])
+  assert.deepEqual(none.sections, []) // too little to make any row
+  assert.ok(none.hero, 'but the billboard still shows the newest show, rather than an empty page')
 })
 
 test('library: only English-language shows, and a season is judged against its real length', async () => {
