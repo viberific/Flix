@@ -34,6 +34,8 @@ export const config = {
   // Backup artwork when BTN has none (or its image host refuses us): TMDB (needs the key above), then TVmaze (no key).
   // Set TVMAZE_URL to an empty string to turn TVmaze off.
   art: { tmdbImages: (env.TMDB_IMAGE_URL ?? 'https://image.tmdb.org/t/p').replace(/\/$/, ''), tvmazeUrl: (env.TVMAZE_URL ?? 'https://api.tvmaze.com').replace(/\/$/, ''), youtubeImages: (env.YOUTUBE_IMAGE_URL ?? 'https://i.ytimg.com/vi').replace(/\/$/, ''),
+    // Where trailers are searched for and checked. Set YOUTUBE_SEARCH_URL to an empty string to switch the search off (tests do, so they never leave the machine).
+    youtubeSearch: (env.YOUTUBE_SEARCH_URL ?? 'https://www.youtube.com/results').replace(/\/$/, ''), youtubeOembed: (env.YOUTUBE_OEMBED_URL ?? 'https://www.youtube.com/oembed').replace(/\/$/, ''),
     // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
     allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
   qb: {

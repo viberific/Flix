@@ -486,16 +486,17 @@ test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads
   config.minFreePct = 0; config.minFreeGb = 0; config.auto.pausePct = 0
   try {
     const u = createUser('autoann', 'password123', false).id
-    assert.equal(autoBlocked(u, 1e9), null)
+    assert.equal(autoBlocked(u, 1e6), null)
     config.auto.enabled = false; assert.match(autoBlocked(u, 1)!, /off/); config.auto.enabled = true
     config.auto.pausePct = 101; assert.match(autoBlocked(u, 1)!, /low/); config.auto.pausePct = 0
     const ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, auto) VALUES (?,?,?,?,?,1)`)
-    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8001, 80, 'A', 'A - S01E01', 'x1', 0, 30000000000)`).run()
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8001, 80, 'A', 'A - S01E01', 'x1', 0, 30000000)`).run()
     db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (8001, 'x1', 'active', 0)`).run()
     const t = Math.floor(Date.now() / 1000)
     ins.run(u, 8001, 0, t, t)
-    assert.match(autoBlocked(u, 25e9)!, /budget/, '30 GB already held + 25 GB is over the 50 GB budget')
-    assert.equal(autoBlocked(u, 5e9), null)
+    config.auto.maxGb = 0.05 // a 50 MB budget keeps the test independent of how much disk the machine has
+    assert.match(autoBlocked(u, 25e6)!, /budget/, '30 MB already held + 25 MB is over the 50 MB budget')
+    assert.equal(autoBlocked(u, 5e6), null)
     for (let i = 1; i < config.auto.perUser; i++) ins.run(u, 8001, i, t, t)
     assert.match(autoBlocked(u, 1)!, /enough lined up/)
     db.prepare('UPDATE interests SET updated_at = ? WHERE user_id = ?').run(t - (config.auto.expireDays + 1) * 86400, u)

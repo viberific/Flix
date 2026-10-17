@@ -38,7 +38,8 @@ async function tmdb(path: string): Promise<any> {
 
 /** YouTube's top hits for "<name> official trailer", best first; no API key needed. Empty when nothing parses. */
 async function searchYoutube(name: string): Promise<string[]> {
-  const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' official trailer')}&sp=EgIQAQ%253D%253D`, {
+  if (!config.art.youtubeSearch) return []
+  const res = await fetch(`${config.art.youtubeSearch}?search_query=${encodeURIComponent(name + ' official trailer')}&sp=EgIQAQ%253D%253D`, {
     headers: { 'accept-language': 'en-US,en;q=0.9', cookie: 'CONSENT=YES+1', 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
     signal: AbortSignal.timeout(10_000),
   })
@@ -51,8 +52,9 @@ async function searchYoutube(name: string): Promise<string[]> {
  * embedding-disabled videos. If YouTube can't be reached the video gets the benefit of the doubt (the player tries the next one if it fails).
  */
 export async function trailerPlayable(id: string): Promise<boolean> {
+  if (!config.art.youtubeOembed) return true
   try {
-    const res = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent('https://www.youtube.com/watch?v=' + id)}`, { signal: AbortSignal.timeout(6_000) })
+    const res = await fetch(`${config.art.youtubeOembed}?format=json&url=${encodeURIComponent('https://www.youtube.com/watch?v=' + id)}`, { signal: AbortSignal.timeout(6_000) })
     return res.ok || res.status >= 500
   } catch { return true }
 }
