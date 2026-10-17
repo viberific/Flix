@@ -40,6 +40,8 @@ process.env.PROBE_TIMEOUT_MS = '30000'
 process.env.BTN_API_KEY = 'testkey'
 process.env.TMDB_API_KEY = 'tmdbkey'
 process.env.TMDB_API_URL = `http://127.0.0.1:${P.btn}/tmdb`
+process.env.OMDB_API_KEY = 'omdbkey'
+process.env.OMDB_API_URL = `http://127.0.0.1:${P.btn}/omdb`
 process.env.TVMAZE_URL = '' // no outbound lookups from tests
 process.env.TMDB_IMAGE_URL = `http://127.0.0.1:${P.btn}/tmdbimg`
 process.env.ART_ALLOW_PRIVATE_HOSTS = 'true' // test artwork is served from localhost
@@ -92,14 +94,20 @@ before(async () => {
     GroupName: `Test Show - S01E0${i + 1}`, GroupID: String(100 + i), TorrentID: String(1000 + i), SeriesID: '77', Series: 'Test Show',
     SeriesPoster: `http://127.0.0.1:${P.btn}/img/poster.png`, ReleaseName: m.path.split('/').pop(), Category: 'Episode', Codec: 'H.264', Container: k.split('.')[1].toUpperCase(),
     Source: 'WEB-DL', Resolution: '360p', Origin: 'P2P', Size: String(m.data.length), Time: String(1700000000 + i), InfoHash: m.hash.toUpperCase(),
-    TvdbID: '555', Seeders: '1', Leechers: '0', Genres: ['Test'], DownloadURL: `http://127.0.0.1:${P.btn}/dl/${1000 + i}?torrent_pass=SECRETPASSKEY`,
+    TvdbID: '555', ImdbID: 'tt0903747', Seeders: '1', Leechers: '0', Genres: ['Test'], DownloadURL: `http://127.0.0.1:${P.btn}/dl/${1000 + i}?torrent_pass=SECRETPASSKEY`,
   }))
   btn = createServer((req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/tmdb/')) {
       res.setHeader('content-type', 'application/json')
       if (req.url.startsWith('/tmdb/find/555')) return void res.end(JSON.stringify({ tv_results: [{ id: 9001, backdrop_path: '/bd.png' }] }))
+      // English, two episodes in season 1 (the show's real length: what lets both single episodes count as a whole season)
+      if (/^\/tmdb\/tv\/9001(\?|$)/.test(req.url)) return void res.end(JSON.stringify({ original_language: 'en', networks: [{ name: 'HBO' }], first_air_date: '2020-01-01', popularity: 50, seasons: [{ season_number: 1, episode_count: 2 }] }))
       if (req.url.startsWith('/tmdb/tv/9001/content_ratings')) return void res.end(JSON.stringify({ results: [{ iso_3166_1: 'GB', rating: '15' }, { iso_3166_1: 'US', rating: 'TV-14' }] }))
       res.statusCode = 404; return void res.end('{}')
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/omdb/')) {
+      res.setHeader('content-type', 'application/json')
+      return void res.end(JSON.stringify(req.url.includes('i=tt0903747') && req.url.includes('apikey=omdbkey') ? { Response: 'True', Rated: 'TV-14', imdbRating: '8.1' } : { Response: 'False', Error: 'Incorrect IMDb ID.' }))
     }
     if (req.method === 'GET' && req.url === '/tmdbimg/w1280/bd.png') { res.setHeader('content-type', 'image/png'); res.end(PNG); return }
     if (req.method === 'GET' && req.url === '/img/poster.png') { posterFetches++; res.setHeader('content-type', 'application/octet-stream'); res.end(PNG); return }
@@ -288,10 +296,10 @@ async function loginAs(name: string, password: string) {
   return r.status === 200 ? r.headers.get('set-cookie')!.split(';')[0] : null
 }
 
-test('ratings: looked up automatically from TMDB (US rating, by TVDB id)', async () => {
+test('ratings: looked up automatically from IMDb (through OMDb, by IMDb id), with the IMDb score', async () => {
   let got: any
-  for (let i = 0; i < 40; i++) { got = (await jget('/api/series/77')).series; if (got.source === 'tmdb') break; await sleep(250) }
-  assert.equal(got.rating, 'TV-14'); assert.equal(got.source, 'tmdb')
+  for (let i = 0; i < 40; i++) { got = (await jget('/api/series/77')).series; if (got.source === 'imdb') break; await sleep(250) }
+  assert.equal(got.rating, 'TV-14'); assert.equal(got.source, 'imdb'); assert.equal(got.score, 8.1)
 })
 
 test('accounts: only the admin can create users; public signup is closed', async () => {
@@ -304,7 +312,6 @@ test('accounts: only the admin can create users; public signup is closed', async
   assert.ok(kid)
   for (const [m, path] of [['GET', '/api/admin/users'], ['GET', '/api/admin/downloads']] as const) assert.equal((await as(kid, () => api(path, { method: m }))).status, 403, path)
   assert.equal((await as(kid, () => jpost('/api/admin/users', { name: 'x1', password: 'password123' }))).status, 403)
-  assert.equal((await as(kid, () => api('/api/admin/series/77/rating', { method: 'PUT', body: JSON.stringify({ rating: 'TV-G' }) }))).status, 403)
 })
 
 test('ratings: a restricted user cannot see or reach a show above their level', async () => {
@@ -323,29 +330,23 @@ test('ratings: a restricted user cannot see or reach a show above their level', 
   assert.equal((await jget('/api/series')).series.length, 1)
 })
 
-test('ratings: admin can override a rating, and Unrated is blocked unless allowed', async () => {
+test('ratings: there is no way to set one by hand; the viewer\'s allowed list decides, and Unrated is blocked unless allowed', async () => {
   const kid = (await loginAs('kid', 'password123'))!
-  const put = (rating: string | null) => api('/api/admin/series/77/rating', { method: 'PUT', body: JSON.stringify({ rating }) })
-  assert.equal((await put('TV-G')).status, 200)
-  await as(kid, async () => {
-    const l = await jget('/api/series'); assert.equal(l.series.length, 1); assert.equal(l.series[0].rating, 'TV-G')
-    const s = await jget('/api/series/77'); assert.equal(s.series.rating, 'TV-G'); assert.equal(s.series.source, 'admin')
-    assert.equal((await api('/api/art/77/poster')).status, 200)
-  })
-  assert.equal((await put('Unrated')).status, 200)
-  await as(kid, async () => assert.equal((await jget('/api/series')).series.length, 0, 'unknown rating must not be shown to a restricted user'))
-  assert.equal((await put('PG-13')).status, 400)
-  // allow Unrated for the kid -> visible again
+  assert.notEqual((await api('/api/admin/series/77/rating', { method: 'PUT', body: JSON.stringify({ rating: 'TV-G' }) })).status, 200)
+  assert.equal((await jget('/api/series/77')).series.rating, 'TV-14') // unchanged
   const users = (await jget('/api/admin/users')).users
   const kidId = users.find((u: any) => u.name === 'kid').id
   const patch = (body: any) => api(`/api/admin/users/${kidId}`, { method: 'PATCH', body: JSON.stringify(body) })
   assert.equal((await patch({ allowedRatings: ['Unrated'] })).status, 200)
-  await as(kid, async () => assert.equal((await jget('/api/series')).series.length, 1))
+  await as(kid, async () => assert.equal((await jget('/api/series')).series.length, 0, 'a TV-14 show is not Unrated'))
+  assert.equal((await patch({ allowedRatings: ['TV-14'] })).status, 200)
+  await as(kid, async () => {
+    const l = await jget('/api/series'); assert.equal(l.series.length, 1); assert.equal(l.series[0].rating, 'TV-14')
+    assert.equal((await api('/api/art/77/poster')).status, 200)
+  })
   // ticking every box == unrestricted
   const all = await (await patch({ allowedRatings: ['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'] })).json() as any
   assert.equal(all.allowed, null)
-  // back to automatic -> TMDB again
-  assert.equal((await put(null)).status, 200)
   assert.equal((await patch({ allowedRatings: [] })).status, 200) // nothing allowed
   await as(kid, async () => assert.equal((await jget('/api/series')).series.length, 0))
   assert.equal((await patch({ allowedRatings: ['TV-MA'] })).status, 200)

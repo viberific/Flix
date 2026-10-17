@@ -262,7 +262,7 @@ async function homeView(q) {
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
-      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet.'}</div>`
+      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+ and Apple TV+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
@@ -286,8 +286,8 @@ async function seriesView(id) {
   return () => {
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
-      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
-        ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
+        </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}${hero.title ? ' · ' + esc(hero.title) : ''}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
@@ -324,9 +324,6 @@ async function seriesView(id) {
     }
     const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
     const tl = $('#tl'); if (tl) tl.onclick = (e) => { e.preventDefault(); $('#tr').scrollIntoView({ behavior: smooth(), block: 'center' }); loadTrailer() }
-    const rs = $('#rsel'); if (rs) rs.onchange = async () => {
-      try { const r = await api(`/api/admin/series/${id}/rating`, { rating: rs.value === 'auto' ? null : rs.value }, 'PUT'); $('#rchip').textContent = r.rating } catch (e) { alert(e.message) }
-    }
   }
 }
 
@@ -680,7 +677,7 @@ function familyPanel(data, root) {
   const paint = () => {
     root.innerHTML = `<h1 style="font-size:32px">Family</h1>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
-      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up automatically yet. Set <code>TMDB_API_KEY</code>, or set each show\'s rating yourself on its page.</p>'}
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
         <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
@@ -751,7 +748,7 @@ function familyPanel(data, root) {
 }
 
 function settingsPanel(data, root) {
-  let btn = data.btn, qbs = data.qb, tm = data.tmdb
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
@@ -761,8 +758,14 @@ function settingsPanel(data, root) {
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="bm" role="status"></div></form>
-      <h2 class="sec">TMDB (optional)</h2>
-      <p class="dim" style="max-width:66ch">A free TMDB v3 API key lets Flix look up each show's content rating (TV-Y to TV-MA) automatically. Without one, you set ratings by hand on each show's page.</p>
+      <h2 class="sec">Ratings from IMDb</h2>
+      <p class="dim" style="max-width:66ch">Every show's content rating (TV-Y to TV-MA) and IMDb score are looked up automatically, through OMDb, which serves IMDb's data. Get a free key at omdbapi.com (it must be activated from the email they send). Without it Flix falls back to TMDB for the rating, and shows are Unrated when neither knows.</p>
+      <form id="of" class="person"><div class="dim">${om.configured ? `Key set (ends in <code>${esc(om.hint)}</code>)${om.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste OMDb API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="ot" ${om.configured ? '' : 'disabled'}>Test connection</button>${om.source === 'settings' ? '<button type="button" class="btn" id="oc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="om" role="status"></div></form>
+      <h2 class="sec">TMDB (recommended)</h2>
+      <p class="dim" style="max-width:66ch">A free TMDB v3 API key tells Flix which service each show is on, its language and season lengths, what is trending, and supplies summaries and artwork. It is also the fallback for content ratings.</p>
       <form id="tf" class="person"><div class="dim">${tm.configured ? `Key set (ends in <code>${esc(tm.hint)}</code>)${tm.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
@@ -787,6 +790,21 @@ function settingsPanel(data, root) {
     $('#bt').onclick = async () => {
       msg('Testing…')
       try { const r = await api('/api/admin/settings/btn/test', {}); msg(r.username ? `Connected as ${r.username}.` : 'Connected.') } catch (err) { msg(err.message) }
+    }
+    const omsg = (t) => { $('#om').textContent = t }
+    $('#of').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return omsg('Paste a key first.')
+      try { om = (await api('/api/admin/settings/omdb', { apiKey: key }, 'PUT')).omdb; paint(); $('#om').textContent = 'Saved. Use Test connection to check it.' } catch (err) { omsg(err.message) }
+    }
+    $('#ot').onclick = async () => {
+      omsg('Testing…')
+      try { await api('/api/admin/settings/omdb/test', {}); omsg('OMDb accepted the key.') } catch (err) { omsg(err.message) }
+    }
+    const oc = $('#oc')
+    if (oc) oc.onclick = async () => {
+      if (oc.dataset.sure !== '1') { oc.dataset.sure = '1'; oc.textContent = 'Tap again to remove'; setTimeout(() => { oc.dataset.sure = ''; oc.textContent = 'Remove saved key' }, 4000); return }
+      try { om = (await api('/api/admin/settings/omdb', { apiKey: '' }, 'PUT')).omdb; paint() } catch (err) { omsg(err.message) }
     }
     const tmsg = (t) => { $('#tm').textContent = t }
     $('#tf').onsubmit = async (e) => {

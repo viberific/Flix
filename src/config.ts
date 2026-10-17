@@ -13,7 +13,9 @@ export const config = {
     // BTN allows 150 calls/hour; stay well under.
     maxCallsPerHour: num('BTN_MAX_CALLS_PER_HOUR', 100),
   },
-  // Optional: automatic content ratings (TV-Y … TV-MA) via TMDB. Without a key the admin sets ratings by hand.
+  // Content ratings (TV-Y … TV-MA) and the IMDb score come from IMDb through OMDb (needs a free key). TMDB is the fallback for the rating.
+  omdb: { apiKey: env.OMDB_API_KEY ?? '', apiUrl: (env.OMDB_API_URL ?? 'https://www.omdbapi.com').replace(/\/$/, '') },
+  // Optional: also the source of networks, languages, season sizes, trending shows, summaries and artwork.
   tmdb: { apiKey: env.TMDB_API_KEY ?? '', apiUrl: (env.TMDB_API_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, '') },
   // Backup artwork when BTN has none (or its image host refuses us): TMDB (needs the key above), then TVmaze (no key).
   // Set TVMAZE_URL to an empty string to turn TVmaze off.

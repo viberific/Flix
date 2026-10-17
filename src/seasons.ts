@@ -7,12 +7,14 @@ import { db } from './db.ts'
  * - After that only the next sequential season can follow: the first season that is missing or incomplete ends the list,
  *   so a show with seasons 1 and 3 shows season 1 only.
  * - A season is complete when it has a season pack (a pack is the whole season by definition), or when single episodes
- *   run from E01 to its last episode with nothing missing. Single episodes win over a pack when they are complete.
+ *   run from E01 to its last episode with nothing missing. Single episodes are only trusted over a pack when they reach
+ *   the season's known length (`expected`, from TMDB/TVmaze): "just E01" is not a whole season. When the length is not
+ *   known, a pack wins, and singles alone count when they run unbroken from E01.
  */
 export interface SeasonRow { season: number | null; episode: number | null; episode_end?: number | null; is_pack: number | boolean }
 export type SeasonSource = 'episodes' | 'pack'
 
-export function visibleSeasons(rows: SeasonRow[]): Map<number, SeasonSource> {
+export function visibleSeasons(rows: SeasonRow[], expected?: Map<number, number>): Map<number, SeasonSource> {
   const covered = new Map<number, Set<number>>()
   const packs = new Set<number>()
   for (const r of rows) {
@@ -26,7 +28,13 @@ export function visibleSeasons(rows: SeasonRow[]): Map<number, SeasonSource> {
   for (let n = 1; ; n++) {
     const eps = covered.get(n)
     let whole = false
-    if (eps?.size) { whole = true; for (let e = 1; e <= Math.max(...eps); e++) if (!eps.has(e)) { whole = false; break } }
+    if (eps?.size) {
+      const last = Math.max(...eps)
+      whole = true
+      for (let e = 1; e <= last; e++) if (!eps.has(e)) { whole = false; break }
+      const want = expected?.get(n)
+      if (whole) whole = want !== undefined ? last >= want : !packs.has(n)
+    }
     if (whole) out.set(n, 'episodes')
     else if (packs.has(n)) out.set(n, 'pack')
     else break
@@ -36,13 +44,31 @@ export function visibleSeasons(rows: SeasonRow[]): Map<number, SeasonSource> {
 
 // ---- which shows are listable -----------------------------------------------------------------
 
+/** Bumped whenever the network crawler learns something new about how a show is read (see networks.ts); older rows are read again. */
+export const NET_VER = 2
+
 let version = 0
 let cache: { v: number; map: Map<number, Map<number, SeasonSource>> } | null = null
-/** Call whenever releases or sync state change, so the next listing recomputes. */
+/** Call whenever releases, sync state or what we know about a show change, so the next listing recomputes. */
 export const catalogChanged = () => { version++ }
 
+/** True when a show is in English: TMDB's original language, or TVmaze's. A show whose language nobody could tell is let through. */
+export const isEnglish = (lang: string | null | undefined) => !lang || /^(en|english)$/i.test(lang.trim())
+
+/** What the crawler learned per show: its language and how many episodes each season has. Absent = not read yet. */
+function netFacts(): Map<number, { lang: string | null; counts: Map<number, number> }> {
+  const m = new Map<number, { lang: string | null; counts: Map<number, number> }>()
+  for (const r of db.prepare('SELECT series_id, lang, season_counts FROM series_net').all() as any[]) {
+    const counts = new Map<number, number>()
+    try { for (const [k, v] of Object.entries(JSON.parse(r.season_counts ?? '{}'))) if (Number(v) > 0) counts.set(Number(k), Number(v)) } catch { /* unknown */ }
+    m.set(r.series_id, { lang: r.lang, counts })
+  }
+  return m
+}
+
 /**
- * Every show whose catalog we have fully read (a series_sync row) and whose season 1 is complete, with its visible seasons.
+ * Every English-language show whose catalog we have fully read (a series_sync row), whose season 1 is complete, and that
+ * the network crawler has looked at (language and season lengths are needed to judge), with its visible seasons.
  * A show we have only seen a few recent uploads of is not listed yet: its season 1 simply may not have been fetched.
  */
 export function listable(): Map<number, Map<number, SeasonSource>> {
@@ -53,12 +79,17 @@ export function listable(): Map<number, Map<number, SeasonSource>> {
     const l = by.get(r.series_id) ?? by.set(r.series_id, []).get(r.series_id)!
     l.push(r)
   }
+  const facts = netFacts()
   const map = new Map<number, Map<number, SeasonSource>>()
-  for (const [id, rows] of by) { const s = visibleSeasons(rows); if (s.has(1)) map.set(id, s) }
+  for (const [id, rows] of by) {
+    const f = facts.get(id)
+    if (!f || !isEnglish(f.lang)) continue
+    const s = visibleSeasons(rows, f.counts)
+    if (s.has(1)) map.set(id, s)
+  }
   cache = { v: version, map }
   return map
 }
-
 export const seasonsOf = (seriesId: number) => listable().get(seriesId)
 
 /** How many shows still have to be read from BTN before the catalog is complete (for the "still checking" notice). */

@@ -6,11 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setSessionCookie, tvToken, userCount, userFor, userForTvToken } from './auth.ts'
-import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
+import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
+import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
@@ -20,8 +20,8 @@ import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
-import { curateHome } from './home.ts'
-import { netInfo, startNetworkCrawler } from './networks.ts'
+import { ROW_SIZE, curateHome } from './home.ts'
+import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -120,7 +120,7 @@ const notFound = (m = 'Series not found') => Object.assign(new Error(m), { statu
 const isListed = (r: { id: number }) => listable().has(r.id)
 
 /** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
-const ensureSynced = (id: number) => syncSeries(id).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
+const ensureSynced = (id: number) => syncSeries(id).then(() => ensureNet(id)).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
 
 app.get('/api/series', auth, async (req) => {
   const { q } = req.query as { q?: string }
@@ -129,8 +129,8 @@ app.get('/api/series', auth, async (req) => {
       WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
   if (q && q.trim().length >= 2) {
     await searchBtn(q.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
-    // A search only brings back some of a show's releases; read the rest of the top few matches so their seasons can be judged.
-    const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id)).slice(0, 5)
+    // A search only brings back some of a show's releases; read the rest of the top few matches (and their language and season lengths) so their seasons can be judged.
+    const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id) || !db.prepare('SELECT 1 FROM series_net WHERE series_id = ?').get(r.id)).slice(0, 5)
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
   }
   const rows = query().filter(isListed).slice(0, 100)
@@ -188,11 +188,12 @@ const NEW_DAYS = 7
 const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[]') as any[]).map((x) => String(x).trim()).filter(Boolean) } catch { return [] } }
 
 /**
- * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from Netflix,
- * Disney+ and Apple TV+, then the rest under one genre each. A show appears once on the whole screen (see home.ts).
+ * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from HBO,
+ * Crave, Showcase, Netflix, Disney+ and Apple TV+, then more of those under one genre each. Discovery rows hold ten shows (see home.ts).
  */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
+  const net = netInfo()
   const all = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 1500)
   all.forEach((r) => { r.genres = genresOf(r) })
@@ -215,13 +216,13 @@ app.get('/api/home', auth, async (req) => {
   if (base) {
     const mine = new Set<string>(base.genres)
     const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
-    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id)).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length })).filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, 20).map((x) => clean(x.r))
-    if (rec.length >= 2) { because = { name: base.name, series: rec }; rec.forEach((r) => taken.add(r.id)) }
+    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && net.get(r.id)?.streamer).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length })).filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, ROW_SIZE).map((x) => clean(x.r))
+    if (rec.length === ROW_SIZE) { because = { name: base.name, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
   // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
   const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
-  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), netInfo(), taken)
+  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), net, taken)
   return { hero: hero && clean(hero), sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
 })
 
@@ -490,7 +491,7 @@ const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admi
 
 app.get('/api/admin/users', admin, async () => ({
   users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash FROM users ORDER BY id').all() as any[]).map(userRow),
-  ratings: RATINGS, ratingLookup: !!config.tmdb.apiKey,
+  ratings: RATINGS, ratingLookup: !!(config.omdb.apiKey || config.tmdb.apiKey),
 }))
 app.post('/api/admin/users', admin, async (req) => {
   const { name, password, isAdmin, allowedRatings } = req.body as any
@@ -531,7 +532,7 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus() }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus() }))
 app.put('/api/admin/settings/btn', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()
   if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
@@ -562,6 +563,25 @@ app.post('/api/admin/settings/tmdb/test', admin, async () => {
   if (!res.ok) throw Object.assign(new Error(`TMDB returned HTTP ${res.status}`), { statusCode: 502 })
   return { ok: true }
 })
+app.put('/api/admin/settings/omdb', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setOmdbApiKey(key)
+  return { omdb: omdbKeyStatus() }
+})
+/** Ask OMDb about a well-known title, so the admin sees whether the key is accepted. */
+app.post('/api/admin/settings/omdb/test', admin, async () => {
+  const { apiKey, apiUrl } = config.omdb
+  if (!apiKey) throw Object.assign(new Error('No OMDb key set'), { statusCode: 400 })
+  const res = await fetch(`${apiUrl}/?i=tt0903747&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) }).catch((e) => {
+    throw Object.assign(new Error(`Could not reach OMDb: ${e.message}`), { statusCode: 502 })
+  })
+  if (res.status === 401) throw Object.assign(new Error('OMDb rejected this key (a new key must be activated from the email OMDb sends)'), { statusCode: 400 })
+  if (!res.ok) throw Object.assign(new Error(`OMDb returned HTTP ${res.status}`), { statusCode: 502 })
+  const j = await res.json() as any
+  if (j.Response === 'False') throw Object.assign(new Error(`OMDb: ${j.Error}`), { statusCode: 400 })
+  return { ok: true }
+})
 app.put('/api/admin/settings/qb', admin, async (req) => {
   const b = (req.body ?? {}) as any
   if (b.reset) clearQb()
@@ -577,16 +597,6 @@ app.put('/api/admin/settings/qb', admin, async (req) => {
 app.post('/api/admin/settings/qb/test', admin, async () => {
   try { return { ok: true, version: await qb.reconnect() } }
   catch (e: any) { throw Object.assign(new Error(`Could not connect to qBittorrent: ${e.message}`), { statusCode: 502 }) }
-})
-
-/** Set (or clear, with null = automatic) a show's content rating. */
-app.put('/api/admin/series/:id/rating', admin, async (req) => {
-  const id = Number((req.params as any).id)
-  const { rating } = req.body as any
-  if (rating !== null && !isRating(rating)) throw Object.assign(new Error('Unknown rating'), { statusCode: 400 })
-  setRating(id, rating)
-  if (rating === null) queueRating(id)
-  return { ...getRating(id) }
 })
 
 // ---- boot -------------------------------------------------------------------

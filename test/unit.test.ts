@@ -194,11 +194,21 @@ test('seasons: only the next sequential season may follow, and only when whole',
   assert.deepEqual(seasons([...s1, ep(2, 1), ep(2, 2), ep(4, 1)]).map(([n]) => n), [1, 2]) // 3 missing hides 4
 })
 
-test('seasons: packs fill seasons with no complete set of single episodes; singles win when complete', () => {
+test('seasons: packs fill seasons with no complete set of single episodes', () => {
   assert.deepEqual(seasons([pack(1)]), [[1, 'pack']])
   assert.deepEqual(seasons([pack(1), ep(1, 1), ep(1, 3)]), [[1, 'pack']]) // singles have a hole, the pack is whole
-  assert.deepEqual(seasons([pack(1), ep(1, 1), ep(1, 2)]), [[1, 'episodes']]) // complete singles are preferred
-  assert.deepEqual(seasons([ep(1, 1), pack(2)]), [[1, 'episodes'], [2, 'pack']])
+  assert.deepEqual(seasons([pack(1), ep(1, 1), ep(1, 2)]), [[1, 'pack']]) // length unknown: the pack is the whole season, two singles may not be
+  assert.deepEqual(seasons([ep(1, 1), ep(1, 2), pack(2)]), [[1, 'episodes'], [2, 'pack']]) // no pack for season 1: unbroken singles count
+})
+
+test('seasons: with the real season length known, one episode is not a season and singles only beat a pack when they reach it', () => {
+  const sizes = (o: Record<number, number>) => new Map(Object.entries(o).map(([k, v]) => [Number(k), v]))
+  const withLen = (rows: any[], o: Record<number, number>) => [...visibleSeasons(rows, sizes(o))]
+  assert.deepEqual(withLen([ep(1, 1)], { 1: 10 }), []) // only E01 of ten: not listed
+  assert.deepEqual(withLen([pack(1), ep(1, 1)], { 1: 10 }), [[1, 'pack']]) // the pack carries the season, not the lone E01
+  assert.deepEqual(withLen([pack(1), ep(1, 1), ep(1, 2)], { 1: 2 }), [[1, 'episodes']]) // singles reach the season's length
+  assert.deepEqual(withLen([ep(1, 1), ep(1, 2), ep(2, 1)], { 1: 2, 2: 8 }), [[1, 'episodes']]) // season 2 is short
+  assert.deepEqual(withLen([ep(1, 1, 2)], { 1: 2 }), [[1, 'episodes']]) // a double episode covers both
 })
 
 test('seasons: double episodes cover both numbers; specials and date shows never count', () => {
@@ -243,7 +253,7 @@ test('assertSpace refuses when the disk would fill up', async () => {
 })
 
 const { normalizeStreamer, primaryGenre } = await import('../src/networks.ts')
-const { curateHome } = await import('../src/home.ts')
+const { curateHome, ROW_SIZE } = await import('../src/home.ts')
 
 test('streaming services are recognised however a source spells them', () => {
   assert.equal(normalizeStreamer('Netflix'), 'Netflix')
@@ -251,7 +261,13 @@ test('streaming services are recognised however a source spells them', () => {
   assert.equal(normalizeStreamer('Disney Plus'), 'Disney+')
   assert.equal(normalizeStreamer('Apple TV+'), 'Apple TV+')
   assert.equal(normalizeStreamer('Apple TV'), 'Apple TV+')
-  assert.equal(normalizeStreamer('HBO'), null)
+  assert.equal(normalizeStreamer('HBO'), 'HBO')
+  assert.equal(normalizeStreamer('HBO Max'), 'HBO')
+  assert.equal(normalizeStreamer('Max'), 'HBO')
+  assert.equal(normalizeStreamer('Cinemax'), null)
+  assert.equal(normalizeStreamer('Crave'), 'Crave')
+  assert.equal(normalizeStreamer('Showcase'), 'Showcase')
+  assert.equal(normalizeStreamer('AMC'), null)
   assert.equal(normalizeStreamer(null), null)
 })
 
@@ -264,33 +280,133 @@ test('a show has one primary genre: the most specific it has', () => {
   assert.equal(primaryGenre([]), null)
 })
 
-test('home: every show once, trending then streamers newest-first, the rest under one genre', () => {
-  const row = (id: number, genres: string[], latest = id) => ({ id, name: `S${id}`, poster: `/p${id}`, banner: null, genres, latest })
-  const rows = [row(1, ['Drama', 'Crime']), row(2, ['Drama']), row(3, ['Comedy', 'Animation']), row(4, ['Drama']), row(5, ['Drama']), row(6, ['Drama']), row(7, ['Comedy']), row(8, ['Comedy']), row(9, ['Comedy']), row(10, ['Drama'])]
-  const net = new Map<number, any>([
-    [1, { streamer: 'Netflix', first_air: '2025-01-01', notable: true, trending: 2 }],   // trending AND Netflix: shown once, as trending
-    [2, { streamer: 'Netflix', first_air: '2024-06-01', notable: true, trending: null }],
-    [3, { streamer: 'Netflix', first_air: '2025-03-01', notable: true, trending: null }],
-    [4, { streamer: 'Disney+', first_air: '2023-01-01', notable: true, trending: 1 }],
-    [5, { streamer: null, first_air: '2022-01-01', notable: true, trending: null }],
-    [6, { streamer: null, first_air: '2021-01-01', notable: true, trending: null }],
-    [7, { streamer: null, first_air: '2020-01-01', notable: true, trending: null }],
-    [8, { streamer: null, first_air: '2019-01-01', notable: true, trending: null }],
-    [9, { streamer: null, first_air: '2018-01-01', notable: true, trending: null }],
-    // 10: nothing known and not notable, so it stays off the home screen
-  ])
-  const { hero, sections } = curateHome(rows, net, new Set([5]), 3)
-  assert.equal(hero?.id, 4, 'the top trending show is the billboard')
+const row = (id: number, genres: string[], latest = id) => ({ id, name: `S${id}`, poster: `/p${id}`, banner: null, genres, latest })
+const info = (streamer: string | null, first_air: string, trending: number | null = null, popularity = 10) => ({ streamer, first_air, notable: true, popularity, trending })
+
+test('home: only the six services, every row exactly ten, trending first, no show twice while there are enough', () => {
+  const rows: any[] = [], net = new Map<number, any>()
+  let id = 1
+  const add = (n: number, streamer: string | null, genre: string, trending = false) => {
+    for (let i = 0; i < n; i++, id++) { rows.push(row(id, [genre])); net.set(id, info(streamer, `20${String(10 + (id % 14))}-01-01`, trending ? id : null, id)) }
+  }
+  add(8, 'Netflix', 'Drama', true)    // trending, all on Netflix
+  add(14, 'Netflix', 'Drama')
+  add(12, 'HBO', 'Crime')
+  add(10, 'Disney+', 'Animation')
+  add(4, 'Crave', 'Comedy')            // too few for a row of its own
+  add(15, null, 'Drama')               // on none of the services: never on the home screen
+  const { hero, sections } = curateHome(rows, net)
+  assert.ok(hero && net.get(hero.id)!.trending != null, 'the billboard is a trending show')
+  for (const s of sections) assert.equal(s.series.length, ROW_SIZE, `${s.title} has ${s.series.length}`)
   const titles = sections.map((s) => s.title)
-  assert.deepEqual(titles.slice(0, 2), ['Trending now', 'New on Netflix'])
-  assert.deepEqual(sections[0].series.map((r) => r.id), [1])
-  assert.deepEqual(sections[1].series.map((r) => r.id), [3, 2], 'newest premiere first')
+  assert.equal(titles[0], 'Trending shows')
+  assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Netflix') && titles.indexOf('New on Netflix') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
+  assert.ok(!titles.includes('New on Showcase') && !titles.includes('New on Apple TV+'), 'a service with no shows has no row')
   const ids = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
-  assert.equal(new Set(ids).size, ids.length, 'no show appears twice')
-  assert.ok(!ids.includes(5), 'already shown higher up (My List)')
-  assert.ok(!ids.includes(10), 'unknown and not notable: off the home screen')
-  assert.ok(sections.some((s) => s.title === 'Comedy' && s.series.length === 3), 'the rest sit under one genre each')
-  // with too little else to show, unknown shows are let in rather than leaving the screen empty
-  const sparse = curateHome([row(10, ['Drama']), row(11, ['Drama']), row(12, ['Drama'])], new Map())
-  assert.equal(sparse.sections.flatMap((s) => s.series).length + (sparse.hero ? 1 : 0), 3)
+  assert.ok(ids.every((i) => net.get(i)!.streamer), 'nothing from outside the six services')
+  const crave = sections.find((s) => s.title === 'New on Crave')
+  assert.ok(!crave, 'four Crave shows cannot make ten, even topped up from the same service')
+})
+
+test('home: a service with a few shows is topped up from shows already shown rather than left short', () => {
+  const rows: any[] = [], net = new Map<number, any>()
+  for (let i = 1; i <= 14; i++) { rows.push(row(i, ['Drama'])); net.set(i, info('Netflix', `2020-01-${String(i).padStart(2, '0')}`, i <= 12 ? i : null)) }
+  const { sections } = curateHome(rows, net)
+  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on Netflix'])
+  for (const s of sections) assert.equal(s.series.length, ROW_SIZE)
+  const mine = new Set([1, 2, 3, 4, 5])
+  const above = curateHome(rows, net, mine).sections[0].series
+  assert.equal(above.length, ROW_SIZE)
+  assert.ok(above.slice(0, 5).every((r) => !mine.has(r.id)), 'shows already above (My List) only come back last, to fill the row')
+})
+
+test('home: genre rows only appear with ten shows not yet shown, and nothing shows when too little is known', () => {
+  const rows: any[] = [], net = new Map<number, any>()
+  for (let i = 1; i <= 90; i++) { rows.push(row(i, [i % 2 ? 'Drama' : 'Comedy'])); net.set(i, info(['HBO', 'Netflix', 'Apple TV+'][i % 3], `2021-01-${String((i % 28) + 1).padStart(2, '0')}`)) }
+  const { hero, sections } = curateHome(rows, net)
+  for (const s of sections) assert.equal(s.series.length, ROW_SIZE, s.title)
+  assert.ok(sections.some((s) => s.title === 'Drama' || s.title === 'Comedy'), 'genre rows follow the service rows')
+  const ids = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
+  const dupes = ids.length - new Set(ids).size
+  assert.ok(dupes <= 4, `repeats only come from topping up a thin row (${dupes})`)
+  const none = curateHome([row(1, ['Drama']), row(2, ['Drama'])], new Map())
+  assert.equal(none.hero, null); assert.deepEqual(none.sections, [])
+})
+
+test('library: only English-language shows, and a season is judged against its real length', async () => {
+  const { db } = await import('../src/db.ts')
+  const { listable, catalogChanged, isEnglish } = await import('../src/seasons.ts')
+  assert.ok(isEnglish('en') && isEnglish('English') && isEnglish(null) && !isEnglish('ko') && !isEnglish('Korean'))
+  const rel = db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, episode, episode_end, is_pack, info_hash, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,0)`)
+  let t = 1
+  const show = (id: number, eps: number[], opts: { pack?: boolean; lang?: string | null; counts?: Record<number, number>; read?: boolean } = {}) => {
+    for (const e of eps) rel.run(t++, id, `S${id}`, `S${id} - S01E${e}`, 1, e, e, 0, `h${t}`)
+    if (opts.pack) rel.run(t++, id, `S${id}`, `S${id} - Season 1`, 1, null, null, 1, `h${t}`)
+    db.prepare('INSERT INTO series_sync VALUES (?,0)').run(id)
+    if (opts.read !== false) db.prepare(`INSERT INTO series_net (series_id, fetched_at, lang, season_counts, ver) VALUES (?,0,?,?,2)`).run(id, opts.lang === undefined ? 'en' : opts.lang, JSON.stringify(opts.counts ?? {}))
+  }
+  show(1, [1], { counts: { 1: 10 } })                       // only E01 of ten, no pack: not a season 1
+  show(2, [1], { counts: { 1: 10 }, pack: true })           // E01 plus the pack: the pack carries it
+  show(3, [1, 2, 3], { counts: { 1: 3 } })                  // all three: fine
+  show(4, [1, 2, 3], { counts: { 1: 3 }, lang: 'ko' })      // not English
+  show(5, [1, 2, 3], { counts: { 1: 3 }, lang: 'English' })
+  show(6, [1, 2, 3], { read: false })                       // language and lengths not read yet
+  show(7, [1, 2, 3], { lang: null })                        // read, but nobody knows the language or the lengths: let through
+  catalogChanged()
+  const l = listable()
+  assert.deepEqual([...l.keys()].sort(), [2, 3, 5, 7])
+  assert.equal(l.get(2)!.get(1), 'pack')
+  assert.equal(l.get(3)!.get(1), 'episodes')
+})
+
+test('ratings: IMDb (through OMDb) is the source, TMDB the fallback, and an admin can no longer set one', async () => {
+  const { createServer } = await import('node:http')
+  const { lookupImdb } = await import('../src/ratings.ts')
+  const asked: string[] = []
+  const srv = createServer((req, res) => {
+    const u = new URL(req.url!, 'http://x'); asked.push(`${u.searchParams.get('i')}|${u.searchParams.get('apikey')}`)
+    const i = u.searchParams.get('i')
+    res.setHeader('content-type', 'application/json')
+    if (i === 'tt1') return void res.end(JSON.stringify({ Response: 'True', Rated: 'TV-MA', imdbRating: '9.5' }))
+    if (i === 'tt2') return void res.end(JSON.stringify({ Response: 'True', Rated: 'N/A', imdbRating: 'N/A' }))
+    if (i === 'tt3') return void res.end(JSON.stringify({ Response: 'False', Error: 'Invalid API key!' }))
+    res.end(JSON.stringify({ Response: 'False', Error: 'Incorrect IMDb ID.' }))
+  })
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+  const old = { ...config.omdb }
+  config.omdb.apiUrl = `http://127.0.0.1:${(srv.address() as any).port}`; config.omdb.apiKey = 'k&1'
+  try {
+    assert.deepEqual(await lookupImdb('tt1'), { rating: 'TV-MA', score: 9.5 })
+    assert.deepEqual(await lookupImdb('tt2'), { rating: null, score: null }) // IMDb has no certificate for it
+    assert.deepEqual(await lookupImdb('tt404'), { rating: null, score: null })
+    await assert.rejects(lookupImdb('tt3'), /Invalid API key/)
+    assert.equal(asked[0], 'tt1|k&1')
+  } finally { Object.assign(config.omdb, old); srv.close() }
+  const ratings = await import('../src/ratings.ts')
+  assert.ok(!('setRating' in ratings), 'ratings are always automatic')
+})
+
+test('networks: a show\'s service, language and season lengths are read (the airing season counts what has aired)', async () => {
+  const { createServer } = await import('node:http')
+  const { db } = await import('../src/db.ts')
+  const { ensureNet, netInfo } = await import('../src/networks.ts')
+  const srv = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json')
+    if (req.url!.startsWith('/find/900')) return void res.end(JSON.stringify({ tv_results: [{ id: 5 }] }))
+    if (req.url!.startsWith('/tv/5')) return void res.end(JSON.stringify({ original_language: 'en', networks: [{ name: 'Cinemax' }, { name: 'HBO' }], first_air_date: '2024-02-02', popularity: 80,
+      seasons: [{ season_number: 0, episode_count: 3 }, { season_number: 1, episode_count: 8 }, { season_number: 2, episode_count: 10 }],
+      last_episode_to_air: { season_number: 2, episode_number: 4 } }))
+    res.statusCode = 404; res.end('{}')
+  })
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+  const old = { ...config.tmdb, tvmaze: config.art.tvmazeUrl }
+  config.tmdb.apiUrl = `http://127.0.0.1:${(srv.address() as any).port}`; config.tmdb.apiKey = 'k'; config.art.tvmazeUrl = ''
+  try {
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, tvdb_id, group_name, info_hash, fetched_at) VALUES (9001, 90, 'Net Show', 900, 'Net Show - S01E01', 'hh', 0)`).run()
+    await ensureNet(90)
+    const r = db.prepare('SELECT streamer, lang, season_counts, ver FROM series_net WHERE series_id = 90').get() as any
+    assert.equal(r.streamer, 'HBO'); assert.equal(r.lang, 'en'); assert.equal(r.ver, 2)
+    assert.deepEqual(JSON.parse(r.season_counts), { 1: 8, 2: 4 })
+    assert.equal(netInfo().get(90)!.popularity, 80)
+  } finally { config.tmdb.apiUrl = old.apiUrl; config.tmdb.apiKey = old.apiKey; config.art.tvmazeUrl = old.tvmaze; srv.close() }
 })

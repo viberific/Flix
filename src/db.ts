@@ -91,4 +91,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS pack_files (
 );
 CREATE TABLE IF NOT EXISTS pack_listed (torrent_id INTEGER PRIMARY KEY, listed_at INTEGER NOT NULL);`)
 
+// What the home screen and the library rules know about each show (TMDB/TVmaze): service, premiere, popularity, spoken language, episodes per season.
+db.exec(`CREATE TABLE IF NOT EXISTS series_net (
+  series_id INTEGER PRIMARY KEY, tmdb_id INTEGER, streamer TEXT, network TEXT, first_air TEXT, popularity REAL, notable INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL
+)`)
+try { db.exec('ALTER TABLE series_net ADD COLUMN lang TEXT') } catch { /* already present */ }
+try { db.exec('ALTER TABLE series_net ADD COLUMN season_counts TEXT') } catch { /* already present */ }
+try { db.exec('ALTER TABLE series_net ADD COLUMN ver INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+
 export const now = () => Math.floor(Date.now() / 1000)

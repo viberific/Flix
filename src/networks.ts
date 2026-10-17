@@ -1,22 +1,21 @@
 import { db, now } from './db.ts'
 import { config } from './config.ts'
-import { listable } from './seasons.ts'
+import { NET_VER, catalogChanged } from './seasons.ts'
 
 /**
- * What the home screen is built from: which streaming service a show belongs to (Netflix, Disney+, Apple TV+), when it
- * premiered, how popular it is and whether it is trending. BTN knows none of that, so it comes from TMDB (needs the optional
- * key) and, for the service/premiere/popularity, from TVmaze (no key). Read in the background for every listed show.
+ * What the home screen and the library rules are built from: which streaming service a show belongs to (HBO, Crave, Showcase,
+ * Netflix, Disney+, Apple TV+), when it premiered, how popular it is, whether it is trending, what language it is in and how many
+ * episodes each season has. BTN knows none of that, so it comes from TMDB (needs the optional key) and, as a fallback, from
+ * TVmaze (no key). Read in the background for every show BTN has been fully read for (the `series_net` table lives in db.ts).
  */
 db.exec(`
-CREATE TABLE IF NOT EXISTS series_net (
-  series_id INTEGER PRIMARY KEY, tmdb_id INTEGER, streamer TEXT, network TEXT, first_air TEXT, popularity REAL, notable INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS trending_tv (tmdb_id INTEGER PRIMARY KEY, rank INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
 `)
 
-/** The services the home screen has a row for. Anything else a show is on is just "its network". */
-export const STREAMERS = ['Netflix', 'Disney+', 'Apple TV+'] as const
-const PATTERNS: [string, RegExp][] = [['Netflix', /netflix/i], ['Disney+', /disney\s*(\+|plus)|hulu originals? on disney/i], ['Apple TV+', /apple\s*tv/i]]
+/** The services the home screen is made of, in the order of its rows. A show on none of them is not on the home screen. */
+export const STREAMERS = ['HBO', 'Crave', 'Showcase', 'Netflix', 'Disney+', 'Apple TV+'] as const
+const PATTERNS: [string, RegExp][] = [['HBO', /\bhbo\b|^max$/i], ['Crave', /\bcrave\b/i], ['Showcase', /\bshowcase\b/i], ['Netflix', /netflix/i],
+  ['Disney+', /disney\s*(\+|plus)|hulu originals? on disney/i], ['Apple TV+', /apple\s*tv/i]]
 
 /** A network name as TMDB or TVmaze spells it, mapped onto one of our rows ('Disney Plus' and 'Disney+' are the same row). */
 export function normalizeStreamer(name?: string | null): string | null {
@@ -42,7 +41,7 @@ async function getJson(url: string): Promise<any> {
   return res.json()
 }
 
-interface Net { tmdb_id: number | null; streamer: string | null; network: string | null; first_air: string | null; popularity: number | null; notable: boolean }
+interface Net { lang: string | null; counts: Record<number, number>; tmdb_id: number | null; streamer: string | null; network: string | null; first_air: string | null; popularity: number | null; notable: boolean }
 
 async function tvmaze(t: { series: string; tvdb_id: number | null; imdb_id: string | null }): Promise<any | null> {
   const base = config.art.tvmazeUrl
@@ -53,7 +52,7 @@ async function tvmaze(t: { series: string; tvdb_id: number | null; imdb_id: stri
 
 async function lookup(seriesId: number): Promise<Net> {
   const t = db.prepare('SELECT series, tvdb_id, imdb_id FROM releases WHERE series_id = ? ORDER BY tvdb_id IS NULL LIMIT 1').get(seriesId) as any
-  const out: Net = { tmdb_id: null, streamer: null, network: null, first_air: null, popularity: null, notable: false }
+  const out: Net = { lang: null, counts: {}, tmdb_id: null, streamer: null, network: null, first_air: null, popularity: null, notable: false }
   if (!t) return out
   const { apiKey, apiUrl } = config.tmdb
   if (apiKey && t.tvdb_id) {
@@ -67,12 +66,22 @@ async function lookup(seriesId: number): Promise<Net> {
       out.first_air = d.first_air_date || null
       out.popularity = typeof d.popularity === 'number' ? d.popularity : null
       out.notable = (out.popularity ?? 0) >= 20
+      out.lang = d.original_language ? String(d.original_language).toLowerCase() : null
+      for (const x of d.seasons ?? []) if (x.season_number >= 1 && x.episode_count > 0) out.counts[x.season_number] = x.episode_count
+      // The season on the air has episodes still to come; "whole" for it means everything that has aired so far.
+      const aired = d.last_episode_to_air
+      if (aired?.season_number >= 1 && aired.episode_number > 0) out.counts[aired.season_number] = Math.min(out.counts[aired.season_number] ?? Infinity, aired.episode_number)
     }
   }
   // TVmaze answers without a key, and knows web channels ("Netflix") that TMDB sometimes files under a production company.
-  if (!out.streamer || out.popularity === null) {
+  if (!out.streamer || out.popularity === null || !out.lang || !Object.keys(out.counts).length) {
     const show = await tvmaze(t)
     if (show) {
+      out.lang ??= show.language ? String(show.language).toLowerCase() : null
+      if (!Object.keys(out.counts).length && show.id) {
+        const seasons = await getJson(`${config.art.tvmazeUrl}/shows/${show.id}/seasons`).catch(() => [])
+        for (const x of Array.isArray(seasons) ? seasons : []) if (x.number >= 1 && x.episodeOrder > 0) out.counts[x.number] = x.episodeOrder
+      }
       const net = show.webChannel?.name ?? show.network?.name ?? null
       out.network ??= net
       out.streamer ??= normalizeStreamer(show.webChannel?.name) ?? normalizeStreamer(show.network?.name)
@@ -86,24 +95,36 @@ async function lookup(seriesId: number): Promise<Net> {
 const failedAt = new Map<number, number>()
 let busy = false
 
+/** Read one show's service/language/season lengths and keep them. */
+async function readNet(seriesId: number) {
+  const n = await lookup(seriesId)
+  db.prepare(`INSERT OR REPLACE INTO series_net (series_id, tmdb_id, streamer, network, first_air, popularity, notable, fetched_at, lang, season_counts, ver)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(seriesId, n.tmdb_id, n.streamer, n.network, n.first_air, n.popularity, n.notable ? 1 : 0, now(), n.lang, JSON.stringify(n.counts), NET_VER)
+  catalogChanged() // the show's language and season lengths decide whether, and how much of it, is listed
+}
+
+/** For a show someone just searched for or opened: read it now unless we already have, rather than wait for the background crawl. Never throws. */
+export async function ensureNet(seriesId: number): Promise<void> {
+  if (db.prepare('SELECT 1 FROM series_net WHERE series_id = ?').get(seriesId)) return
+  await readNet(seriesId).catch((e) => console.warn(`[networks] series ${seriesId}: ${e.message}`))
+}
+
 /** Read one more show's service/premiere/popularity (newest first; a show not yet read, else the stalest). True when it did something. */
 export async function crawlNetworksOnce(): Promise<boolean> {
   if (busy) return false
   busy = true
   try {
     const skip = (id: number) => (failedAt.get(id) ?? 0) > Date.now() - 3600_000
-    const ids = [...listable().keys()]
+    const ids = (db.prepare('SELECT series_id FROM series_sync').all() as any[]).map((r) => r.series_id as number)
     if (!ids.length) return false
-    const have = new Map((db.prepare('SELECT series_id, fetched_at FROM series_net').all() as any[]).map((r) => [r.series_id as number, r.fetched_at as number]))
+    // A row written by an older version counts as unread, so it is read again for the language and season lengths.
+    const have = new Map((db.prepare('SELECT series_id, fetched_at FROM series_net WHERE ver >= ?').all(NET_VER) as any[]).map((r) => [r.series_id as number, r.fetched_at as number]))
     const latest = new Map((db.prepare('SELECT series_id, MAX(time) AS t FROM releases GROUP BY series_id').all() as any[]).map((r) => [r.series_id as number, r.t as number]))
     const byNew = (a: number, b: number) => (latest.get(b) ?? 0) - (latest.get(a) ?? 0)
     const next = ids.filter((id) => !have.has(id) && !skip(id)).sort(byNew)[0]
       ?? ids.filter((id) => (have.get(id) ?? 0) < now() - 14 * 86400 && !skip(id)).sort((a, b) => (have.get(a) ?? 0) - (have.get(b) ?? 0))[0]
     if (next === undefined) return false
-    try {
-      const n = await lookup(next)
-      db.prepare('INSERT OR REPLACE INTO series_net VALUES (?,?,?,?,?,?,?,?)').run(next, n.tmdb_id, n.streamer, n.network, n.first_air, n.popularity, n.notable ? 1 : 0, now())
-    } catch (e: any) { failedAt.set(next, Date.now()); console.warn(`[networks] series ${next}: ${e.message}`); return false }
+    try { await readNet(next) } catch (e: any) { failedAt.set(next, Date.now()); console.warn(`[networks] series ${next}: ${e.message}`); return false }
     return true
   } finally { busy = false }
 }
@@ -129,18 +150,18 @@ export async function refreshTrending(): Promise<number> {
   return ids.length
 }
 
-export function startNetworkCrawler(everyMs = 4000) {
+export function startNetworkCrawler(everyMs = 2000) {
   const tick = () => { void crawlNetworksOnce(); void refreshTrending().catch((e) => console.warn(`[networks] trending: ${e.message}`)) }
   const t = setInterval(tick, everyMs)
   t.unref()
   return t
 }
 
-export interface NetRow { streamer: string | null; first_air: string | null; notable: boolean; trending: number | null }
+export interface NetRow { streamer: string | null; first_air: string | null; notable: boolean; popularity: number; trending: number | null }
 /** Everything the home screen needs about every show we have read: service, premiere, popularity, trending rank. */
 export function netInfo(): Map<number, NetRow> {
   const m = new Map<number, NetRow>()
-  for (const r of db.prepare(`SELECT n.series_id, n.streamer, n.first_air, n.notable, t.rank FROM series_net n LEFT JOIN trending_tv t ON t.tmdb_id = n.tmdb_id`).all() as any[])
-    m.set(r.series_id, { streamer: r.streamer, first_air: r.first_air, notable: !!r.notable, trending: r.rank ?? null })
+  for (const r of db.prepare(`SELECT n.series_id, n.streamer, n.first_air, n.notable, n.popularity, t.rank FROM series_net n LEFT JOIN trending_tv t ON t.tmdb_id = n.tmdb_id`).all() as any[])
+    m.set(r.series_id, { streamer: r.streamer, first_air: r.first_air, notable: !!r.notable, popularity: r.popularity ?? 0, trending: r.rank ?? null })
   return m
 }

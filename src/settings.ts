@@ -5,6 +5,7 @@ import { config } from './config.ts'
 const envBtnKey = config.btn.apiKey
 const envQb = { ...config.qb }
 const envTmdbKey = config.tmdb.apiKey
+const envOmdbKey = config.omdb.apiKey
 
 const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value
 const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v)
@@ -13,6 +14,7 @@ const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, val
 export function loadSettings() {
   config.btn.apiKey = get('btn_api_key') || envBtnKey
   config.tmdb.apiKey = get('tmdb_api_key') || envTmdbKey
+  config.omdb.apiKey = get('omdb_api_key') || envOmdbKey
   config.qb.url = get('qb_url') ?? envQb.url
   config.qb.user = get('qb_user') ?? envQb.user
   config.qb.pass = get('qb_pass') ?? envQb.pass
@@ -41,6 +43,18 @@ export function setTmdbApiKey(key: string) {
 export function tmdbKeyStatus() {
   const saved = get('tmdb_api_key')
   const key = config.tmdb.apiKey
+  return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
+}
+
+export function setOmdbApiKey(key: string) {
+  if (key) put('omdb_api_key', key)
+  else db.prepare('DELETE FROM settings WHERE key = ?').run('omdb_api_key')
+  loadSettings()
+}
+
+export function omdbKeyStatus() {
+  const saved = get('omdb_api_key')
+  const key = config.omdb.apiKey
   return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
 }
 
