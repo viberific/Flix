@@ -10,7 +10,7 @@ It is an installable **PWA** (manifest + service worker; add it to your home scr
 **For viewers it works like Netflix:** pick a show, tap an episode, it plays. Nobody ever sees a list of releases.
 Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 1. a source that is actually alive (seeded, or already on the server's disk) beats a dead one;
-2. **1080p** is preferred, **4K (2160p)** is the fallback when there is no 1080p, then 720p, then anything else;
+2. **1080p** is preferred, then 720p, then anything else; **4K (2160p)** is a last resort, used only when nothing else is alive, because it takes far more disk;
 3. ties go to a copy already on disk (instant start), then H.264, then the most seeders.
 
 4K is always re-encoded down to 1080p for the browser. HDR sources are tone-mapped to normal colours during that re-encode (needs ffmpeg's `zscale` filter, which Flix checks for at startup of the first transcode; if the container's ffmpeg lacks it, HDR is passed through unchanged).

@@ -41,9 +41,11 @@ const { pickRelease, qualityLabel } = await import('../src/pick.ts')
 const { youtubeUrl } = await import('../src/catalog.ts')
 const c = (id: number, resolution: string, o: any = {}) => ({ torrent_id: id, resolution, codec: 'H.264', seeders: 10, size: 1, on_server: false, ...o })
 
-test('source pick: 1080p first, 4K only when there is no (living) 1080p', () => {
+test('source pick: 1080p first, then 720p, then the rest; 4K only as a last resort', () => {
   assert.equal(pickRelease([c(1, '2160p'), c(2, '1080p'), c(3, '720p')])!.torrent_id, 2)
-  assert.equal(pickRelease([c(1, '2160p'), c(3, '720p')])!.torrent_id, 1) // no 1080p -> 4K
+  assert.equal(pickRelease([c(1, '2160p'), c(3, '720p')])!.torrent_id, 3) // no 1080p -> 720p, not 4K
+  assert.equal(pickRelease([c(1, '2160p'), c(4, 'SD')])!.torrent_id, 4) // even SD beats 4K
+  assert.equal(pickRelease([c(1, '2160p'), c(3, '720p', { seeders: 0 })])!.torrent_id, 1) // nothing else alive -> 4K
   assert.equal(pickRelease([c(1, '2160p'), c(2, '1080p', { seeders: 0 })])!.torrent_id, 1) // dead 1080p is not "found"
   assert.equal(pickRelease([c(2, '1080p', { seeders: 0, on_server: true }), c(1, '2160p')])!.torrent_id, 2) // already on disk counts as alive
   assert.equal(pickRelease([c(3, '720p'), c(4, 'SD')])!.torrent_id, 3) // last resort
