@@ -74,8 +74,15 @@ function backdrop(el, banner, poster, still) {
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
 async function swap(fn) {
   window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
-  if (!rmq.matches && document.startViewTransition) { try { await document.startViewTransition(fn).updateCallbackDone; return } catch { /* fall through */ } }
-  fn()
+  let ran = false
+  const once = () => { if (!ran) { ran = true; fn() } }
+  if (!rmq.matches && document.startViewTransition) {
+    // A view transition can stall (the new page is built but never painted until something else happens), so never wait on one for long.
+    const guard = setTimeout(once, 400)
+    try { await document.startViewTransition(once).updateCallbackDone } catch { /* fall through */ }
+    clearTimeout(guard)
+  }
+  once()
 }
 
 function skeleton() {
@@ -87,13 +94,15 @@ function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
-    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off"></form>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
     <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
   if (cur) { q.value = cur; sf.classList.add('has') }
   q.oninput = () => sf.classList.toggle('has', !!q.value)
-  sf.onsubmit = (e) => { e.preventDefault(); go('#/?q=' + encodeURIComponent(q.value.trim())); q.blur() }
+  // Collapsed, the field is only as wide as its icon, so tapping it has to open (focus) the input itself.
+  sf.onclick = () => q.focus()
+  sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
   $('#av').onclick = (e) => {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
@@ -246,6 +255,7 @@ async function homeView(q) {
   const series = q ? list.series : []
   const featured = q ? null : home.hero // the billboard: top trending show, else the newest streaming original
   const items = cont.items
+  const listIds = new Set(home.listIds ?? [])
   return () => {
     let html = ''
     if (!q && (items[0] || featured)) {
@@ -253,6 +263,7 @@ async function homeView(q) {
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? (items[0]?.next ? 'Up next' : 'Continue watching') : 'Featured'}</div>
         <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? (c.next ? 'Up next · ' + esc(c.label) : esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched') : 'Tap to see episodes'}</p>
         <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} ${c.next ? 'Play' : 'Resume'}</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
+        <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
@@ -262,39 +273,53 @@ async function homeView(q) {
     if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
     else {
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
-      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet.'}</div>`
+      if (!home.sections.length && !home.myList?.length && !home.because) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
     const hs = !q && (items[0] ? { id: items[0].seriesId } : featured)
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
+    const hml = $('#hml'); if (hml) hml.onclick = async () => {
+      const on = hml.getAttribute('aria-pressed') !== 'true'
+      try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+    }
     const hp = $('#hp'); if (hp) hp.onclick = () => go(`#/play/${items[0].seriesId}/${items[0].season ?? 'x'}/${encodeURIComponent(items[0].label)}`)
   }
 }
 
 /* ---------- series ---------- */
+let ytLoading
+/** YouTube's player script (its error events tell us a video is private or unavailable), fetched the first time a trailer is played. */
+const ytApi = () => ytLoading ??= new Promise((ok, no) => {
+  if (window.YT?.Player) return ok()
+  const sc = document.createElement('script'); sc.src = 'https://www.youtube.com/iframe_api'
+  sc.onerror = () => { ytLoading = null; no(new Error('blocked')) }
+  window.onYouTubeIframeAPIReady = ok
+  document.head.append(sc)
+})
 async function seriesView(id) {
   const { series, episodes } = await api('/api/series/' + id)
   const seasons = new Map()
   for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
   const resume = episodes.find((e) => e.position > 30 && !e.watched)
   const hero = resume ?? episodes.find((e) => !e.watched && e.available)
+  const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
   return () => {
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
-      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'admin' ? 'Set by an admin' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
-        ${me.is_admin ? `<label class="dim" style="font-size:13px">Rating <select id="rsel" class="field" style="width:auto;padding:6px 10px;display:inline-block"><option value="auto">Automatic</option>${['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'Unrated'].map((r) => `<option ${series.source === 'admin' && series.rating === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}</div>
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
+        </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}${hero.title ? ' · ' + esc(hero.title) : ''}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
-        ${series.trailerId ? `<a class="trailer-link" href="#trailer" id="tl">${I.play} Trailer</a>` : `<a class="trailer-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}" target="_blank" rel="noopener noreferrer">${I.play} Find trailer on YouTube</a>`}</div></div></div></section>
+        </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
-      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
+      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <h2 class="sec">Episodes</h2><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const paint = () => {
@@ -317,16 +342,28 @@ async function seriesView(id) {
       const on = ml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
-    const loadTrailer = () => {
-      const tr = $('#tr'); if (!tr || tr.querySelector('iframe')) return
+    const ids = series.trailerIds?.length ? series.trailerIds : series.trailerId ? [series.trailerId] : []
+    const loadTrailer = async () => {
+      const tr = $('#tr'); if (!tr || tr.querySelector('iframe') || tr.dataset.busy) return
+      tr.dataset.busy = '1'
       // Loaded only on tap, so Flix never contacts YouTube until someone asks for the trailer.
-      tr.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(series.trailerId)}?autoplay=1&rel=0&playsinline=1" title="${esc(series.name)} trailer" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`
+      const search = `https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}`
+      const giveUp = () => { tr.innerHTML = `<div class="tr-fail">This trailer can’t be played here. <a href="${search}" target="_blank" rel="noopener noreferrer">Find it on YouTube</a></div>` }
+      try {
+        await ytApi()
+        tr.innerHTML = '<div id="ytp"></div>'
+        let n = 0, player
+        // 1080p is a request, not an order: YouTube lowers it when the connection or the video can't do it.
+        const hd = () => { try { player.setPlaybackQuality('hd1080') } catch { /* not offered */ } }
+        const next = () => { if (++n < ids.length) player.loadVideoById({ videoId: ids[n], suggestedQuality: 'hd1080' }); else giveUp() } // private, removed or not embeddable: the next link
+        player = new YT.Player('ytp', { videoId: ids[0], host: 'https://www.youtube-nocookie.com',
+          playerVars: { autoplay: 1, rel: 0, playsinline: 1, vq: 'hd1080' },
+          events: { onReady: hd, onStateChange: (e) => { if (e.data === 1) hd() }, onError: next } })
+      } catch { // YouTube's player script is blocked: a plain embed of the first link
+        tr.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(ids[0])}?autoplay=1&rel=0&playsinline=1&vq=hd1080" title="${esc(series.name)} trailer" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`
+      }
     }
     const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
-    const tl = $('#tl'); if (tl) tl.onclick = (e) => { e.preventDefault(); $('#tr').scrollIntoView({ behavior: smooth(), block: 'center' }); loadTrailer() }
-    const rs = $('#rsel'); if (rs) rs.onchange = async () => {
-      try { const r = await api(`/api/admin/series/${id}/rating`, { rating: rs.value === 'auto' ? null : rs.value }, 'PUT'); $('#rchip').textContent = r.rating } catch (e) { alert(e.message) }
-    }
   }
 }
 
@@ -384,10 +421,24 @@ function playView(seriesId, season, label) {
       else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
       else if (k === 'ArrowDown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1) }
       else if (k === 'm') v.muted = !v.muted
+      else if (k === 'z') setFill(!fill)
       else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : pl.requestFullscreen?.()
       else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') go(`#/series/${seriesId}`)
       wake()
     }
+    // Pinch out to fill the screen (the edges are cropped a little), pinch in to fit it again; Z does the same on a keyboard. Remembered on this device.
+    // object-fit rather than a zoom, so the captions stay inside the screen.
+    let fill = store.get('fill', false), pinch = null
+    const setFill = (on) => { fill = on; store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
+    const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+    pl.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), done: false } }, { passive: true, capture: true })
+    pl.addEventListener('touchmove', (e) => {
+      if (!pinch || e.touches.length !== 2) return
+      e.preventDefault() // not the page's own pinch-zoom
+      const k = spread(e.touches) / pinch.d
+      if (!pinch.done && (k > 1.15 || k < 0.87)) { pinch.done = true; setFill(k > 1) }
+    }, { passive: false, capture: true })
+    pl.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null }, { passive: true, capture: true })
     addEventListener('keydown', key)
     cleanup = () => { alive = false; clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
 
@@ -460,6 +511,7 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
         v = $('video')
+        if (fill) v.style.objectFit = 'cover'
         const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
         v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake(); for (const id of ['b10', 'f10']) $('#' + id).hidden = false }, { once: true })
@@ -471,8 +523,8 @@ function playView(seriesId, season, label) {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           skipCheck()
           const dur = info?.duration || v.duration
-          if (!prefetched && dur && (v.currentTime > 120 || v.currentTime / dur > 0.15)) {
-            prefetched = true // start fetching the next episode now, so "Up next" is instant
+          if (!prefetched && dur && v.currentTime / dur > 0.5) {
+            prefetched = true // halfway through: line up the next episode, so "Up next" is instant
             api('/api/prefetch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label }).catch(() => {})
           }
         }
@@ -491,14 +543,14 @@ function playView(seriesId, season, label) {
       v.play?.().catch(() => {})
     }
 
-    function report() {
+    function report(ended) {
       if (!v || !play) return
       if (!isFinite(v.duration) && !info?.duration) return
-      api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration }).catch(() => {})
+      api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
     }
 
     function onEnded() {
-      report()
+      report(true)
       if (!play.next) return go(`#/series/${seriesId}`)
       const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
       const box = document.createElement('div'); box.className = 'p-next'
@@ -612,65 +664,131 @@ async function adminView(tab = 'downloads') {
 const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
 const ago = (t) => { const d = Math.floor(Date.now() / 1000) - t; return d < 3600 ? Math.max(1, Math.round(d / 60)) + ' min ago' : d < 86400 ? Math.round(d / 3600) + ' h ago' : Math.round(d / 86400) + ' d ago' }
 
+/** Twelve months of the space Flix's downloads take: an SVG line with a hover crosshair, and the same numbers as a table. */
+function storageChart(el, h) {
+  const pts = h.points
+  const W = Math.max(300, el.clientWidth || 720), H = 220, L = 46, R = 14, T = 14, B = 26 // drawn at the real width, so text is never stretched
+  const max = Math.max(...pts.map((p) => p[1]), 1)
+  const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000].map((g) => g * 1e9).find((s) => max * 1.08 / s <= 4) ?? 1e13
+  const top = Math.max(step, Math.ceil((max * 1.05) / step) * step)
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0]
+  const x = (t) => L + ((t - t0) / (t1 - t0 || 1)) * (W - L - R)
+  const y = (b) => T + (1 - b / top) * (H - T - B)
+  const unit = (b) => (top >= 1e12 ? (b / 1e12).toFixed(1) + ' TB' : Math.round(b / 1e9) + ' GB')
+  const line = (list) => list.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)} ${y(p[1]).toFixed(1)}`).join('')
+  // Before real measuring began the line is an estimate (from when downloads were added and removed): drawn dashed.
+  const cut = h.since ? pts.findIndex((p) => p[0] >= h.since) : -1
+  const est = cut === -1 ? pts : pts.slice(0, cut + 1), real = cut === -1 ? [] : pts.slice(cut)
+  const yTicks = []; for (let v = 0; v <= top + 1; v += step) yTicks.push(v)
+  const months = []
+  for (let d = new Date(t0 * 1000), m = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); m.getTime() / 1000 < t1; m = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1))) months.push(m)
+  const narrow = W < 520
+  const fmt = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  const first = pts.findIndex((p) => p[1] > 0)
+  const summary = first === -1 ? 'Nothing has been downloaded in the last 12 months.' : `Now ${unit(pts[pts.length - 1][1])}; the most was ${unit(max)} over the last 12 months.`
+  el.innerHTML = `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Space used by downloads over the last 12 months. ${esc(summary)}">
+      ${yTicks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="ax" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${unit(v)}</text>`).join('')}
+      ${months.map((m, i) => (narrow && i % 2 ? '' : `<text class="ax" x="${x(m.getTime() / 1000).toFixed(1)}" y="${H - 6}" text-anchor="middle">${m.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC' })}</text>`)).join('')}
+      <path class="area" d="${line(pts)}L${x(t1).toFixed(1)} ${y(0)}L${x(t0).toFixed(1)} ${y(0)}Z"/>
+      ${est.length > 1 ? `<path class="ln est" d="${line(est)}"/>` : ''}${real.length > 1 ? `<path class="ln" d="${line(real)}"/>` : ''}
+      <g id="cx" hidden><line class="cross" y1="${T}" y2="${H - B}"/><circle r="5" class="dot"/></g>
+      <rect class="hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"/></svg><div class="tip" id="ctip" hidden></div></div>
+    <div class="dim chart-note">${esc(summary)}${!h.since ? ' Estimated from when downloads were added and removed.' : h.since > t0 ? ` Dashed: estimated from when downloads were added and removed, before ${esc(fmt(h.since))}.` : ''}</div>
+    <details class="hist"><summary>View as a table</summary><div class="card-box"><table class="plain"><thead><tr><th>Month end</th><th>Space used</th></tr></thead><tbody>${months.concat([new Date(t1 * 1000)]).slice(-13).map((m, i, a) => {
+      const at = i === a.length - 1 ? t1 : m.getTime() / 1000 - 1, p = [...pts].reverse().find((q) => q[0] <= at) ?? pts[0]
+      return `<tr><td>${i === a.length - 1 ? 'Now' : m.toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' })}</td><td>${gb(p[1])}</td></tr>`
+    }).join('')}</tbody></table></div></details>`
+  const svg = $('svg', el), cx = $('#cx', el), tip = $('#ctip', el), box = $('.chart', el)
+  const move = (e) => {
+    const r = svg.getBoundingClientRect(), t = t0 + (((e.clientX - r.left) / r.width) * W - L) / (W - L - R) * (t1 - t0)
+    const p = pts.reduce((best, q) => (Math.abs(q[0] - t) < Math.abs(best[0] - t) ? q : best), pts[0])
+    cx.hidden = false; $('.cross', cx).setAttribute('x1', x(p[0])); $('.cross', cx).setAttribute('x2', x(p[0]))
+    const dot = $('.dot', cx); dot.setAttribute('cx', x(p[0])); dot.setAttribute('cy', y(p[1]))
+    tip.hidden = false; tip.innerHTML = `<b>${gb(p[1])}</b><span>${esc(fmt(p[0]))}${!h.since || p[0] < h.since ? ' · estimated' : ''}</span>`
+    const px = (x(p[0]) / W) * box.clientWidth
+    tip.style.left = Math.min(Math.max(px, 70), box.clientWidth - 70) + 'px'
+  }
+  const hide = () => { cx.hidden = true; tip.hidden = true }
+  const hit = $('.hit', el); hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move); hit.addEventListener('pointerleave', hide)
+}
+
 function downloadsPanel(data, root) {
   const req = data.requirements
   root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
-    <p class="dim" style="max-width:66ch">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded for <b style="color:var(--fg)">${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first, and Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
-    <div id="tstat"></div><div id="trep"></div><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
-  const status = (d, h) => {
-    const disk = d.disk, low = disk && disk.free < d.minFreeGb * 2.5e9
-    const rows = (h?.issues ?? []).map((i) => `<li class="iss ${i.level}"><b>${esc(i.title)}</b><span>${esc(i.detail)}</span>${i.link ? `<a href="${esc(i.link)}">Fix</a>` : ''}</li>`).join('')
-    $('#tstat').innerHTML = `<div class="statusbox">${disk ? `<div class="meter wide ${low ? '' : 'met'}"><span>Storage: ${gb(disk.free)} free of ${gb(disk.total)}${low ? ' (getting low)' : ''}</span><div class="m"><i style="width:${Math.round(((disk.total - disk.free) / disk.total) * 100)}%"></i></div></div>` : ''}
-      ${rows ? `<ul class="issues">${rows}</ul>` : '<div class="dim">Everything looks healthy.</div>'}${h?.backup ? `<div class="dim" style="font-size:12px">Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}</div>` : ''}</div>`
+    <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it to the end. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
+    <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
+    <div id="trep"></div>
+    <h2 class="sec">Downloads</h2><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+  const shortName = (x) => esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name)
+  const storage = (d, h) => {
+    const disk = d.disk, pct = disk ? Math.round((disk.free / disk.total) * 100) : 100
+    const state = !disk ? '' : disk.free < Math.max(d.minFreeGb * 1e9, (d.minFreePct / 100) * disk.total) ? ['bad', 'Almost full'] : pct < d.warnFreePct ? ['warn', 'Getting low'] : ['ok', 'Healthy']
+    const issues = (h?.issues ?? []).map((i) => `<li class="iss ${i.level}"><b>${esc(i.title)}</b><span>${esc(i.detail)}</span>${i.link ? `<a href="${esc(i.link)}">Fix</a>` : ''}</li>`).join('')
+    // Everything finished that could go, biggest first. Torrents still short of their seeding goal are listed but cannot be removed (BTN's rule).
+    const fin = disk && state[0] !== 'ok' ? d.downloads.filter((x) => x.state === 'active' && !x.missing && x.left === 0).sort((a, b) => b.size - a.size) : []
+    const ok = fin.filter((x) => x.seedMet), wait = fin.filter((x) => !x.seedMet)
+    const row = (x, action) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}${x.is_pack ? ' · whole season' : ''}</span><div class="dim sm">${action.note}</div></div><span class="size">${gb(x.size)}</span>${action.btn ?? '<span></span>'}</li>`
+    const space = fin.length ? `<div class="sub-h">Free up space</div>
+      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${pct}% is free. Below ${d.minFreePct}% new shows are refused; below ${d.autoPausePct}% nothing is fetched ahead of time. ${ok.length ? `Removing everything under “Ready to remove” frees ${gb(ok.reduce((s, x) => s + x.size, 0))}.` : 'Nothing can be removed right now.'}</p>
+      ${ok.length ? `<div class="dim sm cap">Ready to remove</div><ul class="trows">${ok.map((x) => row(x, { note: x.waitingFor?.length ? `Seeding goal met · ${esc(x.waitingFor.join(', '))} hasn’t finished it` : 'Seeding goal met · everyone is done', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">${x.waitingFor?.length ? 'Remove anyway' : 'Remove'}</button>` })).join('')}</ul>` : ''}
+      ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}` : ''
+    $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
+    $('#tinfo').innerHTML = `${space}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
+      <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
   }
+  let chartData = null, lastHealth = data.health
   const meter = (label, v, max, met) => `<div class="meter wide${met ? ' met' : ''}"><span>${label}</span><div class="m"><i style="width:${Math.min(100, (v / max) * 100)}%"></i></div></div>`
   const card = (x, kind) => {
-    const title = esc(x.series), sub = esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name) + (x.resolution ? ' · ' + esc(x.resolution) : '') + (x.is_pack ? ' · whole season' : '')
+    const sub = shortName(x) + (x.resolution ? ' · ' + esc(x.resolution) : '') + (x.is_pack ? ' · whole season' : '') + (x.origin === 'auto' ? ' · fetched ahead of time' : x.origin === 'adopted' ? ' · from your Downloads folder' : '')
     let badge, body = ''
-    if (x.missing) { badge = '<span class="badge warn">not in qBittorrent</span>'; body = '<div class="dim">Flix lost track of this torrent in the download engine; it will be tidied up shortly.</div>' }
+    if (x.missing) { badge = '<span class="badge warn">Missing</span>'; body = '<div class="dim sm">Flix lost track of this torrent in the download engine; it will be tidied up shortly.</div>' }
     else if (kind === 'dl') {
       badge = `<span class="badge info">Downloading ${Math.round(x.progress * 100)}%</span>`
       body = `<div class="meter wide met"><span>${gb(x.size * x.progress)} of ${gb(x.size)}${x.dlspeed ? ' · ' + mbps(x.dlspeed) : ''}${x.eta && x.dlspeed ? ' · ' + dur(x.eta) + ' left' : ''}${!x.dlspeed ? ' · waiting for peers (' + x.seeds + ' seeders)' : ''}</span><div class="m"><i style="width:${x.progress * 100}%"></i></div></div>`
     } else {
-      badge = x.seedMet ? '<span class="badge ok">Seeding requirement met</span>' : '<span class="badge warn">Seeding · not there yet</span>'
+      badge = x.seedMet ? '<span class="badge ok">Goal met</span>' : '<span class="badge warn">Seeding</span>'
       body = `<div class="meters">${meter(`Ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1`, x.ratio, req.minRatio, x.ratio >= req.minRatio)}${meter(`${x.seedHours.toFixed(1)} h of ${req.minHours} h seeded`, x.seedHours, req.minHours, x.seedHours >= req.minHours)}</div>
-        <div class="dim" style="font-size:13px">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
+        <div class="dim sm">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
     }
     const rs = (x.reasons || []).filter((r) => !/^BTN seeding/.test(r) && r !== 'still downloading')
-    const why = x.deletable ? '<div class="dim" style="font-size:13px">Done: will be removed on the next sweep.</div>' : rs.length ? `<div class="dim" style="font-size:13px">Kept: ${esc(rs.join(' · '))}</div>` : ''
-    return `<div class="tcard rise"><div class="thead"><div><b>${title}</b><div class="dim" style="font-size:13px">${sub}</div></div>${badge}</div>${body}${why}
-      <div class="tfoot"><span class="dim" style="font-size:12px">Added ${ago(x.added_at)}</span><button class="btn" data-rm="${x.torrent_id}" style="padding:7px 12px">Remove</button></div></div>`
+    const why = x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : ''
+    return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
+      <div class="tfoot"><span class="dim sm">Added ${ago(x.added_at)}</span><button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button></div></div>`
   }
   const draw = (d) => {
     const act = d.downloads.filter((x) => x.state === 'active'), gone = d.downloads.filter((x) => x.state !== 'active')
     const dl = act.filter((x) => !x.missing && x.left > 0), seed = act.filter((x) => !x.missing && x.left === 0 && !x.seedMet), done = act.filter((x) => !x.missing && x.left === 0 && x.seedMet), miss = act.filter((x) => x.missing)
-    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding, goal not yet met'], [done.length, 'seeding goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
-    const sec = (title, list, kind) => list.length ? `<h2 class="sec">${title}</h2><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
+    storage(d, lastHealth)
+    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding'], [done.length, 'goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
+    const sec = (title, list, kind) => list.length ? `<div class="sub-h">${title}</div><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
     $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
-      + sec('Downloading', dl, 'dl') + sec('Seeding: requirement not met yet', seed, 'seed') + sec('Requirement met', done, 'seed') + sec('Needs attention', miss, 'dl')
-    $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><div class="card-box"><table><tbody>${gone.slice(0, 50).map((x) => `<tr><td><b>${esc(x.series)}</b><br><span class="dim">${esc(x.group_name)}</span></td><td class="dim">${esc(x.remove_reason || '')}</td><td class="dim">${x.removed_at ? ago(x.removed_at) : ''}</td></tr>`).join('')}</tbody></table></div></details>` : ''
+      + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
+    $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><ul class="trows">${gone.slice(0, 50).map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}</span><div class="dim sm">${esc(x.remove_reason || '')}</div></div><span class="size dim">${x.removed_at ? ago(x.removed_at) : ''}</span><span></span></li>`).join('')}</ul></details>` : ''
     root.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
-      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')) } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until seeded' : 'Failed'; b.disabled = true }
+      try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
     })
   }
   const reports = (list) => {
-    $('#trep').innerHTML = list.length ? `<h2 class="sec">Reported problems</h2><div class="rep-list">${list.map((r) => `<div class="rep"><div><b>${esc(r.series || 'Unknown show')}</b> ${esc(r.label || '')}
-        <small>· ${esc(r.user || '?')} · ${ago(r.created_at)} · ${r.kind === 'auto' ? 'failed on its own' : 'reported by a viewer'}</small>
-        <div class="dim" style="font-size:13px">${r.group_name ? esc(r.group_name) + ' · ' + esc(r.resolution || '') + ' · ' + (r.seeders ?? 0) + ' seeders' : ''}${r.message ? ' · ' + esc(r.message) : ''}</div></div>
-        <button class="btn" data-dis="${r.id}" style="padding:7px 12px">Dismiss</button></div>`).join('')}</div>
-      <button class="btn" data-dis="all" style="margin-top:10px;padding:7px 12px">Dismiss all</button>` : ''
+    $('#trep').innerHTML = list.length ? `<h2 class="sec">Reported problems</h2><ul class="trows">${list.map((r) => `<li class="trow"><div><b>${esc(r.series || 'Unknown show')}</b> <span class="dim">${esc(r.label || '')}</span>
+        <div class="dim sm">${esc(r.user || '?')} · ${ago(r.created_at)} · ${r.kind === 'auto' ? 'failed on its own' : 'reported by a viewer'}${r.group_name ? ' · ' + esc(r.group_name) + ' · ' + esc(r.resolution || '') + ' · ' + (r.seeders ?? 0) + ' seeders' : ''}${r.message ? ' · ' + esc(r.message) : ''}</div></div><span></span>
+        <button class="btn sm-btn" data-dis="${r.id}">Dismiss</button></li>`).join('')}</ul>
+      <button class="btn sm-btn" data-dis="all" style="margin-top:10px">Dismiss all</button>` : ''
     $('#trep').querySelectorAll('[data-dis]').forEach((b) => b.onclick = async () => {
       await api('/api/admin/reports/resolve', { id: b.dataset.dis === 'all' ? 'all' : +b.dataset.dis }).catch(() => {})
       reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
     })
   }
-  draw(data); status(data, data.health); reports(data.reports ?? [])
+  const loadChart = async () => { chartData = await api('/api/admin/storage').catch(() => chartData); if (chartData) storageChart($('#tchart'), chartData) }
+  draw(data); reports(data.reports ?? []); loadChart()
   const t = setInterval(async () => {
-    const d = await api('/api/admin/downloads').catch(() => data); draw(d)
-    status(d, await api('/api/admin/health').catch(() => data.health))
+    const d = await api('/api/admin/downloads').catch(() => data)
+    lastHealth = await api('/api/admin/health').catch(() => lastHealth); draw(d)
     reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
   }, 15000)
-  cleanup = () => clearInterval(t)
+  const t2 = setInterval(loadChart, 300000)
+  let rz; const onResize = () => { clearTimeout(rz); rz = setTimeout(() => chartData && storageChart($('#tchart'), chartData), 150) }
+  addEventListener('resize', onResize)
+  cleanup = () => { clearInterval(t); clearInterval(t2); clearTimeout(rz); removeEventListener('resize', onResize) }
 }
 
 function familyPanel(data, root) {
@@ -680,7 +798,7 @@ function familyPanel(data, root) {
   const paint = () => {
     root.innerHTML = `<h1 style="font-size:32px">Family</h1>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
-      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up automatically yet. Set <code>TMDB_API_KEY</code>, or set each show\'s rating yourself on its page.</p>'}
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
         <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
@@ -751,7 +869,7 @@ function familyPanel(data, root) {
 }
 
 function settingsPanel(data, root) {
-  let btn = data.btn, qbs = data.qb, tm = data.tmdb
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
@@ -761,8 +879,14 @@ function settingsPanel(data, root) {
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="bm" role="status"></div></form>
-      <h2 class="sec">TMDB (optional)</h2>
-      <p class="dim" style="max-width:66ch">A free TMDB v3 API key lets Flix look up each show's content rating (TV-Y to TV-MA) automatically. Without one, you set ratings by hand on each show's page.</p>
+      <h2 class="sec">Ratings from IMDb</h2>
+      <p class="dim" style="max-width:66ch">Every show's content rating (TV-Y to TV-MA) and IMDb score are looked up automatically, through OMDb, which serves IMDb's data. Get a free key at omdbapi.com (it must be activated from the email they send). Without it Flix falls back to TMDB for the rating, and shows are Unrated when neither knows.</p>
+      <form id="of" class="person"><div class="dim">${om.configured ? `Key set (ends in <code>${esc(om.hint)}</code>)${om.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste OMDb API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="ot" ${om.configured ? '' : 'disabled'}>Test connection</button>${om.source === 'settings' ? '<button type="button" class="btn" id="oc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="om" role="status"></div></form>
+      <h2 class="sec">TMDB (recommended)</h2>
+      <p class="dim" style="max-width:66ch">A free TMDB v3 API key tells Flix which service each show is on, its language and season lengths, what is trending, and supplies summaries and artwork. It is also the fallback for content ratings.</p>
       <form id="tf" class="person"><div class="dim">${tm.configured ? `Key set (ends in <code>${esc(tm.hint)}</code>)${tm.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
@@ -787,6 +911,21 @@ function settingsPanel(data, root) {
     $('#bt').onclick = async () => {
       msg('Testing…')
       try { const r = await api('/api/admin/settings/btn/test', {}); msg(r.username ? `Connected as ${r.username}.` : 'Connected.') } catch (err) { msg(err.message) }
+    }
+    const omsg = (t) => { $('#om').textContent = t }
+    $('#of').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return omsg('Paste a key first.')
+      try { om = (await api('/api/admin/settings/omdb', { apiKey: key }, 'PUT')).omdb; paint(); $('#om').textContent = 'Saved. Use Test connection to check it.' } catch (err) { omsg(err.message) }
+    }
+    $('#ot').onclick = async () => {
+      omsg('Testing…')
+      try { await api('/api/admin/settings/omdb/test', {}); omsg('OMDb accepted the key.') } catch (err) { omsg(err.message) }
+    }
+    const oc = $('#oc')
+    if (oc) oc.onclick = async () => {
+      if (oc.dataset.sure !== '1') { oc.dataset.sure = '1'; oc.textContent = 'Tap again to remove'; setTimeout(() => { oc.dataset.sure = ''; oc.textContent = 'Remove saved key' }, 4000); return }
+      try { om = (await api('/api/admin/settings/omdb', { apiKey: '' }, 'PUT')).omdb; paint() } catch (err) { omsg(err.message) }
     }
     const tmsg = (t) => { $('#tm').textContent = t }
     $('#tf').onsubmit = async (e) => {
@@ -906,7 +1045,8 @@ async function route() {
   if (!me || parts[0] === 'signin') { if (token === navToken) return swap(authView(!me && st.needsSetup)); return }
   // A shared device asks who is watching each time the app is opened.
   if (profiles().length > 1 && !picked() && parts[0] !== 'play') { markPicked(); return swap(profilesView()) }
-  const slow = app.innerHTML.trim() ? null : setTimeout(() => { if (token === navToken) app.innerHTML = skeleton() }, 200)
+  // Opening a show can take a moment on the server. Show the placeholder at once rather than leave the old page up, which looks like the tap did nothing.
+  const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton() } }, app.innerHTML.trim() ? 120 : 200)
   try {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])

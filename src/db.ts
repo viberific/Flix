@@ -91,4 +91,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS pack_files (
 );
 CREATE TABLE IF NOT EXISTS pack_listed (torrent_id INTEGER PRIMARY KEY, listed_at INTEGER NOT NULL);`)
 
+// What the home screen and the library rules know about each show (TMDB/TVmaze): service, premiere, popularity, spoken language, episodes per season.
+db.exec(`CREATE TABLE IF NOT EXISTS series_net (
+  series_id INTEGER PRIMARY KEY, tmdb_id INTEGER, streamer TEXT, network TEXT, first_air TEXT, popularity REAL, notable INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL
+)`)
+try { db.exec('ALTER TABLE series_net ADD COLUMN lang TEXT') } catch { /* already present */ }
+try { db.exec('ALTER TABLE series_net ADD COLUMN season_counts TEXT') } catch { /* already present */ }
+try { db.exec('ALTER TABLE series_net ADD COLUMN ver INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+
+// Where a download came from: 'flix' (someone pressed play), 'auto' (started ahead of time) or 'adopted' (already in the Downloads folder, outside Flix).
+try { db.exec(`ALTER TABLE downloads ADD COLUMN origin TEXT NOT NULL DEFAULT 'flix'`) } catch { /* already present */ }
+// 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 30 days.
+try { db.exec('ALTER TABLE interests ADD COLUMN auto INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+
+// How much disk Flix's downloads take, sampled hourly, for the 12-month graph on the Torrents page.
+db.exec('CREATE TABLE IF NOT EXISTS storage_samples (ts INTEGER PRIMARY KEY, bytes INTEGER NOT NULL)')
+
 export const now = () => Math.floor(Date.now() / 1000)

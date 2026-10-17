@@ -6,22 +6,24 @@ import { fileURLToPath } from 'node:url'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setSessionCookie, tvToken, userCount, userFor, userForTvToken } from './auth.ts'
-import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, isRating, parseAllowed, queueRating, ratingClause, setRating } from './ratings.ts'
+import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, qbStatus, setBtnApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
+import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
-import { artPathSql, getArt, getStill } from './art.ts'
+import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
-import { curateHome } from './home.ts'
-import { netInfo, startNetworkCrawler } from './networks.ts'
+import { ROW_SIZE, curateHome } from './home.ts'
+import { storageHistory } from './storage.ts'
+import { autoForListed, autoNext, startAutoDownloads } from './autodl.ts'
+import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -120,7 +122,7 @@ const notFound = (m = 'Series not found') => Object.assign(new Error(m), { statu
 const isListed = (r: { id: number }) => listable().has(r.id)
 
 /** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
-const ensureSynced = (id: number) => syncSeries(id).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
+const ensureSynced = (id: number) => syncSeries(id).then(() => ensureNet(id)).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
 
 app.get('/api/series', auth, async (req) => {
   const { q } = req.query as { q?: string }
@@ -129,8 +131,8 @@ app.get('/api/series', auth, async (req) => {
       WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
   if (q && q.trim().length >= 2) {
     await searchBtn(q.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
-    // A search only brings back some of a show's releases; read the rest of the top few matches so their seasons can be judged.
-    const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id)).slice(0, 5)
+    // A search only brings back some of a show's releases; read the rest of the top few matches (and their language and season lengths) so their seasons can be judged.
+    const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id) || !db.prepare('SELECT 1 FROM series_net WHERE series_id = ?').get(r.id)).slice(0, 5)
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
   }
   const rows = query().filter(isListed).slice(0, 100)
@@ -158,10 +160,12 @@ app.get('/api/series/:id', auth, async (req) => {
   let genres: string[] = []
   try { genres = JSON.parse(info.genres ?? '[]') } catch { /* none */ }
   const { trailer, ...rest } = info
-  const trailerId = youtubeId(trailer) ?? youtubeId(d?.trailer)
+  // Checked trailers first (BTN's own link is only used while none are known: it can be private or removed). The player tries them in turn.
+  const trailerIds = d?.trailers.length ? d.trailers : [youtubeId(trailer) ?? youtubeId(d?.trailer)].filter((x): x is string => !!x)
+  const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   return {
-    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
+    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: withInfo(id, buildEpisodes(id, req.user!.id)),
   }
 })
@@ -171,7 +175,7 @@ function withInfo<T extends { season: number | null; episode: number | null }>(s
   const info = episodeInfoFor(seriesId)
   return eps.map((e) => {
     const i = e.season !== null && e.episode !== null ? info.get(`${e.season}|${e.episode}`) : undefined
-    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: i?.still ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null }
+    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: e.season !== null && e.episode !== null ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null } // always asked for: the server falls back to the show's artwork
   })
 }
 
@@ -188,11 +192,12 @@ const NEW_DAYS = 7
 const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[]') as any[]).map((x) => String(x).trim()).filter(Boolean) } catch { return [] } }
 
 /**
- * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from Netflix,
- * Disney+ and Apple TV+, then the rest under one genre each. A show appears once on the whole screen (see home.ts).
+ * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from HBO,
+ * Crave, Showcase, Netflix, Disney+ and Apple TV+, then more of those under one genre each. Discovery rows hold ten shows (see home.ts).
  */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
+  const net = netInfo()
   const all = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 1500)
   all.forEach((r) => { r.genres = genresOf(r) })
@@ -215,14 +220,15 @@ app.get('/api/home', auth, async (req) => {
   if (base) {
     const mine = new Set<string>(base.genres)
     const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
-    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id)).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length })).filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, 20).map((x) => clean(x.r))
-    if (rec.length >= 2) { because = { name: base.name, series: rec }; rec.forEach((r) => taken.add(r.id)) }
+    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && net.get(r.id)?.streamer).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length })).filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, ROW_SIZE).map((x) => clean(x.r))
+    if (rec.length === ROW_SIZE) { because = { name: base.name, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
   // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
   const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
-  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), netInfo(), taken)
-  return { hero: hero && clean(hero), sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
+  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), net, taken)
+  const listIds = listed.map((l) => l.series_id)
+  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
 })
 
 /** Add or remove a show from the viewer's own list. */
@@ -232,6 +238,7 @@ app.post('/api/mylist', auth, async (req) => {
   if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
   if (on) db.prepare('INSERT OR IGNORE INTO my_list (user_id, series_id, added_at, seen_at) VALUES (?,?,?,(SELECT MAX(time) FROM releases WHERE series_id = ?))').run(req.user!.id, id, now(), id)
   else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
+  if (on) void autoForListed(req.user!.id, id) // its first unwatched episode starts downloading, within the pre-download limits
   return { inList: !!on }
 })
 
@@ -245,6 +252,15 @@ const torrentGuard = async (req: any, reply: any) => {
   if (sid !== undefined && !canViewSeries(req.user, sid)) return reply.code(404).send({ error: 'Not found' })
 }
 const guarded = { preHandler: [requireUser, torrentGuard] }
+
+/** A cast member's photo from our own cache. */
+app.get('/api/cast/:id/:i', auth, async (req, reply) => {
+  const { id, i } = req.params as any
+  if (!canViewSeries(req.user, Number(id))) return reply.code(404).send({ error: 'no image' })
+  const art = await getCastPhoto(Number(id), Number(i))
+  if (!art) return reply.code(404).send({ error: 'no image' })
+  return reply.type(art.type).header('cache-control', 'private, max-age=604800').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
+})
 
 /** Artwork is served from our own cache; the browser never talks to BTN's image host. */
 app.get('/api/art/:id/:kind', auth, async (req, reply) => {
@@ -286,19 +302,11 @@ app.post('/api/watch', auth, async (req) => {
   return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
-const prefetched = new Map<string, number>()
-/** While one episode plays, start fetching the next so "Up next" is instant. Quiet by design: failures are ignored. */
+/** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */
 app.post('/api/prefetch', auth, async (req) => {
   const { seriesId, season, label } = req.body as any
   if (!canViewSeries(req.user, Number(seriesId))) return { ok: false }
-  const eps = buildEpisodes(Number(seriesId), req.user!.id)
-  const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
-  const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
-  if (!next) return { ok: false }
-  const key = `${req.user!.id}:${next.torrentId}:${next.label}`
-  if ((prefetched.get(key) ?? 0) > Date.now() - 600_000) return { ok: true }
-  prefetched.set(key, Date.now())
-  startPlayback(req.user!.id, next.torrentId, undefined, { episodeLabel: next.isPack && next.episode === null ? undefined : next.label }).catch((e) => app.log.info(`prefetch skipped: ${e.message}`))
+  void autoNext(req.user!.id, Number(seriesId), season ?? null, String(label ?? ''))
   return { ok: true }
 })
 
@@ -413,9 +421,11 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
 
 // ---- watch state ------------------------------------------------------------
 app.post('/api/progress', auth, async (req) => {
-  const { torrentId, fileIndex, position, duration } = req.body as any
+  const { torrentId, fileIndex, position, duration, ended } = req.body as any
   const frac = duration > 0 ? position / duration : 0
-  const done = frac >= config.watchedThreshold
+  // "Watched" means played to the end: the player says so when the video ends, and the last few seconds count as the end
+  // (the reported length and the playing position rarely agree to the frame). Anything less keeps the file for the viewer.
+  const done = !!ended || (config.watchedThreshold >= 1 ? duration > 0 && duration - position <= 3 : frac >= config.watchedThreshold)
   db.prepare(`UPDATE interests SET position=?, duration=?, updated_at=?, watched_at = CASE WHEN ? THEN COALESCE(watched_at, ?) ELSE watched_at END
     WHERE user_id=? AND torrent_id=? AND file_index=?`).run(position, duration, now(), done ? 1 : 0, now(), req.user!.id, torrentId, fileIndex)
   return { watched: done }
@@ -437,7 +447,7 @@ app.post('/api/release', auth, async (req) => {
 // ---- admin ------------------------------------------------------------------
 const admin = { preHandler: requireAdmin }
 app.get('/api/admin/downloads', admin, async () => {
-  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, r.series, r.group_name, r.resolution, r.is_pack
+  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, d.origin, r.series, r.group_name, r.resolution, r.is_pack
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id ORDER BY d.added_at DESC LIMIT 200`).all() as any[]
   const out = []
   for (const d of rows) {
@@ -449,7 +459,7 @@ app.get('/api/admin/downloads', admin, async () => {
       engineState: t.state, eta: t.eta ?? null, left: t.amount_left,
       ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending })
   }
-  return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb }
+  return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
 })
 /** A viewer tapped "Something's wrong", or playback failed on its own. Quiet duplicates are dropped. */
 app.post('/api/report', auth, async (req) => {
@@ -474,6 +484,7 @@ app.post('/api/admin/reports/resolve', admin, async (req) => {
   return { ok: true }
 })
 app.get('/api/admin/health', admin, async () => ({ issues: await health(), backup: lastBackup() }))
+app.get('/api/admin/storage', admin, async () => ({ ...storageHistory(), disk: diskInfo() }))
 app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const id = Number((req.params as any).id)
   const d = db.prepare(`SELECT info_hash FROM downloads WHERE torrent_id=? AND state='active'`).get(id) as any
@@ -490,7 +501,7 @@ const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admi
 
 app.get('/api/admin/users', admin, async () => ({
   users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash FROM users ORDER BY id').all() as any[]).map(userRow),
-  ratings: RATINGS, ratingLookup: !!config.tmdb.apiKey,
+  ratings: RATINGS, ratingLookup: !!(config.omdb.apiKey || config.tmdb.apiKey),
 }))
 app.post('/api/admin/users', admin, async (req) => {
   const { name, password, isAdmin, allowedRatings } = req.body as any
@@ -531,7 +542,7 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus() }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus() }))
 app.put('/api/admin/settings/btn', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()
   if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
@@ -562,6 +573,25 @@ app.post('/api/admin/settings/tmdb/test', admin, async () => {
   if (!res.ok) throw Object.assign(new Error(`TMDB returned HTTP ${res.status}`), { statusCode: 502 })
   return { ok: true }
 })
+app.put('/api/admin/settings/omdb', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setOmdbApiKey(key)
+  return { omdb: omdbKeyStatus() }
+})
+/** Ask OMDb about a well-known title, so the admin sees whether the key is accepted. */
+app.post('/api/admin/settings/omdb/test', admin, async () => {
+  const { apiKey, apiUrl } = config.omdb
+  if (!apiKey) throw Object.assign(new Error('No OMDb key set'), { statusCode: 400 })
+  const res = await fetch(`${apiUrl}/?i=tt0903747&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) }).catch((e) => {
+    throw Object.assign(new Error(`Could not reach OMDb: ${e.message}`), { statusCode: 502 })
+  })
+  if (res.status === 401) throw Object.assign(new Error('OMDb rejected this key (a new key must be activated from the email OMDb sends)'), { statusCode: 400 })
+  if (!res.ok) throw Object.assign(new Error(`OMDb returned HTTP ${res.status}`), { statusCode: 502 })
+  const j = await res.json() as any
+  if (j.Response === 'False') throw Object.assign(new Error(`OMDb: ${j.Error}`), { statusCode: 400 })
+  return { ok: true }
+})
 app.put('/api/admin/settings/qb', admin, async (req) => {
   const b = (req.body ?? {}) as any
   if (b.reset) clearQb()
@@ -577,16 +607,6 @@ app.put('/api/admin/settings/qb', admin, async (req) => {
 app.post('/api/admin/settings/qb/test', admin, async () => {
   try { return { ok: true, version: await qb.reconnect() } }
   catch (e: any) { throw Object.assign(new Error(`Could not connect to qBittorrent: ${e.message}`), { statusCode: 502 }) }
-})
-
-/** Set (or clear, with null = automatic) a show's content rating. */
-app.put('/api/admin/series/:id/rating', admin, async (req) => {
-  const id = Number((req.params as any).id)
-  const { rating } = req.body as any
-  if (rating !== null && !isRating(rating)) throw Object.assign(new Error('Unknown rating'), { statusCode: 400 })
-  setRating(id, rating)
-  if (rating === null) queueRating(id)
-  return { ...getRating(id) }
 })
 
 // ---- boot -------------------------------------------------------------------
@@ -620,6 +640,7 @@ export async function start() {
   }
   startCrawler()
   startNetworkCrawler()
+  startAutoDownloads()
   startBackups()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')
   void runSweep

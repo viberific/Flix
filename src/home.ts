@@ -3,39 +3,56 @@ import { STREAMERS, primaryGenre, type NetRow } from './networks.ts'
 export interface HomeRow { id: number; name: string; poster: string | null; banner: string | null; genres: string[]; latest: number; rating?: string; [k: string]: unknown }
 export interface Section { title: string; series: HomeRow[] }
 
+/** Every discovery row holds exactly this many shows: a row that cannot be filled to it is left out. */
+export const ROW_SIZE = 10
+/** Genre rows after the service rows; the most fully-stocked ones win. */
+const MAX_GENRE_ROWS = 8
+
 const byAir = (net: Map<number, NetRow>) => (a: HomeRow, b: HomeRow) =>
   (net.get(b.id)?.first_air ?? '').localeCompare(net.get(a.id)?.first_air ?? '') || b.latest - a.latest
 
 /**
- * The home screen's discovery rows. Every show appears once, at most, across all of them (`taken` holds the ones already
- * shown higher up, such as My List): the featured show first, then Trending, then the newest from each streaming service,
- * then everything else notable under the single genre it fits best. Shows we know nothing about yet, and obscure ones, are left
- * out of the home screen (search still finds them) unless there is too little else to fill it.
+ * The home screen's discovery rows. Only shows on HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ or Paramount+ are on it (everything
+ * else is still in the library and search). From the top: the featured show, Trending, then the newest from each service in
+ * turn, then the rest under the single genre each fits best. Every row has exactly ROW_SIZE shows.
+ *
+ * A show is shown once on the screen (`taken` holds the ones already shown higher up, such as My List) for as long as there are
+ * enough others to fill a row. When a service has only a few, its row is topped up with shows already shown elsewhere rather than
+ * left short; a row that still cannot reach ROW_SIZE is dropped.
  */
-export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set<number> = new Set(), minCurated = 8): { hero: HomeRow | null; sections: Section[] } {
+export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set<number> = new Set()): { hero: HomeRow | null; sections: Section[] } {
   const used = new Set(taken)
-  const take = (list: HomeRow[], n: number) => { const out = list.filter((r) => !used.has(r.id)).slice(0, n); out.forEach((r) => used.add(r.id)); return out }
+  const eligible = rows.filter((r) => net.get(r.id)?.streamer)
+  const newest = byAir(net)
+  const popular = (a: HomeRow, b: HomeRow) => (net.get(b.id)?.popularity ?? 0) - (net.get(a.id)?.popularity ?? 0)
 
-  const trending = rows.filter((r) => net.get(r.id)?.trending != null).sort((a, b) => net.get(a.id)!.trending! - net.get(b.id)!.trending!)
-  const streamers = STREAMERS.map((s) => ({ s, list: rows.filter((r) => net.get(r.id)?.streamer === s).sort(byAir(net)) }))
+  const trending = eligible.filter((r) => net.get(r.id)?.trending != null).sort((a, b) => net.get(a.id)!.trending! - net.get(b.id)!.trending!)
 
-  // The billboard: the top trending show, else the newest streaming original. It is not repeated in a row below.
-  const hero = [trending, ...streamers.map((x) => x.list)].flat().find((r) => !used.has(r.id) && r.poster) ?? null
+  // The billboard: the top trending show, else the newest from a service. It is not repeated in a row below.
+  const hero = [trending, [...eligible].sort(newest)].flat().find((r) => !used.has(r.id) && r.poster) ?? null
   if (hero) used.add(hero.id)
 
   const sections: Section[] = []
-  const push = (title: string, list: HomeRow[]) => { if (list.length) sections.push({ title, series: list }) }
-  push('Trending now', take(trending, 20))
-  for (const { s, list } of streamers) push(`New on ${s}`, take(list, 20))
+  /**
+   * A row of ROW_SIZE: shows not shown yet first (`primary` in order, then `fallback`), then shows already shown, until it is full.
+   * Nothing is marked as shown unless the row is made. `repeats: false` refuses to reuse a show at all.
+   */
+  const row = (title: string, primary: HomeRow[], fallback: HomeRow[] = [], repeats = true) => {
+    const all = [...new Map([...primary, ...fallback].map((r) => [r.id, r])).values()]
+    const fresh = all.filter((r) => !used.has(r.id))
+    const picked = [...fresh, ...(repeats ? all.filter((r) => used.has(r.id)) : [])].slice(0, ROW_SIZE)
+    if (picked.length < ROW_SIZE) return
+    picked.forEach((r) => used.add(r.id))
+    sections.push({ title, series: picked })
+  }
 
-  const curated = rows.filter((r) => used.has(r.id) || net.get(r.id)?.trending != null || net.get(r.id)?.streamer).length
-  const rest = rows.filter((r) => !used.has(r.id) && (net.get(r.id)?.notable || curated < minCurated)).sort(byAir(net))
+  row('Trending shows', trending, [...eligible].sort(popular))
+  for (const s of STREAMERS) row(`New on ${s}`, eligible.filter((r) => net.get(r.id)?.streamer === s).sort(newest))
+
   const groups = new Map<string, HomeRow[]>()
-  for (const r of rest) { const g = primaryGenre(r.genres) ?? 'More to watch'; (groups.get(g) ?? groups.set(g, []).get(g)!).push(r) }
-  const small: HomeRow[] = []
-  const rowsByGenre = [...groups.entries()].filter(([, l]) => { if (l.length >= 3) return true; small.push(...l); return false })
-    .sort((a, b) => b[1].length - a[1].length).slice(0, 12)
-  for (const [g, l] of rowsByGenre) push(g, take(l, 30))
-  push('More to watch', take(small.sort(byAir(net)), 30))
+  for (const r of eligible) { const g = primaryGenre(r.genres); if (g) (groups.get(g) ?? groups.set(g, []).get(g)!).push(r) }
+  const unseen = (l: HomeRow[]) => l.filter((r) => !used.has(r.id)).length
+  const genres = [...groups.entries()].filter(([, l]) => unseen(l) >= ROW_SIZE).sort((a, b) => unseen(b[1]) - unseen(a[1])).slice(0, MAX_GENRE_ROWS)
+  for (const [g, l] of genres) row(g, l.sort(newest), [], false)
   return { hero, sections }
 }

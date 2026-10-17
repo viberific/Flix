@@ -134,7 +134,8 @@ const btnUrl = (seriesId: number, kind: 'poster' | 'banner'): string | null => {
 /** The trailer's YouTube id, from BTN's own field or the details lookup. */
 function trailerIdFor(seriesId: number): string | null {
   const r = db.prepare('SELECT MAX(youtube_trailer) AS u FROM releases WHERE series_id = ?').get(seriesId) as { u: string | null } | undefined
-  return youtubeId(r?.u) ?? youtubeId(getDetails(seriesId)?.trailer)
+  const d = getDetails(seriesId)
+  return d?.trailers[0] ?? youtubeId(d?.trailer) ?? youtubeId(r?.u) // a checked trailer first: BTN's own link may be private
 }
 
 /** Where to try getting this picture from, best first. Later entries are only looked up when the earlier ones fail. */
@@ -185,7 +186,15 @@ async function fetchCached(url: string, seriesId: number, kind: ArtKind) {
 /** An episode's still image (a frame from the episode), cached like the other artwork. */
 export async function getStill(seriesId: number, season: number, episode: number) {
   const r = db.prepare('SELECT still FROM episode_info WHERE series_id = ? AND season = ? AND episode = ?').get(seriesId, season, episode) as { still: string | null } | undefined
-  return r?.still ? fetchCached(r.still, seriesId, 'still') : null
+  const own = r?.still ? await fetchCached(r.still, seriesId, 'still') : null
+  // No picture of its own for this episode (or it would not download): the show's wide artwork stands in, so the tile is never blank.
+  return own ?? (await getArt(seriesId, 'banner')) ?? (await getArt(seriesId, 'poster'))
+}
+
+/** An actor's photo (TMDB's, from the show's cast list), cached like the other artwork. Null when the cast member has none. */
+export async function getCastPhoto(seriesId: number, index: number) {
+  const url = getDetails(seriesId)?.cast[index]?.photo
+  return url ? fetchCached(url, seriesId, 'still') : null
 }
 
 /** Cached artwork for a series, downloading it on first use and trying the backup sources when one fails. Null when there is none. */

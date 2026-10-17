@@ -10,7 +10,7 @@ It is an installable **PWA** (manifest + service worker; add it to your home scr
 **For viewers it works like Netflix:** pick a show, tap an episode, it plays. Nobody ever sees a list of releases.
 Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 1. a source that is actually alive (seeded, or already on the server's disk) beats a dead one;
-2. **1080p** is preferred, **4K (2160p)** is the fallback when there is no 1080p, then 720p, then anything else;
+2. **1080p** is preferred, then 720p, then anything else; **4K (2160p)** is a last resort, used only when nothing else is alive, because it takes far more disk;
 3. ties go to a copy already on disk (instant start), then H.264, then the most seeders.
 
 4K is always re-encoded down to 1080p for the browser. HDR sources are tone-mapped to normal colours during that re-encode (needs ffmpeg's `zscale` filter, which Flix checks for at startup of the first transcode; if the container's ffmpeg lacks it, HDR is passed through unchanged).
@@ -18,21 +18,21 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 ## "Just works" for the family
 
 - **One login, no typing.** Sessions last 180 days and renew while a device is in use. The admin can create a one-time **sign-in link** for each person (Family → *Sign-in link*); opening it signs that device in with no password. Devices remember every profile used on them and ask **Who's watching?** when the app opens. To drop Umbrel's own login in front of Flix, see `docs/umbrel-single-login.md`.
-- **Playback that recovers.** If the chosen release delivers nothing for ~25 s, Flix quietly switches to the next-best release of the same episode (up to twice). While an episode plays, the next one starts downloading, so "Up next" is instant. Errors are written for the family ("isn't ready to play yet"), with the technical text shown to admins only.
+- **Playback that recovers.** If the chosen release delivers nothing for ~25 s, Flix quietly switches to the next-best release of the same episode (up to twice). Once an episode is half watched (or has finished downloading), the next one starts downloading, so "Up next" is instant. Errors are written for the family ("isn't ready to play yet"), with the technical text shown to admins only.
 - **Subtitles and audio.** Embedded text subtitles appear in the player's own CC menu (extracted as they download), with the choice remembered per device; English subtitles turn on by default for non-English audio. Several audio tracks give an audio button. Picture subtitles (PGS/VobSub) can't be shown in a browser. A *Skip intro* / *Skip recap* button appears when the file's chapters are named like one. Also: 10-second back/forward, keyboard shortcuts (space, arrows, F, M), remembered volume.
 - **TVs and casting.** On a TV browser (or with arrow keys once something is focused) the arrow keys move between tiles and Back goes back; the layout scales up on big screens. Where the browser supports casting (Remote Playback) a cast button appears, using a signed, cookie-free link. That only works when the TV can reach this server on the local network, not over Tailscale alone.
 - **Episode titles, summaries and pictures** on each episode (TMDB when a key is set, otherwise TVmaze, which needs no key), also shown in the player and "Up next".
 - **Something's wrong?** A flag in the player tries another source and tells the admin which release failed (Torrents page → *Reported problems*); playback that fails on its own is reported too.
 - **Profile PINs.** The admin can put a PIN on a profile (Family → *Set PIN*); switching to it on a shared device asks for it (5 wrong tries lock it for 10 minutes). A password or sign-in link still works.
 - **Continue Watching includes "Up next"** (the next episode of a show you just finished), and a show on **My List** gets a *New episode* badge until you open it. Separate `.srt`/`.ass`/`.vtt` files shipped in a torrent show up as subtitles too.
-- **A home screen that isn't repetitive.** Each show appears once on the whole screen. Order: Continue Watching, My List, Because you watched, then **Trending now** (TMDB's weekly trending shows, needs the TMDB key), **New on Netflix / Disney+ / Apple TV+** (newest premieres first; the service comes from TMDB, or TVmaze with no key), then everything else notable under the *one* genre it fits best (the most specific: a documentary under Documentary, not Drama). The top trending or newest streaming show is the featured billboard and is not repeated below. Shows nobody has heard of, or whose service isn't known yet, stay off the home screen (search finds them) unless there is too little else to fill it. BTN is TV-only, so there are no movies.
+- **A home screen of ten-show rows from seven services.** Order: Continue Watching, My List, Because you watched, then **Trending shows** (TMDB's weekly trending, topped up with the most popular), **New on HBO / Crave / Showcase / Netflix / Disney+ / Apple TV+ / Paramount+** (newest premieres first), then more of those services' shows under the *one* genre each fits best. Only shows on those seven services are on the home screen (the service comes from TMDB, or TVmaze with no key; everything else is still in the library and search). Every discovery row holds exactly **10** shows: a show appears once across the screen while there are enough others, a thin row is topped up with shows already shown, and a row that still can't reach ten is left out. The top trending (or newest) show is the featured billboard. BTN is TV-only, so there is no trending-movies row.
 - **My List, Because you watched, New badges** on the home page.
 - **Seeding reachability.** The health box warns when qBittorrent's peer port looks closed (the 130-hour rule still works; the 1:1 ratio will be slow). `docs/first-run-checklist.md` walks through checking the real server.
 - **Looks after itself.** New downloads are refused before the disk is nearly full (`MIN_FREE_GB`, default 10); a dead torrent that never delivered a byte is cleaned up; the database (accounts, watch history) is copied once a day to `DATA_DIR/backups` (last 7 kept). Admins get a banner on any page when BTN refuses the key or IP, qBittorrent is down, or storage is low.
 
-- **What gets listed** (`src/seasons.ts`) – a show appears only when its **whole first season** is available; otherwise it is hidden.
+- **What gets listed** (`src/seasons.ts`) – only **English-language** shows (TMDB's original language, else TVmaze's) appear, and only when their **whole first season** is available; otherwise they are hidden.
   After season 1 only the *next* season in sequence may follow, and only when it is whole: with seasons 1 and 3 on BTN but no 2, only season 1 shows.
-  A season is whole when it has a season pack, or when its single episodes run from E01 with nothing missing (double episodes like `S01E05E06` count for both numbers).
+  A season is whole when it has a season pack, or when its single episodes run from E01 with nothing missing (double episodes like `S01E05E06` count for both numbers). A lone E01 is not a season: when TMDB/TVmaze say how long the season is, single episodes only count when they reach it (otherwise the pack carries the season), and the season on the air counts what has aired so far. A show is held back until its language and season lengths have been read (a few seconds each, in the background, or at once when you search for it).
   Specials (season 0) and date-named shows (no season/episode numbers) cannot be judged, so they are never listed. Because this needs a show's full release list,
   Flix reads shows from BTN in the background (one at a time, always leaving part of the API budget free), and a show appears once it has been read.
 - **Single episodes first, season packs second** – when a season has all its single episodes, those are what is listed and played. When it doesn't but a season pack exists,
@@ -51,7 +51,7 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
   are verified. Browser-friendly MP4/WebM plays directly; everything else (e.g. MKV/AC3/HEVC) is remuxed or
   transcoded by ffmpeg to HLS on the fly.
 - **Retention** – a torrent is deleted only when **all** of these hold:
-  1. every user who started it has watched it (≥ 90 %) or released it,
+  1. every user who started it has watched it (played to the end, 100 %) or released it,
   2. it has finished downloading, and
   3. **BTN's seeding requirement is met: 130 hours of seeding _or_ a 1:1 ratio.** This is hard-coded
      (`src/config.ts`) and cannot be overridden – not by config, and not by the admin "force remove" (it returns 409).
@@ -65,10 +65,16 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 - **Ratings per person:** for each person the admin ticks which ratings they may watch (TV-Y, TV-Y7, TV-G, TV-PG, TV-14, TV-MA, Unrated),
   with Kids / Teens / Everything presets. Anything outside that set is hidden completely: not in lists, search, continue-watching,
   artwork, or any stream URL (the server answers 404). Admins always see everything.
-- **Where ratings come from:** BTN's API has no content rating, so Flix looks the show up on [TMDB](https://www.themoviedb.org/)
-  by its TVDB id (US rating; movie-style G/PG/PG-13/R are mapped to TV-G/PG/14/MA) when `TMDB_API_KEY` is set. Only the TVDB id is sent.
-  Admins can set or override a show's rating on its page, or switch it back to *Automatic*.
+- **Where ratings come from:** always automatic, from **IMDb**. BTN's API has no content rating, and IMDb has no public API (and blocks scraping), so Flix asks [OMDb](https://www.omdbapi.com/), which serves IMDb's certificate and score, by the show's IMDb id (`OMDB_API_KEY`, free; also settable under Settings). Movie-style G/PG/PG-13/R are mapped to TV-G/PG/14/MA. If IMDb has no certificate, Flix falls back to [TMDB](https://www.themoviedb.org/) (US rating, by TVDB id, when `TMDB_API_KEY` is set). The IMDb score shows next to the rating on a show's page. There is no way to set a rating by hand.
 - **Unknown rating = Unrated**, which restricted users do not see unless "Unrated" is ticked for them.
+
+## The Downloads folder, and downloading ahead of time
+
+- **One folder.** Flix saves its torrents straight into the Downloads folder (qBittorrent gives each torrent its own named folder there; older versions used one hash-named folder per torrent, which Flix moves out of the way once nobody is watching). It also sets that folder as qBittorrent's default save path.
+- **Kept in step.** A torrent of a BTN release Flix knows that you download by hand into that folder is **taken over** (shown on the Torrents page as "from your Downloads folder", and playable instantly). It is kept until someone has watched it; it is never deleted unwatched. When Flix removes a torrent, the engine deletes its files and Flix sweeps away the empty folders left behind. Flix never deletes a file it did not download or adopt, and never the folder itself. A torrent that disappears from qBittorrent is dropped from Flix.
+- **Downloading ahead of time** (`src/autodl.ts`), so shows don't buffer for ages, without downloading needlessly: (1) the **next episode** once the current one is half watched, or has finished downloading; (2) the first unwatched episode of a show you add to **My List**; (3) a **new episode** (up in the last 3 days) for someone who has watched everything before it. Because every download has to seed 130 h / 1:1 before it can be deleted, this is cautious: at most 3 per person (`AUTO_PER_USER`), 50 GB in total (`AUTO_MAX_GB`), never a season pack over 15 GB (`AUTO_PACK_MAX_GB`), nothing below 25 % free disk (`AUTO_PAUSE_FREE_PCT`), and one nobody opens lapses after 7 days (`AUTO_EXPIRE_DAYS`) and is then deleted like any other once seeded. Pressing play is never held back by these limits. `AUTO_DOWNLOADS=false` switches it off.
+- **Low storage.** Flix keeps the larger of 10 GB and 10 % of the disk free (`MIN_FREE_GB`, `MIN_FREE_PCT`): below that new shows are refused. The admin sees a warning under 20 % and, under the limit, a banner asking them to remove some videos; the Torrents page then shows **Free up space**: everything finished, biggest first, with Remove buttons for what BTN's seeding rule allows, and what is still seeding listed without one.
+- **Watched means 100 %.** A show counts as watched only when it has played to the end, and a torrent is deleted only after everyone who started it has done so (or released it), it is fully downloaded, and BTN's seeding requirement is met.
 
 ## Torrents & seeding page
 
@@ -88,7 +94,8 @@ System fonts only, so family devices never contact a font CDN.
 Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 
 1. Run qBittorrent with the Web UI enabled. Flix switches off the `.!qB` suffix and temp dir on startup so files are
-   readable in place. `DOWNLOAD_DIR` must be the same path for both processes.
+   readable in place. `DOWNLOAD_DIR` must be the same path for both processes. By default it is your desktop's **Downloads** folder
+   (`~/Downloads`, or whatever `XDG_DOWNLOAD_DIR` says in `~/.config/user-dirs.dirs`, as on XFCE); set `DOWNLOAD_DIR` to use another.
 2. `cp .env.example .env`, fill in `BTN_API_KEY` and the qBittorrent credentials, then
    `npm install && npm start` (`npm start` reads `.env` automatically).
 3. Open http://localhost:8096 – the first account you create becomes admin. Further users are created by the admin.
@@ -97,9 +104,9 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 
 - Seeking far beyond the downloaded part waits for the sequential download to reach it (qBittorrent cannot
   prioritise arbitrary pieces).
-- Subtitles inside the file only: separate `.srt` files in a torrent are not picked up yet. While a file is still downloading, subtitles cover what has arrived and refresh every 90 s.
+- Subtitles come from the file itself and from `.srt`/`.ass`/`.vtt` files shipped beside it; picture subtitles (PGS, VobSub) can't be shown in a browser, and a release with no subtitles has none (Flix does not look them up elsewhere). While a file is still downloading, subtitles cover what has arrived and refresh every 90 s.
 - Casting works only where the TV can reach the server directly (see above); HLS (transcoded) playback in Chrome uses MSE, which the browser can't hand to a cast device.
-- "Whole season" is judged from what BTN has: Flix does not know a currently airing season's final episode count, so a season with E01–E06 and nothing missing counts as whole.
+- "Whole season" is judged against the season's length from TMDB/TVmaze (the season on the air counts what has aired so far); when neither knows the length, single episodes running unbroken from E01 count as whole.
 - Trailers are found automatically (BTN, then TMDB, then a YouTube search). The still image on the show page is fetched by the server; the viewer's browser only contacts YouTube once someone taps play.
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set
   `ABANDON_DAYS` to auto-release inactive viewers.

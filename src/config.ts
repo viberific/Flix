@@ -1,19 +1,35 @@
-import { resolve } from 'node:path'
+import { resolve, join } from 'node:path'
+import { homedir } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
 
 const env = process.env
+/** The user's own Downloads folder (XFCE and other desktops keep it in ~/.config/user-dirs.dirs; otherwise ~/Downloads). Null when there isn't one. */
+function userDownloads(): string | null {
+  const home = homedir()
+  try {
+    const m = /^XDG_DOWNLOAD_DIR=\s*"?([^"\n]+)"?/m.exec(readFileSync(join(home, '.config', 'user-dirs.dirs'), 'utf8'))
+    if (m) { const p = m[1].replace(/^\$HOME/, home); if (existsSync(p)) return p }
+  } catch { /* no desktop folders configured */ }
+  const d = join(home, 'Downloads')
+  return existsSync(d) ? d : null
+}
+
 const num = (k: string, d: number) => (env[k] !== undefined && env[k] !== '' ? Number(env[k]) : d)
 
 export const config = {
   port: num('PORT', 8096),
   dataDir: resolve(env.DATA_DIR ?? './data'),
-  downloadDir: resolve(env.DOWNLOAD_DIR ?? './downloads'),
+  // Torrents live straight in the desktop's Downloads folder (so what you download by hand there is the same pile Flix manages); DOWNLOAD_DIR overrides it.
+  downloadDir: resolve(env.DOWNLOAD_DIR || userDownloads() || './downloads'),
   btn: {
     apiKey: env.BTN_API_KEY ?? '',
     apiUrl: env.BTN_API_URL ?? 'https://api.broadcasthe.net/',
     // BTN allows 150 calls/hour; stay well under.
     maxCallsPerHour: num('BTN_MAX_CALLS_PER_HOUR', 100),
   },
-  // Optional: automatic content ratings (TV-Y … TV-MA) via TMDB. Without a key the admin sets ratings by hand.
+  // Content ratings (TV-Y … TV-MA) and the IMDb score come from IMDb through OMDb (needs a free key). TMDB is the fallback for the rating.
+  omdb: { apiKey: env.OMDB_API_KEY ?? '', apiUrl: (env.OMDB_API_URL ?? 'https://www.omdbapi.com').replace(/\/$/, '') },
+  // Optional: also the source of networks, languages, season sizes, trending shows, summaries and artwork.
   tmdb: { apiKey: env.TMDB_API_KEY ?? '', apiUrl: (env.TMDB_API_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, '') },
   // Backup artwork when BTN has none (or its image host refuses us): TMDB (needs the key above), then TVmaze (no key).
   // Set TVMAZE_URL to an empty string to turn TVmaze off.
@@ -30,11 +46,29 @@ export const config = {
   // The one address Flix should be reached at, e.g. https://umbrel-1.tail16900.ts.net:9443.
   // Empty (the default) means no redirect: every address serves Flix as before.
   publicUrl: (env.PUBLIC_URL ?? '').replace(/\/$/, ''),
-  watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
+  // A show counts as watched only when it has played to the end (within a few seconds, for the credits' last frame); lower this to count e.g. 0.9 as watched.
+  watchedThreshold: num('WATCHED_THRESHOLD', 1),
   // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
   abandonDays: num('ABANDON_DAYS', 30),
   // Refuse new downloads when less than this much disk would be left (GB).
   minFreeGb: num('MIN_FREE_GB', 10),
+  /** ...and when less than this share of the disk is free (the larger of the two limits applies). */
+  minFreePct: num('MIN_FREE_PCT', 10),
+  /** Warn the admin below this share free. */
+  warnFreePct: num('WARN_FREE_PCT', 20),
+  /** Downloads Flix starts on its own, ahead of anyone pressing play. They are conservative because a download must seed 130 h / 1:1 before it can be deleted. */
+  auto: {
+    enabled: env.AUTO_DOWNLOADS !== 'false',
+    /** No automatic downloads below this share of free disk. */
+    pausePct: num('AUTO_PAUSE_FREE_PCT', 25),
+    perUser: num('AUTO_PER_USER', 3),
+    /** Total size of torrents held only by automatic downloads. */
+    maxGb: num('AUTO_MAX_GB', 50),
+    /** A season pack bigger than this is never fetched automatically (a pack downloads whole). */
+    packMaxGb: num('AUTO_PACK_MAX_GB', 15),
+    /** An automatic download nobody opens is let go after this many days. */
+    expireDays: num('AUTO_EXPIRE_DAYS', 7),
+  },
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
   /** A torrent added less than this long ago is never swept (its first viewer is still being recorded). */
   sweepGraceSec: num('SWEEP_GRACE_SEC', 300),
