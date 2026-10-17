@@ -120,6 +120,16 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
   The account menu has an **Install app** entry that installs, or says what is missing.
 - BTN API field names were written from memory of the public API; verify against a real key.
 
+## Android TV app (APK)
+
+`android/` is Flix as an installable app: a full-screen WebView on your Flix server, so it is exactly the web app, with the TV layout switched on when it runs on a TV. It shows up in the Android TV launcher like any other app.
+
+- **Getting the APK:** every run of *Build Android / TV app* (GitHub Actions) uploads `flix-<version>.apk` as an artifact, and a push to `main` also attaches it to the `v<version>` release, a direct link a TV can download (the Downloader app works well).
+- **Installing:** with adb, `adb connect <tv-ip>` and then `adb install -r flix-<version>.apk` (turn on Developer options → USB/network debugging on the TV first), or open the APK on the TV and allow installs from that app.
+- **First launch** asks for the server address (the same one you open in a browser, e.g. `http://umbrel.local:8096`). The remote's **Menu** key, or a server that can't be reached, brings that screen back.
+- **Updates in place** need every build signed with the same key. Make one once (`keytool -genkeypair -keystore flix.jks -alias flix -keyalg RSA -keysize 2048 -validity 10000`) and add the repository secrets `ANDROID_KEYSTORE_BASE64` (`base64 -w0 flix.jks`), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` (and `ANDROID_KEY_PASSWORD` if it differs). Without them the APK is signed with a throwaway debug key, so the old app has to be uninstalled (which signs you out) before a new build goes on.
+- Building locally: `gradle -p android assembleRelease` with an Android SDK (`ANDROID_HOME`) and JDK 17+.
+
 ## Tests
 
 `npm test` – unit tests plus an end-to-end test using a mock BTN API, a local tracker, a WebTorrent seeder, real

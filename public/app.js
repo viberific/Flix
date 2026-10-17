@@ -662,7 +662,12 @@ function playView(seriesId, season, label) {
     const key = (e) => {
       if (!v || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
-      if (k === ' ' || k === 'k') { e.preventDefault(); v.paused ? v.play() : v.pause() }
+      // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
+      if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
+      else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
+      else if (k === 'MediaPause') { e.preventDefault(); v.pause() }
+      else if (k === 'MediaRewind') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
+      else if (k === 'MediaFastForward') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
       else if (k === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
       else if (k === 'ArrowRight') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
       else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
