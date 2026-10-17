@@ -24,7 +24,7 @@ import { ROW_SIZE, curateHome } from './home.ts'
 import { storageHistory } from './storage.ts'
 import { autoForListed, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
-import { holdersOf, pendingViewers, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { holdersOf, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -518,8 +518,14 @@ app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const d = db.prepare(`SELECT info_hash FROM downloads WHERE torrent_id=? AND state='active'`).get(id) as any
   if (!d) throw Object.assign(new Error('Not an active download'), { statusCode: 404 })
   // The seeding requirement cannot be overridden: only allow removal once it is met (or nothing was ever downloaded).
-  const t = await engine.info(d.info_hash)
-  if (t && t.downloaded > 0 && !seedStatus(t).met)
+  // If the engine cannot be read, the seeding requirement cannot be checked either: fail closed, never open.
+  const t = await engine.info(d.info_hash).catch((e: any) => {
+    console.warn(`[admin] could not read engine state for ${d.info_hash} (${e?.message ?? e}); refusing removal`)
+    return null
+  })
+  if (!t)
+    throw Object.assign(new Error('Could not read the torrent from the engine, so the BTN seeding requirement cannot be confirmed; refusing to remove'), { statusCode: 409 })
+  if (t.downloaded > 0 && !seedStatus(t).met)
     throw Object.assign(new Error('BTN seeding requirement (130 h or 1:1) not met yet; refusing to remove'), { statusCode: 409 })
   // Nor while somebody is still partway through it: that would take the file out from under them.
   const watching = pendingViewers(id)
@@ -673,6 +679,7 @@ export async function start() {
   startCrawler()
   startNetworkCrawler()
   await relocateDownloads() // point every torrent at the Downloads folder Flix is set to use now, without taking any out of the engine
+  await recheckMissingFiles() // then let qBittorrent re-verify the ones whose files it cannot find there (a moved folder), nothing re-added or deleted
   startAutoDownloads()
   startBackups()
   if (!startBtnSync()) app.log.warn('No BTN API key set (BTN_API_KEY or Settings): the catalog will stay empty')

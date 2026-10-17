@@ -72,34 +72,63 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
 }
 
 export async function removeDownload(torrentId: number, hash: string, reason: string) {
-  const t = await qb.info(hash).catch(() => undefined)
-  // Last line of defence, so no caller can get round the seeding rule: anything that has fetched a byte stays until BTN's
-  // 130 h or 1:1 is met. Thrown, not skipped, so a caller that expected a removal reports it instead of assuming one.
-  if (t && t.downloaded > 0 && !seedStatus(t).met)
+  // FAIL CLOSED. Anything that has fetched a byte stays until BTN's 130 h or 1:1 is met -- and when the engine cannot say
+  // what this torrent has done there, there is no way to prove the requirement is met. Then nothing happens at all: no
+  // delete call, no file removal. A refusal costs a little disk; a wrong delete can cost the account.
+  let t: QbTorrent
+  try {
+    t = await qb.info(hash) as QbTorrent
+  } catch (e: any) {
+    console.error(`[retention] could not read engine state for ${hash} (${e?.message ?? e}); not removing`)
+    throw new Error('could not confirm BTN seeding requirement (engine state unreadable); not removing')
+  }
+  if (!t) {
+    console.warn(`[retention] ${hash} is not in the engine, so its seeding cannot be confirmed; not removing`)
+    throw new Error('could not confirm BTN seeding requirement (torrent not in engine); not removing')
+  }
+  if (t.downloaded > 0 && !seedStatus(t).met)
     throw new Error(`BTN seeding requirement (${config.seed.minHours}h or ${config.seed.minRatio}:1) not met yet; refusing to remove`)
   stopJobsFor(torrentId)
   await qb.remove(hash, true)
-  if (t) tidyAfterRemoval(t) // the engine deletes the files; sweep up the empty folders it leaves in Downloads
+  tidyAfterRemoval(t) // the engine deletes the files; sweep up the empty folders it leaves in Downloads
   db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason=? WHERE torrent_id=?`).run(now(), reason, torrentId)
 }
 
+/** Torrents Flix put in the engine are tagged 'flix'; anything else is only Flix's if it has a downloads row. */
+function hasFlixTag(t: Pick<QbTorrent, 'tags'>): boolean {
+  return (t.tags ?? '').split(',').some((x) => x.trim().toLowerCase() === 'flix')
+}
+
+/** Every hash Flix has a downloads row for, whatever state it is in, mapped to its torrent id. */
+function flixHashes(): Map<string, number> {
+  return new Map((db.prepare('SELECT torrent_id, info_hash FROM downloads').all() as { torrent_id: number; info_hash: string }[])
+    .map((r) => [String(r.info_hash).toLowerCase(), r.torrent_id] as [string, number]))
+}
+
+/** True when the torrent is Flix's to touch: it carries the flix tag, or it has a downloads row. */
+export function flixOwns(t: Pick<QbTorrent, 'hash' | 'tags'>, owned: Map<string, number>): boolean {
+  return hasFlixTag(t) || owned.has(t.hash.toLowerCase())
+}
+
 /**
- * Point every torrent in the engine at the Downloads folder Flix is configured to use, so a changed DOWNLOAD_DIR (or a folder
- * that moved under it) does not leave files scattered and unseedable. Moving a torrent this way keeps it in the engine: it
- * stays in the swarm, keeps its seed time, and nothing is removed or deleted. Torrents already there are left alone, ones
- * still downloading are picked up next start, and ones somebody is watching right now wait until they stop. Never throws:
- * a start-up that cannot reach the engine must still come up.
+ * Point every torrent in the engine that Flix owns at the Downloads folder Flix is configured to use, so a changed
+ * DOWNLOAD_DIR (or a folder that moved under it) does not leave files scattered and unseedable. Moving a torrent this way
+ * keeps it in the engine: it stays in the swarm, keeps its seed time, and nothing is removed or deleted. Torrents already
+ * there are left alone, ones still downloading are picked up next start, and ones somebody is watching right now wait until
+ * they stop. A torrent Flix does not own (no flix tag, no downloads row) is not touched at all. Never throws: a start-up
+ * that cannot reach the engine must still come up.
  */
 export async function relocateDownloads(): Promise<{ moved: number; skipped: number; failed: number }> {
   const out = { moved: 0, skipped: 0, failed: 0 }
   const target = config.downloadDir.replace(/[\\/]+$/, '')
   const all = await qb.listAll().catch((e: any) => { console.warn(`[qb] could not list torrents to relocate: ${e.message}`); return [] as QbTorrent[] })
   const busy = new Set((db.prepare('SELECT DISTINCT torrent_id FROM interests WHERE watched_at IS NULL AND released_at IS NULL AND updated_at > ?').all(now() - 1800) as { torrent_id: number }[]).map((r) => r.torrent_id))
-  const flixId = new Map((db.prepare(`SELECT torrent_id, info_hash FROM downloads WHERE state='active'`).all() as { torrent_id: number; info_hash: string }[]).map((r) => [r.info_hash, r.torrent_id]))
+  const flixId = flixHashes()
   for (const t of all) {
+    if (!flixOwns(t, flixId)) { out.skipped++; console.debug(`[qb] left ${t.name} alone: not Flix's (no flix tag, no downloads row)`); continue }
     if (t.save_path.replace(/[\\/]+$/, '') === target) { out.skipped++; continue }
     if (t.dlspeed > 0 || /DL$/.test(t.state) || t.progress < 1) { out.skipped++; console.log(`[qb] left ${t.name} where it is: still downloading`); continue }
-    const id = flixId.get(t.hash)
+    const id = flixId.get(t.hash.toLowerCase())
     if (id !== undefined && busy.has(id)) { out.skipped++; console.log(`[qb] left ${t.name} where it is: being watched right now`); continue }
     try {
       await qb.setLocation(t.hash, target)
@@ -108,6 +137,34 @@ export async function relocateDownloads(): Promise<{ moved: number; skipped: num
     } catch (e: any) { out.failed++; console.warn(`[qb] could not move ${t.name}: ${e.message}`) }
   }
   if (out.moved || out.failed) console.log(`[qb] relocate: ${out.moved} moved, ${out.skipped} left alone, ${out.failed} failed`)
+  return out
+}
+
+/** Engine states that mean "the files are not where I left them": the torrent is stalled until it re-verifies. */
+const MISSING_STATE = /^(missingFiles|error)$/i
+
+/**
+ * The download folder's host path can change while the container path stays /downloads, and then qBittorrent looks for files
+ * at a path it believes has not moved and reports missingFiles. Ask it to re-verify the torrents that hold data and are in
+ * that state, and let it sort itself out. Never re-adds, never deletes, never removes a torrent, never throws.
+ */
+export async function recheckMissingFiles(): Promise<{ rechecked: number; failed: number }> {
+  const out = { rechecked: 0, failed: 0 }
+  try {
+    const all = await qb.listAll()
+    const flixId = flixHashes()
+    for (const t of all) {
+      if (!flixOwns(t, flixId)) continue
+      if (!(t.progress > 0 || (t.completed ?? 0) > 0)) continue
+      if (!MISSING_STATE.test(t.state ?? '')) continue
+      try {
+        await qb.recheck(t.hash)
+        out.rechecked++
+        console.log(`[qb] rechecking ${t.name}: engine reports ${t.state} (its files are not where it left them)`)
+      } catch (e: any) { out.failed++; console.warn(`[qb] could not recheck ${t.name}: ${e.message}`) }
+    }
+    if (out.rechecked || out.failed) console.log(`[qb] recheck: ${out.rechecked} rechecked, ${out.failed} failed`)
+  } catch (e: any) { console.warn(`[qb] recheck pass skipped: ${e.message}`) }
   return out
 }
 

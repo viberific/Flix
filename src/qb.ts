@@ -2,7 +2,7 @@ import { config } from './config.ts'
 
 export interface QbTorrent {
   hash: string; name: string; state: string; progress: number; size: number; total_size: number
-  amount_left: number; uploaded: number; downloaded: number; ratio: number; seeding_time: number
+  amount_left: number; uploaded: number; downloaded: number; completed?: number; ratio: number; seeding_time: number
   dlspeed: number; upspeed: number; eta?: number; num_seeds: number; num_leechs: number; save_path: string; content_path?: string; added_on: number; tags?: string
 }
 export interface QbFile { index: number; name: string; size: number; progress: number; priority: number; piece_range: [number, number] }
@@ -101,6 +101,11 @@ export const qb = {
   async listAll(): Promise<QbTorrent[]> { return json('/api/v2/torrents/info') },
   async addTags(hash: string, tags: string) { await post('/api/v2/torrents/addTags', { hashes: hash, tags }) },
   async setLocation(hash: string, location: string) { await post('/api/v2/torrents/setLocation', { hashes: hash, location }) },
+  /**
+   * Make the engine re-verify a torrent's files where it thinks they are, and pick them up from the new place.
+   * This is the only repair Flix ever asks for: it never re-adds, deletes or removes a torrent over a missing file.
+   */
+  async recheck(hash: string) { await post('/api/v2/torrents/recheck', { hashes: hash }) },
   async files(hash: string): Promise<QbFile[]> { return json(`/api/v2/torrents/files?hash=${hash}`) },
   async pieceStates(hash: string): Promise<number[]> { return json(`/api/v2/torrents/pieceStates?hash=${hash}`) },
   async properties(hash: string): Promise<{ piece_size: number; save_path: string }> { return json(`/api/v2/torrents/properties?hash=${hash}`) },
