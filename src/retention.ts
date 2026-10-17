@@ -43,17 +43,17 @@ export function unwatchedEligible(torrentId: number): string[] {
     .sort((a, b) => a.localeCompare(b))
 }
 
-export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead'; lapsesAt: number | null }
+export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead' | 'unwatched'; lapsesAt: number | null }
 
 /**
  * Who is keeping a torrent on disk, and why: people partway through it, who have it lined up to watch, or for whom it was fetched
- * ahead of time. Each hold lapses (abandonDays, or a week for ahead-of-time ones) unless they come back to it.
+ * ahead of time, plus anyone allowed to watch it who hasn't yet. Each hold from an interest lapses (abandonDays, or a week for ahead-of-time ones) unless they come back to it.
  */
 export function holdersOf(torrentId: number): Holder[] {
   const rows = db.prepare(`SELECT u.name, i.auto, i.position, i.updated_at FROM interests i JOIN users u ON u.id = i.user_id
     WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL`).all(torrentId) as { name: string; auto: number; position: number; updated_at: number }[]
   const by = new Map<string, Holder>()
-  const rank = { partway: 0, queued: 1, ahead: 2 }
+  const rank = { partway: 0, queued: 1, ahead: 2, unwatched: 3 }
   for (const r of rows) {
     const days = r.auto ? config.auto.expireDays : config.abandonDays
     const lapsesAt = days > 0 ? r.updated_at + days * 86400 : null
@@ -62,6 +62,8 @@ export function holdersOf(torrentId: number): Holder[] {
     const have = by.get(r.name)
     if (!have || rank[state] < rank[have.state]) by.set(r.name, { name: r.name, state, lapsesAt })
   }
+  // Everyone else who is allowed to watch it and has not yet also holds it, whether or not they ever pressed play.
+  for (const name of unwatchedEligible(torrentId)) if (!by.has(name)) by.set(name, { name, state: 'unwatched', lapsesAt: null })
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 

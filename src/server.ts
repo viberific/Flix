@@ -127,13 +127,19 @@ const isListed = (r: { id: number }) => listable().has(r.id)
 /** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
 const ensureSynced = (id: number) => syncSeries(id).then(() => ensureNet(id)).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
 
+const btnSearched = new Map<string, number>()
 app.get('/api/series', auth, async (req) => {
-  const { q } = req.query as { q?: string }
+  const { q, local } = req.query as { q?: string; local?: string }
   const f = ratingClause(req.user)
   const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
-  if (q && q.trim().length >= 2) {
-    await searchBtn(q.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
+  // `local` answers from what Flix already knows, instantly; the page follows up without it to bring in BTN's results.
+  // A term searched on BTN in the last few minutes is not asked again.
+  const term = q?.trim().toLowerCase() ?? ''
+  if (!local && term.length >= 2 && (btnSearched.get(term) ?? 0) < Date.now() - 300_000) {
+    btnSearched.set(term, Date.now())
+    if (btnSearched.size > 500) btnSearched.delete(btnSearched.keys().next().value!)
+    await searchBtn(q!.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
     // A search only brings back some of a show's releases; read the rest of the top few matches (and their language and season lengths) so their seasons can be judged.
     const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id) || !db.prepare('SELECT 1 FROM series_net WHERE series_id = ?').get(r.id)).slice(0, 5)
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))

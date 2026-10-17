@@ -535,6 +535,11 @@ test('a torrent waits only for the users whose ratings let them watch it', async
   db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, released_at) VALUES (?,8201,0,1,1,1)`).run(adult)
   assert.ok(!unwatchedEligible(8201).includes('adulttest'), 'releasing it counts as done')
   void kid
+  const { holdersOf } = await import('../src/retention.ts')
+  const held = holdersOf(8201).map((h) => h.name)
+  assert.ok(held.includes('adulttest') === false && !held.includes('kidtest'), 'released, or not allowed: holds nothing')
+  assert.ok(held.length > 0 || unwatchedEligible(8201).length === 0, 'everyone else allowed to watch it holds it, not only whoever pressed play')
+  assert.ok(holdersOf(8201).every((h) => h.state === 'unwatched'))
 })
 
 test('storage graph: a year of daily points that rise and fall as downloads come and go, real samples taking over once recorded', async () => {
@@ -571,9 +576,12 @@ test('held by: who keeps a torrent on disk, each hold lapsing if they never come
   ins.run(d, 0, t, t - 40 * 86400, 600, 0, null, null)            // gave up 40 days ago: lapsed
   ins.run(d, 1, t, t, 0, 0, t, null)                              // finished: not a hold
   const h = holdersOf(9701)
-  assert.deepEqual(h.map((x) => [x.name, x.state]), [['holda', 'partway'], ['holdb', 'queued'], ['holdc', 'ahead']])
-  assert.ok(h[0].lapsesAt! > t && h[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
-  assert.ok(h[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
+  const ours = h.filter((x) => x.name.startsWith('hold'))
+  assert.deepEqual(ours.map((x) => [x.name, x.state]), [['holda', 'partway'], ['holdb', 'queued'], ['holdc', 'ahead']], 'holdd finished it, so holds nothing')
+  assert.ok(h.filter((x) => !x.name.startsWith('hold')).every((x) => x.state === 'unwatched' && x.lapsesAt === null), 'everyone else who can watch it and has not holds it too')
+  assert.ok(h.length > ours.length, 'including accounts that never pressed play')
+  assert.ok(ours[0].lapsesAt! > t && ours[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
+  assert.ok(ours[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
 })
 
 const { addRefusal } = await import('../src/qb.ts')

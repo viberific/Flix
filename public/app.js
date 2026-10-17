@@ -93,34 +93,35 @@ function skeleton() {
 function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
-  top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
-    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form><span class="sp"></span>
+  top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
     <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
-  if (cur) { q.value = cur; sf.classList.add('has') }
-  // Live search: the results land as you type, without a page navigation, so the field keeps focus and the caret.
+  if (cur) q.value = cur
+  // Live search: what Flix already knows lands almost at once, then BTN's results fill in. Neither navigates or swaps the
+  // page, so the field keeps focus and the caret, and a slow answer never overwrites a newer one.
   let liveT = 0, liveN = 0
+  const show = (render, v) => { if (!/^#?\/?(\?|$)/.test(location.hash)) return; history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/'); render() }
   q.oninput = () => {
-    sf.classList.toggle('has', !!q.value)
     clearTimeout(liveT)
-    const v = q.value.trim()
+    const v = q.value.trim(), mine = ++liveN
     liveT = setTimeout(async () => {
-      const mine = ++liveN
-      const render = await homeView(v).catch(() => null)
-      if (!render || mine !== liveN) return
-      history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/')
-      swap(render)
-    }, 220)
+      if (!v) { const r = await homeView('').catch(() => null); if (r && mine === liveN) { show(r, v); window.scrollTo({ top: 0, behavior: 'instant' }) } return }
+      const quick = await homeView(v, true).catch(() => null)
+      if (quick && mine === liveN) show(quick, v)
+      if (v.length < 2) return
+      const full = await homeView(v).catch(() => null)
+      if (full && mine === liveN) show(full, v)
+    }, 120)
   }
-  // Collapsed, the field is only as wide as its icon, so tapping it has to open (focus) the input itself.
-  sf.onclick = () => q.focus()
   sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
   $('#av').onclick = (e) => {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${me.is_admin ? '<a href="#/admin">Torrents &amp; seeding</a><a href="#/admin/family">Family &amp; ratings</a><a href="#/admin/settings">Settings</a>' : ''}${profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name) ? '<button id="sw">Switch profile</button>' : '<a href="#/signin">Add another profile</a>'}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
+    const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${many ? '<button id="sw">Profile</button>' : '<a href="#/signin">Profile</a>'}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
@@ -259,9 +260,9 @@ function wireRows(root) {
   root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
-async function homeView(q) {
+async function homeView(q, local = false) {
   const [list, cont, home] = await Promise.all([
-    q ? api('/api/series?q=' + encodeURIComponent(q)) : { series: [] },
+    q ? api('/api/series?q=' + encodeURIComponent(q) + (local ? '&local=1' : '')) : { series: [] },
     q ? { items: [] } : api('/api/continue'),
     q ? { hero: null, sections: [] } : api('/api/home'),
   ])
@@ -716,13 +717,35 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-async function adminView(tab = 'downloads') {
-  const data = await api(tab === 'family' ? '/api/admin/users' : tab === 'settings' ? '/api/admin/settings' : '/api/admin/downloads')
-  if (tab === 'downloads') { data.health = await api('/api/admin/health').catch(() => ({ issues: [] })); data.reports = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports }
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent']]
+const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
+
+/** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
+async function settingsView(section = 'torrents') {
+  const [downloads, health, reports, family, conns] = await Promise.all([
+    api('/api/admin/downloads'), api('/api/admin/health').catch(() => ({ issues: [] })), api('/api/admin/reports').catch(() => ({ reports: [] })),
+    api('/api/admin/users'), api('/api/admin/settings'),
+  ])
+  downloads.health = health; downloads.reports = reports.reports
   return () => {
-    app.innerHTML = `<div class="pad page-top"><div class="pills" role="tablist" aria-label="Admin sections" style="margin-bottom:8px">
-      <a class="pill" role="tab" href="#/admin" aria-selected="${tab === 'downloads'}">Torrents</a><a class="pill" role="tab" href="#/admin/family" aria-selected="${tab === 'family'}">Family</a><a class="pill" role="tab" href="#/admin/settings" aria-selected="${tab === 'settings'}">Settings</a></div><div id="adm-body"></div></div>`
-    ;(tab === 'family' ? familyPanel : tab === 'settings' ? settingsPanel : downloadsPanel)(data, $('#adm-body'))
+    app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Settings</h1>
+      <nav class="snav" aria-label="Settings sections"><div class="pills">${SETTINGS_PILLS.map(([id, l]) => `<a class="pill" href="#/settings/${id}" data-s="${id}">${l}</a>`).join('')}</div></nav>
+      <section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
+    downloadsPanel(downloads, $('#s-torrents')); familyPanel(family, $('#s-family')); settingsPanel(conns, $('#s-conn'))
+    const pills = [...app.querySelectorAll('.snav .pill')]
+    const jump = (id, smoothly) => { const el = document.getElementById('s-' + id); if (el) el.scrollIntoView({ block: 'start', behavior: smoothly ? 'smooth' : 'instant' }) }
+    pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); jump(p.dataset.s, !rmq.matches) })
+    // Highlight the section being read: the last one whose top has scrolled up under the pills.
+    const onScroll = () => {
+      let cur = SETTINGS_PILLS[0][0]
+      for (const [id] of SETTINGS_PILLS) { const el = document.getElementById('s-' + id); if (el && el.getBoundingClientRect().top <= 150) cur = id }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) cur = SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
+      pills.forEach((p) => { const on = p.dataset.s === cur; p.setAttribute('aria-selected', String(on)); if (on && p.scrollIntoView) { const box = p.parentElement; box.scrollTo({ left: p.offsetLeft - (box.clientWidth - p.offsetWidth) / 2, behavior: 'auto' }) } })
+    }
+    addEventListener('scroll', onScroll, { passive: true })
+    const prev = cleanup; cleanup = () => { prev?.(); removeEventListener('scroll', onScroll) }
+    if (section !== 'torrents') requestAnimationFrame(() => jump(section, false))
+    onScroll()
   }
 }
 
@@ -779,7 +802,7 @@ function storageChart(el, h) {
 
 function downloadsPanel(data, root) {
   const req = data.requirements
-  root.innerHTML = `<h1 style="font-size:32px">Torrents &amp; seeding</h1>
+  root.innerHTML = `<h2 class="stitle2">Torrents &amp; seeding</h2>
     <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it to the end. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
     <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
     <div id="trep"></div>
@@ -815,9 +838,9 @@ function downloadsPanel(data, root) {
       body = `<div class="meters">${meter(`Ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1`, x.ratio, req.minRatio, x.ratio >= req.minRatio)}${meter(`${x.seedHours.toFixed(1)} h of ${req.minHours} h seeded`, x.seedHours, req.minHours, x.seedHours >= req.minHours)}</div>
         <div class="dim sm">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
     }
-    const rs = (x.reasons || []).filter((r) => !/^BTN seeding|^waiting for/.test(r) && r !== 'still downloading')
-    const when = (h) => ({ partway: 'partway through', queued: 'lined up to watch', ahead: 'fetched ahead of time' }[h.state]) + (h.lapsesAt ? `, lapses in ${dur(h.lapsesAt - Date.now() / 1000)}` : '')
-    // Who is keeping it on disk. Their hold lapses if they never come back to it, so one person who loses interest can't keep it forever.
+    const rs = (x.reasons || []).filter((r) => !/^BTN seeding|^waiting for|^not yet watched by/.test(r) && r !== 'still downloading')
+    const when = (h) => ({ partway: 'partway through', queued: 'lined up to watch', ahead: 'fetched ahead of time', unwatched: 'can watch it, hasn’t yet' }[h.state]) + (h.lapsesAt ? `, lapses in ${dur(h.lapsesAt - Date.now() / 1000)}` : '')
+    // Who is keeping it on disk. Anyone allowed to watch it who hasn't yet holds it too. A hold from starting it lapses if they never come back to it.
     const held = (x.holders || []).length ? `<div class="sm"><span class="dim">Held by</span> ${x.holders.map((h) => `<b>${esc(h.name)}</b> <span class="dim">(${when(h)})</span>`).join(', ')}</div>` : x.deletable ? '' : '<div class="dim sm">Held by nobody.</div>'
     const why = (x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : '') + held + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
     return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
@@ -864,9 +887,9 @@ function familyPanel(data, root) {
   let users = data.users
   const onList = (u) => u.allowed ?? all
   const paint = () => {
-    root.innerHTML = `<h1 style="font-size:32px">Family</h1>
+    root.innerHTML = `<h2 class="stitle2">Family</h2>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
-      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → Ratings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
         <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
@@ -940,33 +963,32 @@ function settingsPanel(data, root) {
   let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
-    root.innerHTML = `<h1 style="font-size:32px">Settings</h1>
-      <h2 class="sec">BroadcasTheNet</h2>
+    root.innerHTML = `<div id="s-btn" class="ssec"><h2 class="stitle2">BroadcasTheNet</h2>
       <p class="dim" style="max-width:66ch">Flix talks to BTN with an API key, not your BTN username and password. Find the key in your BTN profile settings. BTN also only accepts a key from IP addresses you have approved on their site, so approve this server's address there if the test fails.</p>
       <form id="bf" class="person"><div class="dim" id="bs" role="status">${state}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="bm" role="status"></div></form>
-      <h2 class="sec">Ratings from IMDb</h2>
+      </div><div id="s-ratings" class="ssec"><h2 class="stitle2">Ratings from IMDb</h2>
       <p class="dim" style="max-width:66ch">Every show's content rating (TV-Y to TV-MA) and IMDb score are looked up automatically, through OMDb, which serves IMDb's data. Get a free key at omdbapi.com (it must be activated from the email they send). Without it Flix falls back to TMDB for the rating, and shows are Unrated when neither knows.</p>
       <form id="of" class="person"><div class="dim">${om.configured ? `Key set (ends in <code>${esc(om.hint)}</code>)${om.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste OMDb API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="ot" ${om.configured ? '' : 'disabled'}>Test connection</button>${om.source === 'settings' ? '<button type="button" class="btn" id="oc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="om" role="status"></div></form>
-      <h2 class="sec">TMDB (recommended)</h2>
+      </div><div id="s-tmdb" class="ssec"><h2 class="stitle2">TMDB (recommended)</h2>
       <p class="dim" style="max-width:66ch">A free TMDB v3 API key tells Flix which service each show is on, its language and season lengths, what is trending, and supplies summaries and artwork. It is also the fallback for content ratings.</p>
       <form id="tf" class="person"><div class="dim">${tm.configured ? `Key set (ends in <code>${esc(tm.hint)}</code>)${tm.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="tm" role="status"></div></form>
-      <h2 class="sec">qBittorrent</h2>
+      </div><div id="s-qb" class="ssec"><h2 class="stitle2">qBittorrent</h2>
       <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
       <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
         <div class="row-form"><input class="field" name="url" value="${esc(qbs.url)}" placeholder="http://127.0.0.1:8080" autocomplete="off" required>
           <input class="field" name="user" value="${esc(qbs.user)}" placeholder="Username" autocomplete="off" required>
           <input class="field" name="pass" type="password" placeholder="${qbs.passwordSet ? 'Password (unchanged)' : 'Password'}" autocomplete="new-password"></div>
         <div class="row-form"><button class="btn primary">Save</button><button type="button" class="btn" id="qt">Test connection</button>${qbs.source === 'settings' ? '<button type="button" class="btn" id="qc">Use server environment</button>' : ''}</div>
-        <div class="dim" id="qm" role="status"></div></form>`
+        <div class="dim" id="qm" role="status"></div></form></div>`
     wire()
   }
   const wire = () => {
@@ -1062,7 +1084,7 @@ async function healthBanner() {
   const first = bad[0]
   const el = document.createElement('div')
   el.id = 'hb'; el.className = 'hbanner ' + first.level
-  el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/admin')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
+  el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/settings')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
   el.querySelector('.hbx').addEventListener('click', () => {
     const s = hbDismissed()
     for (const i of bad) s.add(hbKey(i))
@@ -1130,7 +1152,7 @@ async function route() {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
-    else if (parts[0] === 'admin' && me.is_admin) render = await adminView(parts[1] === 'family' || parts[1] === 'settings' ? parts[1] : 'downloads')
+    else if ((parts[0] === 'settings' || parts[0] === 'admin') && me.is_admin) render = await settingsView(parts[0] === 'admin' ? LEGACY_SECTION[parts[1] ?? ''] ?? 'torrents' : SETTINGS_PILLS.some(([id]) => id === parts[1]) ? parts[1] : 'torrents')
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return
