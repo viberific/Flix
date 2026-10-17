@@ -1,0 +1,48 @@
+import groovy.json.JsonSlurper
+
+plugins {
+    id 'com.android.application'
+}
+
+// The APK carries the same version as the server it opens (package.json), and the CI run number as its
+// versionCode so every build installs over the last one.
+def flixVersion = new JsonSlurper().parse(rootProject.file('../package.json')).version
+def keystore = System.getenv('FLIX_KEYSTORE_FILE')
+
+android {
+    namespace 'com.viberific.flix'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.viberific.flix'
+        minSdk 23
+        targetSdk 35
+        versionCode((System.getenv('GITHUB_RUN_NUMBER') ?: '1') as int)
+        versionName flixVersion
+    }
+
+    signingConfigs {
+        // A fixed key (from repository secrets in CI) lets each new APK install as an update. Without one the
+        // build is signed with a throwaway debug key, and the old app has to be uninstalled before a new one goes on.
+        if (keystore) {
+            release {
+                storeFile file(keystore)
+                storePassword System.getenv('FLIX_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('FLIX_KEY_ALIAS')
+                keyPassword System.getenv('FLIX_KEY_PASSWORD') ?: System.getenv('FLIX_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
