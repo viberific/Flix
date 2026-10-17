@@ -539,3 +539,20 @@ test('storage graph: a year of daily points that rise and fall as downloads come
   assert.equal(real.points.find((p) => p[0] > at - 40 * day && p[0] < at - 30 * day)![1], 4e9, 'earlier days stay estimated')
   recordStorage(1)
 })
+
+test('held by: who keeps a torrent on disk, each hold lapsing if they never come back', async () => {
+  const { holdersOf } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (9701, 97, 'K', 'K - S01E01', 'k1', 0, 1000)`).run()
+  const a = createUser('holda', 'password123', false).id, b = createUser('holdb', 'password123', false).id, c = createUser('holdc', 'password123', false).id, d = createUser('holdd', 'password123', false).id
+  const t = now(), ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, position, auto, watched_at, released_at) VALUES (?,9701,?,?,?,?,?,?,?)`)
+  ins.run(a, 0, t, t - 3 * 86400, 600, 0, null, null)            // partway through
+  ins.run(b, 0, t, t, 0, 0, null, null)                           // lined up
+  ins.run(c, 0, t, t, 0, 1, null, null)                           // fetched ahead of time
+  ins.run(d, 0, t, t - 40 * 86400, 600, 0, null, null)            // gave up 40 days ago: lapsed
+  ins.run(d, 1, t, t, 0, 0, t, null)                              // finished: not a hold
+  const h = holdersOf(9701)
+  assert.deepEqual(h.map((x) => [x.name, x.state]), [['holda', 'partway'], ['holdb', 'queued'], ['holdc', 'ahead']])
+  assert.ok(h[0].lapsesAt! > t && h[0].lapsesAt! <= t + 27 * 86400, 'a hold has an end date')
+  assert.ok(h[2].lapsesAt! <= t + config.auto.expireDays * 86400 + 5, 'ahead-of-time holds lapse sooner')
+})

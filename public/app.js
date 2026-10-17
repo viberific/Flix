@@ -750,8 +750,11 @@ function downloadsPanel(data, root) {
       body = `<div class="meters">${meter(`Ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1`, x.ratio, req.minRatio, x.ratio >= req.minRatio)}${meter(`${x.seedHours.toFixed(1)} h of ${req.minHours} h seeded`, x.seedHours, req.minHours, x.seedHours >= req.minHours)}</div>
         <div class="dim sm">${x.seedMet ? 'Either one is enough, so BTN is satisfied.' : 'Either one is enough. Uploaded ' + gb(x.uploaded) + (x.upspeed ? ' · now sending ' + mbps(x.upspeed) : '') + '.'}</div>`
     }
-    const rs = (x.reasons || []).filter((r) => !/^BTN seeding/.test(r) && r !== 'still downloading')
-    const why = x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : ''
+    const rs = (x.reasons || []).filter((r) => !/^BTN seeding|^waiting for/.test(r) && r !== 'still downloading')
+    const when = (h) => ({ partway: 'partway through', queued: 'lined up to watch', ahead: 'fetched ahead of time' }[h.state]) + (h.lapsesAt ? `, lapses in ${dur(h.lapsesAt - Date.now() / 1000)}` : '')
+    // Who is keeping it on disk. Their hold lapses if they never come back to it, so one person who loses interest can't keep it forever.
+    const held = (x.holders || []).length ? `<div class="sm"><span class="dim">Held by</span> ${x.holders.map((h) => `<b>${esc(h.name)}</b> <span class="dim">(${when(h)})</span>`).join(', ')}</div>` : x.deletable ? '' : '<div class="dim sm">Held by nobody.</div>'
+    const why = (x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : '') + held + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
     return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
       <div class="tfoot"><span class="dim sm">Added ${ago(x.added_at)}</span><button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button></div></div>`
   }
