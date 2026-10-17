@@ -87,11 +87,11 @@ export function cleanHlsCache() { rmSync(hlsRoot(), { recursive: true, force: tr
 
 let zscale: boolean | null = null
 /** HDR to SDR needs ffmpeg's zscale filter; checked once. Without it HDR is passed through (and looks washed out). */
-async function canToneMap(): Promise<boolean> {
+export async function canToneMap(): Promise<boolean> {
   if (zscale === null) zscale = await execFileP('ffmpeg', ['-hide_banner', '-filters']).then((r) => /\bzscale\b/.test(r.stdout) && /\btonemap\b/.test(r.stdout)).catch(() => false)
   return zscale
 }
-const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
+export const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
 
 /** Start (or touch) the HLS job; resolves when the playlist exists with its first segment. */
 export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0): Promise<string> {

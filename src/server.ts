@@ -13,6 +13,7 @@ import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, releaseHls, subtitleVtt, touchHls } from './transcode.ts'
+import { offlineCopy, startOfflineSweeper } from './offline.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -416,6 +417,36 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
   return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0').send(vtt)
 })
 
+// ---- downloads to a device ----------------------------------------------------
+/**
+ * Make one episode ready to save on a device for watching offline: a single MP4, 1080p at most. It can only be made from a file that
+ * has finished downloading here, so until then this says how far along it is. Asking again is how the device waits.
+ */
+app.get('/api/stream/:t/:f/offline', guarded, async (req) => {
+  const { t, f } = req.params as any
+  const fi = await fileInfo(+t, +f)
+  if (!fi) throw notFound('That video is not downloading')
+  if (fi.file.progress < 1) return { state: 'waiting', progress: fi.file.progress }
+  const r = await offlineCopy(+t, +f, await probe(+t, +f), join(fi.layout.savePath, fi.file.name))
+  return r.state === 'ready' ? { state: 'ready', size: r.size } : r
+})
+
+app.get('/api/stream/:t/:f/offline/file', guarded, async (req, reply) => {
+  const { t, f } = req.params as any
+  const fi = await fileInfo(+t, +f)
+  if (!fi || fi.file.progress < 1) return reply.code(409).send({ error: 'Not ready yet' })
+  const r = await offlineCopy(+t, +f, await probe(+t, +f), join(fi.layout.savePath, fi.file.name))
+  if (r.state !== 'ready') return reply.code(409).send({ error: 'Not ready yet' })
+  let start = 0, end = r.size - 1
+  const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '')
+  if (m) {
+    if (m[1] === '' && m[2] !== '') start = Math.max(0, r.size - Number(m[2])); else { start = Number(m[1] || 0); if (m[2]) end = Math.min(r.size - 1, Number(m[2])) }
+    if (start > end || start >= r.size) return reply.code(416).header('content-range', `bytes */${r.size}`).send()
+    reply.code(206).header('content-range', `bytes ${start}-${end}/${r.size}`)
+  }
+  return reply.header('accept-ranges', 'bytes').header('content-length', end - start + 1).header('cache-control', 'no-store').type(r.type).send(createReadStream(r.path, { start, end }))
+})
+
 const MIME: Record<string, string> = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska' }
 
 async function rawHandler(req: any, reply: any) {
@@ -691,6 +722,7 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
 
 // ---- boot -------------------------------------------------------------------
 cleanHlsCache()
+startOfflineSweeper()
 const runSweep = startSweeper()
 
 let btnSyncStarted = false

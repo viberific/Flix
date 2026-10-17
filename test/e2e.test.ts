@@ -237,6 +237,39 @@ test('one tap: /api/watch picks the source and starts playback with no release c
   assert.equal(bad.status, 404)
 })
 
+/** Wait for the server to have the whole file (and, for a conversion, to finish it); the device does the same by asking again. */
+async function offlineReady(t: number, f: number) {
+  for (let i = 0; i < 240; i++) {
+    const s: any = await jget(`/api/stream/${t}/${f}/offline`)
+    if (s.state === 'ready') return s
+    assert.notEqual(s.state, 'error', s.message)
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  throw new Error('offline copy never became ready')
+}
+
+test('downloads: a finished MP4 is sent as it is, with byte ranges', async () => {
+  const play = await playAndFetch(1000)
+  const s = await offlineReady(1000, play.fileIndex)
+  const m = media['direct.mp4']
+  assert.equal(s.size, m.data.length)
+  const part = await api(`/api/stream/1000/${play.fileIndex}/offline/file`, { headers: { range: 'bytes=100-199' } })
+  assert.equal(part.status, 206)
+  assert.ok(Buffer.from(await part.arrayBuffer()).equals(m.data.subarray(100, 200)))
+  const full = await api(`/api/stream/1000/${play.fileIndex}/offline/file`)
+  assert.equal(sha(Buffer.from(await full.arrayBuffer())), sha(m.data))
+})
+
+test('downloads: an MKV is converted to one MP4 for the device', async () => {
+  const play = await playAndFetch(1001)
+  await offlineReady(1001, play.fileIndex)
+  const res = await api(`/api/stream/1001/${play.fileIndex}/offline/file`)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('content-type'), 'video/mp4')
+  const body = Buffer.from(await res.arrayBuffer())
+  assert.equal(body.subarray(4, 8).toString(), 'ftyp')
+})
+
 test('transcode path: mkv/ac3 is served as HLS', async () => {
   const play = await playAndFetch(1001)
   const info = await jget(`/api/stream/1001/${play.fileIndex}/info`)
@@ -335,7 +368,7 @@ test('ratings: a restricted user cannot see or reach a show above their level', 
     const list = await jget('/api/series')
     assert.equal(list.series.length, 0, 'TV-14 show must be hidden from a TV-Y/TV-G user')
     assert.equal((await jget('/api/series?q=Test')).series.length, 0)
-    for (const path of ['/api/series/77', '/api/art/77/poster', '/api/stream/1000/0/info', '/api/stream/1000/0/raw', '/api/stream/1000/0/status', '/api/stream/1000/0/hls/index.m3u8'])
+    for (const path of ['/api/series/77', '/api/art/77/poster', '/api/stream/1000/0/info', '/api/stream/1000/0/raw', '/api/stream/1000/0/status', '/api/stream/1000/0/offline', '/api/stream/1000/0/offline/file', '/api/stream/1000/0/hls/index.m3u8'])
       assert.equal((await api(path)).status, 404, path)
     assert.equal((await jpost('/api/watch', { seriesId: 77, season: 1, label: 'S01E01' })).status, 404)
     assert.equal((await jpost('/api/play', { torrentId: 1000 })).status, 404)

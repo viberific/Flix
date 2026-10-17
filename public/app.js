@@ -1,3 +1,4 @@
+import * as dl from '/downloads.js'
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
 const rmq = matchMedia('(prefers-reduced-motion: reduce)')
@@ -59,6 +60,7 @@ const I = {
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleY(-1)"><path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>',
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
   // The F's middle arm is a play button. Same artwork as /icon.svg.
   logo: '<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="fxl-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a4c"/><stop offset=".5" stop-color="#ff3d6e"/><stop offset="1" stop-color="#b8155a"/></linearGradient><radialGradient id="fxl-hl" cx=".25" cy="0" r="1"><stop offset="0" stop-color="#fff" stop-opacity=".32"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" rx="118" fill="url(#fxl-bg)"/><rect width="512" height="512" rx="118" fill="url(#fxl-hl)"/><g fill="#fff"><rect x="140" y="116" width="76" height="280" rx="38"/><rect x="140" y="116" width="232" height="76" rx="38"/><path transform="translate(242 287) scale(.906) translate(-242 -287)" d="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z"/></g></svg>',
@@ -123,7 +125,7 @@ function renderTop() {
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${many ? '<button id="sw">Profile</button>' : '<a href="#/signin">Profile</a>'}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${many ? '<button id="sw">Profile</button>' : '<a href="#/signin">Profile</a>'}<a href="#/downloads">Downloads</a>${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
@@ -376,6 +378,7 @@ async function seriesView(id) {
   const keys = [...seasons.keys()]
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+  const saved = new Set((await dl.list()).map((m) => m.id))
   return () => {
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
@@ -391,16 +394,36 @@ async function seriesView(id) {
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <h2 class="sec">Episodes</h2><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
+    const dlButton = (e) => {
+      if (!dl.supported() || !e.available || (e.isPack && e.episode === null)) return ''
+      const did = dl.idOf(id, e.season, e.label), a = dl.active.get(did)
+      if (a) return `<span class="dlb busy${a.error ? ' err' : ''}" role="button" tabindex="0" title="${esc(a.text)}">${a.error ? esc(a.text) : esc(a.text)}</span>`
+      return saved.has(did) ? `<span class="dlb done" role="button" tabindex="0" title="Saved on this device. Open Downloads">${I.check} Saved</span>` : `<span class="dlb" role="button" tabindex="0" title="Save a 1080p copy on this device to watch offline" aria-label="Download for offline">${I.dl}</span>`
+    }
     const paint = () => {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
           <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', e.available ? (e.onServer ? 'Ready to watch' : e.isPack ? 'Part of the full season download' : '') : 'Not available right now'].filter(Boolean).join(' · ')}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
-        <span>${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}</span></button>`).join('')
+        <span class="eside">${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => go1(seasons.get(cur)[+b.dataset.i]))
+      $('#eps').querySelectorAll('.dlb').forEach((b) => {
+        const act = (ev) => {
+          ev.stopPropagation(); ev.preventDefault()
+          const e = seasons.get(cur)[+b.closest('.ep').dataset.i], did = dl.idOf(id, e.season, e.label)
+          if (saved.has(did) || dl.active.has(did)) return go('#/downloads')
+          dl.start({ seriesId: +id, season: e.season, label: e.label, title: e.title, seriesName: series.name },
+            () => api('/api/watch', { seriesId: +id, season: e.season ?? null, label: e.label }))
+        }
+        b.onclick = act; b.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') act(ev) }
+      })
     }
     paint()
+    const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paint() }
+    let alive = true
+    addEventListener('flix-dl', onDl)
+    cleanup = () => { alive = false; removeEventListener('flix-dl', onDl) }
     app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
       cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
       app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))
@@ -1116,6 +1139,78 @@ function settingsPanel(data, root) {
   paint()
 }
 
+/* ---------- downloads (watch without a connection) ---------- */
+const mb = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(n / 1048576)) + ' MB')
+
+/** Episodes saved on this device. With no connection this is the whole app: `offline` swaps the top bar for a notice. */
+async function downloadsView(offline = false) {
+  const items = await dl.list()
+  const space = await dl.usage()
+  return () => {
+    let alive = true
+    const paint = async (list) => {
+      const act = [...dl.active.entries()]
+      const bySeries = new Map()
+      for (const m of list) { if (!bySeries.has(m.seriesId)) bySeries.set(m.seriesId, { name: m.seriesName, eps: [] }); bySeries.get(m.seriesId).eps.push(m) }
+      app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Downloads</h1>
+        <p class="dim" style="margin:4px 0 18px">${offline ? 'Flix can’t be reached, so this is what is saved on this device.' : 'Saved on this device in 1080p or lower, to watch without a connection.'}${space && list.length ? ` Using ${mb(space.used)}.` : ''}</p>
+        ${offline ? '<div class="notice" role="status">You’re offline. <button class="btn" id="rt" style="margin-left:8px;padding:6px 14px">Try to reconnect</button></div>' : ''}
+        ${act.length ? `<div class="dl-active">${act.map(([id, a]) => `<div class="dl-row${a.error ? ' err' : ''}"><div class="dl-t"><b>${esc(a.name || 'Download')}</b><span>${esc(a.text)}</span></div>${a.error ? '' : `<div class="prog-line"><i style="width:${Math.round(a.pct * 100)}%"></i></div>`}</div>`).join('')}</div>` : ''}
+        ${list.length ? [...bySeries.values()].map((g) => `<h2 class="sec">${esc(g.name || 'Show')}</h2><div class="eps">${g.eps.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true })).map((m) => `
+          <div class="ep dl-item" data-id="${esc(m.id)}" role="button" tabindex="0"><span class="thumb"><img class="fade" src="${dl.imgUrl(m.id)}" alt="" onload="this.classList.add('in')" onerror="this.remove()"><span class="play">${I.play}</span>${m.position > 30 && !m.watched ? `<span class="bar"><b style="width:${pct(m.position, m.duration)}%"></b></span>` : ''}</span>
+            <span class="etxt"><span class="en">${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span><span class="es">${mb(m.size)} · 1080p or lower${m.watched ? ' · Watched' : ''}</span></span>
+            <span class="eside"><button class="btn dl-rm" data-id="${esc(m.id)}" aria-label="Delete from this device">Delete</button></span></div>`).join('')}</div>`).join('')
+          : act.length ? '' : `<div class="empty">Nothing is saved on this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap the download arrow next to an episode.</span></div>`}</div>`
+      app.querySelectorAll('.dl-item').forEach((el) => {
+        const open = () => go('#/offplay/' + el.dataset.id)
+        el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter') open() }
+      })
+      app.querySelectorAll('.dl-rm').forEach((b) => b.onclick = async (e) => {
+        e.stopPropagation()
+        if (!confirm('Delete this download from this device?')) return
+        await dl.remove(b.dataset.id); if (alive) paint(await dl.list())
+      })
+      const rt = $('#rt'); if (rt) rt.onclick = () => route()
+    }
+    top.hidden = offline || !me
+    paint(items)
+    const on = async () => { if (alive) paint(await dl.list()) }
+    addEventListener('flix-dl', on)
+    cleanup = () => { alive = false; removeEventListener('flix-dl', on); top.hidden = !me }
+  }
+}
+
+/** Plays a saved episode straight from this device's storage, so it works with no connection at all. */
+async function offlinePlayView(id) {
+  const m = await dl.get(id)
+  return () => {
+    if (!m) { go('#/downloads'); return }
+    top.hidden = true
+    app.innerHTML = `<div class="player" id="pl"><div class="p-top"><a class="icon-btn" href="#/downloads" aria-label="Back">${I.back}</a><div class="p-title"><b>${esc(m.seriesName || '')}</b><span>${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span></div></div>
+      <div id="vw"><video controls autoplay playsinline>${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
+    const pl = $('#pl'), v = $('video')
+    let idleT = null, last = 0
+    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (!v.paused) pl.classList.add('idle') }, 3000) }
+    pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
+    v.src = dl.videoUrl(id)
+    if (m.position > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = m.position }, { once: true })
+    const save = (ended) => dl.saveProgress(id, v.currentTime, v.duration || m.duration, ended).then(() => syncDownloads()).catch(() => {})
+    v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); save(false) } }
+    v.onpause = () => save(false)
+    v.onended = () => { save(true); go('#/downloads') }
+    v.onerror = () => { app.innerHTML = `<div class="pad page-top"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
+    const key = (e) => { if (e.key === 'Escape') go('#/downloads') }
+    addEventListener('keydown', key)
+    cleanup = () => { clearTimeout(idleT); removeEventListener('keydown', key); if (v.currentTime) dl.saveProgress(id, v.currentTime, v.duration || m.duration, false).catch(() => {}); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
+  }
+}
+
+/** What was watched offline goes to the server once it can be reached, so "Continue watching" and "watched" stay right on every device. */
+function syncDownloads() {
+  return dl.syncPending((m) => api('/api/progress', { torrentId: m.torrentId, fileIndex: m.fileIndex, position: m.pending.position, duration: m.pending.duration, ended: m.pending.ended }))
+}
+addEventListener('online', () => syncDownloads().catch(() => {}))
+
 /** Shown when Flix can't be reached, instead of a blank page. Retries by itself. */
 function offlineView(why, isGate) {
   const admin = `https://${location.hostname}/`
@@ -1194,12 +1289,22 @@ async function route() {
   const token = ++navToken
   let st
   try { st = await api('/api/me', null, 'GET', 15000) } catch (e) {
-    if (token === navToken) offlineView(e.message, !!e.gate)
+    if (token !== navToken) return
+    // Can't reach Flix but there are episodes saved on this device: that is what the app shows, and they play without the server.
+    if (!e.gate && (await dl.list()).length) {
+      const [p0, p1] = location.hash.slice(1).split('?')[0].split('/').filter(Boolean)
+      const render = p0 === 'offplay' && p1 ? await offlinePlayView(p1) : await downloadsView(true)
+      if (token !== navToken) return
+      clearTimeout(retryT); retryT = setTimeout(() => { if (!$('video')) route() }, 15000)
+      return swap(render)
+    }
+    offlineView(e.message, !!e.gate)
     return
   }
   me = st.user
   if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
   renderTop()
+  syncDownloads().catch(() => {})
   top.classList.toggle('solid', scrollY > 30)
   const [path, query] = location.hash.slice(1).split('?')
   const parts = path.split('/').filter(Boolean)
@@ -1207,13 +1312,15 @@ async function route() {
   if (parts[0] === 'profiles' && profiles().length) return swap(profilesView())
   if (!me || parts[0] === 'signin') { if (token === navToken) return swap(authView(!me && st.needsSetup)); return }
   // A shared device asks who is watching each time the app is opened.
-  if (profiles().length > 1 && !picked() && parts[0] !== 'play') { markPicked(); return swap(profilesView()) }
+  if (profiles().length > 1 && !picked() && parts[0] !== 'play' && parts[0] !== 'offplay') { markPicked(); return swap(profilesView()) }
   // Opening a show can take a moment on the server. Show the placeholder at once rather than leave the old page up, which looks like the tap did nothing.
   const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton() } }, app.innerHTML.trim() ? 120 : 200)
   try {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
+    else if (parts[0] === 'downloads') render = await downloadsView()
+    else if (parts[0] === 'offplay' && parts[1]) render = await offlinePlayView(parts[1])
     else if ((parts[0] === 'settings' || parts[0] === 'admin') && me.is_admin) render = await settingsView(parts[0] === 'admin' ? LEGACY_SECTION[parts[1] ?? ''] ?? 'torrents' : SETTINGS_PILLS.some(([id]) => id === parts[1]) ? parts[1] : 'torrents')
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
