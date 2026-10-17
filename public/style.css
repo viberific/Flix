@@ -373,3 +373,8 @@ html.tv * { cursor: none; }
   background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
 .snav .pills { flex-wrap: nowrap; padding: 4px 0 10px; }
 @media (max-width: 480px) { .snav .pills { gap: 5px; } .snav .pill { padding: 7px 10px; font-size: 12.5px; } }
+
+.thumbs { display: inline-flex; gap: 8px; }
+.icon-thumb { padding: 0; width: 46px; height: 46px; display: inline-grid; place-items: center; border-radius: 50%; }
+.icon-thumb svg { width: 21px; height: 21px; }
+.icon-thumb[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: transparent; }

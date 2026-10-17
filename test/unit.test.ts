@@ -605,3 +605,22 @@ test('add response: the older plain-text and empty replies are accepted', () => 
   assert.equal(addRefusal(true, ''), null)
   assert.equal(addRefusal(true, 'not json at all'), null)
 })
+
+test('taste: thumbs steer genres and hide downvoted shows, but the newest still lead', async () => {
+  const { tasteOf, tasteSort } = await import('../src/taste.ts')
+  const { db, now } = await import('../src/db.ts')
+  const genres: Record<number, string[]> = { 1: ['Comedy'], 2: ['Comedy'], 3: ['Horror'], 4: ['Horror'] }
+  const u = createUser('taster', 'password123', false).id
+  db.prepare('INSERT INTO votes (user_id, series_id, vote, voted_at) VALUES (?,?,?,?)').run(u, 1, 1, now())
+  db.prepare('INSERT INTO votes (user_id, series_id, vote, voted_at) VALUES (?,?,?,?)').run(u, 3, -1, now() - 5)
+  const t = tasteOf(u, (id) => genres[id] ?? [])
+  assert.deepEqual([...t.hidden], [3])
+  assert.equal(t.lastLiked, 1)
+  assert.ok(t.fit(['Comedy']) > 0 && t.fit(['Horror']) < 0 && t.fit(['Drama']) === 0)
+  const row = (id: number) => ({ id, genres: genres[id] })
+  // Newest first: 4 (Horror, disliked genre), then 2 (Comedy). A liked genre lifts a show one place, not ten.
+  assert.deepEqual(tasteSort([row(4), row(2)], t).map((r) => r.id), [2, 4])
+  const many = [row(4), ...Array.from({ length: 40 }, (_, i) => ({ id: 100 + i, genres: ['Comedy'] })), row(2)]
+  assert.equal(tasteSort(many, t, 30).at(-1)!.id, 2, 'beyond the freshest window nothing is promoted')
+  assert.equal(tasteSort([row(4), row(2)], undefined).map((r) => r.id).join(), '4,2', 'no taste, no change')
+})

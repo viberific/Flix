@@ -104,6 +104,9 @@ try { db.exec(`ALTER TABLE downloads ADD COLUMN origin TEXT NOT NULL DEFAULT 'fl
 // 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 30 days.
 try { db.exec('ALTER TABLE interests ADD COLUMN auto INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
 
+// Thumbs up (1) / thumbs down (-1) a person gave a show; it steers what the home screen offers them.
+db.exec('CREATE TABLE IF NOT EXISTS votes (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, series_id INTEGER NOT NULL, vote INTEGER NOT NULL, voted_at INTEGER NOT NULL, PRIMARY KEY (user_id, series_id))')
+
 // How much disk Flix's downloads take, sampled hourly, for the 12-month graph on the Torrents page.
 db.exec('CREATE TABLE IF NOT EXISTS storage_samples (ts INTEGER PRIMARY KEY, bytes INTEGER NOT NULL)')
 
