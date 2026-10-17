@@ -112,14 +112,23 @@ function renderTop() {
 }
 /* ---------- install ---------- */
 let installEvt = null
-addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e })
+// Keep the event so the in-app button can use it, but deliberately do NOT preventDefault():
+// cancelling beforeinstallprompt is what stops Chrome from ever offering its own install UI.
+addEventListener('beforeinstallprompt', (e) => { installEvt = e })
 addEventListener('appinstalled', () => { installEvt = null })
 const installed = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
-async function installApp() {
-  if (installEvt) { const e = installEvt; installEvt = null; e.prompt(); await e.userChoice.catch(() => {}); return }
+function installHint() {
   if (!window.isSecureContext) {
     alert('Chrome only installs apps from a secure (HTTPS) address with a certificate it trusts. This address (' + location.origin + ') is not one, so the install option is switched off. Open Flix through its trusted https:// address (for example your Tailscale name without a port number), then try again.')
   } else alert('Your browser has not offered to install Flix yet. Open the browser menu (⋮) and choose “Install app” or “Add to Home screen”. On iPhone: Share → Add to Home Screen.')
+}
+async function installApp() {
+  if (installEvt) {
+    const e = installEvt; installEvt = null
+    try { await e.prompt(); await e.userChoice } catch { installHint() }
+    return
+  }
+  installHint()
 }
 
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
