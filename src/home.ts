@@ -7,6 +7,8 @@ export interface Section { title: string; series: HomeRow[] }
 export const ROW_SIZE = 10
 /** Genre rows after the service rows; the most fully-stocked ones win. */
 const MAX_GENRE_ROWS = 8
+/** A genre row may be shorter than ROW_SIZE: genres are sparse, and a short row beats an empty page. */
+const GENRE_MIN = 6
 
 const byAir = (net: Map<number, NetRow>) => (a: HomeRow, b: HomeRow) =>
   (net.get(b.id)?.first_air ?? '').localeCompare(net.get(a.id)?.first_air ?? '') || b.latest - a.latest
@@ -28,8 +30,8 @@ export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set
 
   const trending = eligible.filter((r) => net.get(r.id)?.trending != null).sort((a, b) => net.get(a.id)!.trending! - net.get(b.id)!.trending!)
 
-  // The billboard: the top trending show, else the newest from a service. It is not repeated in a row below.
-  const hero = [trending, [...eligible].sort(newest)].flat().find((r) => !used.has(r.id) && r.poster) ?? null
+  // The billboard: the top trending show, else the newest from a service, else the newest show there is.
+  const hero = [trending, [...eligible].sort(newest), [...rows].sort(newest)].flat().find((r) => !used.has(r.id) && r.poster) ?? null
   if (hero) used.add(hero.id)
 
   const sections: Section[] = []
@@ -37,11 +39,11 @@ export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set
    * A row of ROW_SIZE: shows not shown yet first (`primary` in order, then `fallback`), then shows already shown, until it is full.
    * Nothing is marked as shown unless the row is made. `repeats: false` refuses to reuse a show at all.
    */
-  const row = (title: string, primary: HomeRow[], fallback: HomeRow[] = [], repeats = true) => {
+  const row = (title: string, primary: HomeRow[], fallback: HomeRow[] = [], repeats = true, min = ROW_SIZE) => {
     const all = [...new Map([...primary, ...fallback].map((r) => [r.id, r])).values()]
     const fresh = all.filter((r) => !used.has(r.id))
     const picked = [...fresh, ...(repeats ? all.filter((r) => used.has(r.id)) : [])].slice(0, ROW_SIZE)
-    if (picked.length < ROW_SIZE) return
+    if (picked.length < min) return
     picked.forEach((r) => used.add(r.id))
     sections.push({ title, series: picked })
   }
@@ -49,10 +51,18 @@ export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set
   row('Trending shows', trending, [...eligible].sort(popular))
   for (const s of STREAMERS) row(`New on ${s}`, eligible.filter((r) => net.get(r.id)?.streamer === s).sort(newest))
 
+  // Genres are filled from the whole library, not just the shows whose service Flix has worked out: only 16 of 166 have
+  // one, which left the home screen with a single row and a lot of empty page below it. A show on a known service still
+  // comes first inside its row.
   const groups = new Map<string, HomeRow[]>()
-  for (const r of eligible) { const g = primaryGenre(r.genres); if (g) (groups.get(g) ?? groups.set(g, []).get(g)!).push(r) }
+  for (const r of rows) { const g = primaryGenre(r.genres); if (g) (groups.get(g) ?? groups.set(g, []).get(g)!).push(r) }
+  const streamed = (a: HomeRow, b: HomeRow) => (Number(!!net.get(b.id)?.streamer) - Number(!!net.get(a.id)?.streamer)) || newest(a, b)
   const unseen = (l: HomeRow[]) => l.filter((r) => !used.has(r.id)).length
-  const genres = [...groups.entries()].filter(([, l]) => unseen(l) >= ROW_SIZE).sort((a, b) => unseen(b[1]) - unseen(a[1])).slice(0, MAX_GENRE_ROWS)
-  for (const [g, l] of genres) row(g, l.sort(newest), [], false)
+  const genres = [...groups.entries()].filter(([, l]) => unseen(l) >= GENRE_MIN).sort((a, b) => unseen(b[1]) - unseen(a[1])).slice(0, MAX_GENRE_ROWS)
+  for (const [g, l] of genres) row(g, l.sort(streamed), [], false, GENRE_MIN)
+  // Whatever is left, so the page is never a billboard over an empty screen.
+  const rest = [...rows].filter((r) => r.poster).sort(streamed)
+  row('More to watch', rest, [], false, ROW_SIZE)
+  if (sections.length < 4) row('Newest additions', [...rows].filter((r) => r.poster).sort(newest), [...rows].filter((r) => r.poster).sort(newest))
   return { hero, sections }
 }

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { mkdirSync, existsSync } from 'node:fs'
-import { writeFile, rename } from 'node:fs/promises'
+import { writeFile, rename, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
@@ -96,7 +96,7 @@ async function lookupFallback(seriesId: number): Promise<{ poster: string | null
       const f = await getJson(`${apiUrl}/find/${t.tvdb_id}?external_source=tvdb_id&api_key=${encodeURIComponent(apiKey)}`)
       const hit = f.tv_results?.[0]
       if (hit?.poster_path) poster = `${config.art.tmdbImages}/w780${hit.poster_path}`
-      if (hit?.backdrop_path) banner = `${config.art.tmdbImages}/w1280${hit.backdrop_path}`
+      if (hit?.backdrop_path) banner = `${config.art.tmdbImages}/w1280${hit.backdrop_path}` // sharp enough for a hero at 1440px
     } catch (e: any) { console.warn(`[art] TMDB lookup for series ${seriesId}: ${e.message}`) }
   }
   if ((!poster || !banner) && config.art.tvmazeUrl) {
@@ -197,11 +197,53 @@ export async function getCastPhoto(seriesId: number, index: number) {
   return url ? fetchCached(url, seriesId, 'still') : null
 }
 
+/** The pixel size of a JPEG, PNG or WebP file, read from its header. Null when the header is not understood. */
+function pixelSize(buf: Buffer): { w: number; h: number } | null {
+  if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+  if (buf.length > 30 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+    const kind = buf.toString('ascii', 12, 16)
+    if (kind === 'VP8X') return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) }
+    if (kind === 'VP8 ') return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff }
+    if (kind === 'VP8L') { const b = buf.readUInt32LE(21); return { w: 1 + (b & 0x3fff), h: 1 + ((b >> 14) & 0x3fff) } }
+    return null
+  }
+  if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+    let i = 2
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) { i++; continue }
+      const marker = buf[i + 1]
+      const len = buf.readUInt16BE(i + 2)
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) }
+      i += 2 + len
+    }
+  }
+  return null
+}
+
+/** Sizes already measured, by file path, so a request does not re-read the same file. */
+const sizes = new Map<string, { w: number; h: number } | null>()
+
+/**
+ * Whether a picture is wide and sharp enough to be a show's backdrop. TheTVDB's "banner" art for most shows
+ * is a 758x140 logo strip, which stretched across the page is the blur, so anything that thin, or under 900px
+ * wide, is skipped in favour of the next source (TMDB's backdrop, then the poster the page blurs).
+ */
+async function usableAsBackdrop(path: string): Promise<boolean> {
+  let s = sizes.get(path)
+  if (s === undefined) {
+    try { s = pixelSize(await readFile(path)) } catch { s = null }
+    sizes.set(path, s)
+  }
+  return !s || (s.w >= 900 && s.w / s.h >= 1.5)
+}
+
 /** Cached artwork for a series, downloading it on first use and trying the backup sources when one fails. Null when there is none. */
 export async function getArt(seriesId: number, kind: Exclude<ArtKind, 'still'>) {
   for await (const url of sources(seriesId, kind)) {
     const got = await fetchCached(url, seriesId, kind)
-    if (got) return got
+    if (!got) continue
+    if (kind === 'banner' && !(await usableAsBackdrop(got.path))) continue
+    return got
   }
   return null
 }

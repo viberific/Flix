@@ -94,12 +94,25 @@ function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a><span class="sp"></span>
-    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
+    <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form><span class="sp"></span>
     <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
   if (cur) { q.value = cur; sf.classList.add('has') }
-  q.oninput = () => sf.classList.toggle('has', !!q.value)
+  // Live search: the results land as you type, without a page navigation, so the field keeps focus and the caret.
+  let liveT = 0, liveN = 0
+  q.oninput = () => {
+    sf.classList.toggle('has', !!q.value)
+    clearTimeout(liveT)
+    const v = q.value.trim()
+    liveT = setTimeout(async () => {
+      const mine = ++liveN
+      const render = await homeView(v).catch(() => null)
+      if (!render || mine !== liveN) return
+      history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/')
+      swap(render)
+    }, 220)
+  }
   // Collapsed, the field is only as wide as its icon, so tapping it has to open (focus) the input itself.
   sf.onclick = () => q.focus()
   sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
