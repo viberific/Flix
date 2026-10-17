@@ -516,7 +516,25 @@ test('a torrent downloaded by hand is kept until somebody has watched it', async
   assert.equal(k.deletable, false); assert.match(k.reasons[0], /outside Flix/)
   const u = createUser('watcher', 'password123', false).id
   db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,8101,0,1,1,1)`).run(u)
-  assert.equal(whyKept(done, 8101).deletable, true, 'watched to the end and seeded: now it goes like any other')
+  const others = (db.prepare('SELECT id FROM users WHERE id != ?').all(u) as { id: number }[]).map((r) => r.id)
+  if (others.length) assert.match(whyKept(done, 8101).reasons.join(' '), /not yet watched by everyone who can/, 'one viewer is not enough while others could watch it')
+  for (const o of others) db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,8101,0,1,1,1)`).run(o)
+  assert.equal(whyKept(done, 8101).deletable, true, 'everyone who can watch it has, and it is seeded: now it goes like any other')
+})
+
+test('a torrent waits only for the users whose ratings let them watch it', async () => {
+  const { unwatchedEligible } = await import('../src/retention.ts')
+  const { db } = await import('../src/db.ts')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8201, 82, 'M', 'M - S01E01', 'x3', 0, 1000)`).run()
+  db.prepare(`INSERT OR REPLACE INTO series_meta (series_id, rating, source, fetched_at) VALUES (82, 'TV-MA', 'imdb', 0)`).run()
+  const kid = createUser('kidtest', 'password123', false, ['TV-Y']).id
+  const adult = createUser('adulttest', 'password123', false).id
+  const waiting = unwatchedEligible(8201)
+  assert.ok(!waiting.includes('kidtest'), 'a user who may not see TV-MA is not waited for')
+  assert.ok(waiting.includes('adulttest'))
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, released_at) VALUES (?,8201,0,1,1,1)`).run(adult)
+  assert.ok(!unwatchedEligible(8201).includes('adulttest'), 'releasing it counts as done')
+  void kid
 })
 
 test('storage graph: a year of daily points that rise and fall as downloads come and go, real samples taking over once recorded', async () => {

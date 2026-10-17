@@ -4,6 +4,7 @@ import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
 import { syncFolder, tidyAfterRemoval } from './folder.ts'
 import { recordStorage } from './storage.ts'
+import { canView, getRating, parseAllowed } from './ratings.ts'
 
 export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
 
@@ -23,6 +24,23 @@ export function pendingViewers(torrentId: number): string[] {
   return (db.prepare(`SELECT DISTINCT u.name FROM interests i JOIN users u ON u.id = i.user_id
     WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.updated_at > CASE WHEN i.auto = 1 THEN ? ELSE ? END`).all(torrentId, autoCutoff, cutoff) as { name: string }[])
     .map((r) => r.name)
+}
+
+/**
+ * People who are allowed to watch this torrent's show (admins, unrestricted accounts, or a rating they may see) and have
+ * not yet watched it. Someone who released it ("I don't need this") is counted as done. Nobody being left means everyone who
+ * could have watched it has.
+ */
+export function unwatchedEligible(torrentId: number): string[] {
+  const rel = db.prepare('SELECT series_id FROM releases WHERE torrent_id = ?').get(torrentId) as { series_id: number | null } | undefined
+  const rating = rel?.series_id != null ? getRating(rel.series_id).rating : 'Unrated'
+  const users = db.prepare('SELECT id, name, is_admin, allowed_ratings FROM users').all() as { id: number; name: string; is_admin: number; allowed_ratings: string | null }[]
+  const done = db.prepare('SELECT 1 FROM interests WHERE user_id = ? AND torrent_id = ? AND (watched_at IS NOT NULL OR released_at IS NOT NULL)')
+  return users
+    .filter((u) => canView({ is_admin: u.is_admin, allowed: parseAllowed(u.allowed_ratings) }, rating))
+    .filter((u) => !done.get(u.id, torrentId))
+    .map((u) => u.name)
+    .sort((a, b) => a.localeCompare(b))
 }
 
 export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead'; lapsesAt: number | null }
@@ -62,6 +80,8 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
   const reasons: string[] = []
   if (t.amount_left > 0) reasons.push('still downloading')
   if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
+  const unwatched = unwatchedEligible(torrentId).filter((n) => !pending.includes(n))
+  if (unwatched.length) reasons.push(`not yet watched by everyone who can: ${unwatched.join(', ')}`)
   if (!seed.met) {
     const need: string[] = []
     if (!seed.ratioMet) need.push(`ratio ${seed.ratio.toFixed(2)}/${config.seed.minRatio}`)
