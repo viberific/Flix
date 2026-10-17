@@ -27,6 +27,9 @@ export const config = {
   },
   // BroadcasTheNet's seeding requirement: 130 hours of seeding OR a 1:1 ratio. Fixed on purpose, not configurable.
   seed: { minRatio: 1.0, minHours: 130, mode: 'any' } as { minRatio: number; minHours: number; mode: 'any' | 'all' },
+  // The one address Flix should be reached at, e.g. https://umbrel-1.tail16900.ts.net:9443.
+  // Empty (the default) means no redirect: every address serves Flix as before.
+  publicUrl: (env.PUBLIC_URL ?? '').replace(/\/$/, ''),
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
   // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
   abandonDays: num('ABANDON_DAYS', 30),
