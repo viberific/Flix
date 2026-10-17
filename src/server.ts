@@ -12,7 +12,7 @@ import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, subtitleVtt, touchHls } from './transcode.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, releaseHls, subtitleVtt, touchHls } from './transcode.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -351,6 +351,13 @@ app.post('/api/prefetch', auth, async (req) => {
 app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   const { t, f } = req.params as any
   return (await bufferStatus(+t, +f)) ?? { error: 'not ready' }
+})
+
+/** The player was closed: drop the temporary converted copy (if there was one) after a short grace period. */
+app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
+  const { t, f } = req.params as any
+  releaseHls(+t, +f)
+  return { ok: true }
 })
 
 const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInteger(n) && n >= 0 && n < 32 ? n : 0 }
