@@ -18,8 +18,33 @@ export class IpNotAuthorizedError extends Error {}
 
 const calls: number[] = []
 
-/** Minimal BTN JSON-RPC client with a local hourly budget so we never trip the API limit (150/h). */
+/** API calls still available this hour under our own budget. */
+export function btnBudgetLeft(): number {
+  const cutoff = Date.now() - 3600_000
+  while (calls.length && calls[0] < cutoff) calls.shift()
+  return Math.max(0, config.btn.maxCallsPerHour - calls.length)
+}
+
+/** What the last BTN call told us, for the admin's health banner. Rate limits are not failures and are not recorded. */
+export const btnState: { ok: boolean | null; kind?: 'ip' | 'key' | 'account' | 'offline' | 'error'; message?: string; at?: number } = { ok: null }
+
 export async function btnCall<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  try {
+    const r = await rawBtnCall<T>(method, params)
+    btnState.ok = true; btnState.kind = undefined; btnState.message = undefined; btnState.at = Date.now()
+    return r
+  } catch (e: any) {
+    if (!(e instanceof RateLimitError) && e.message !== 'BTN_API_KEY is not configured') {
+      btnState.ok = false; btnState.at = Date.now(); btnState.message = e.message
+      btnState.kind = e instanceof IpNotAuthorizedError ? 'ip' : /invalid API key/i.test(e.message) ? 'key' : /account is disabled/i.test(e.message) ? 'account'
+        : /fetch failed|timed out|aborted|ENOTFOUND|ECONN/i.test(`${e.message} ${e.cause?.code ?? ''}`) ? 'offline' : 'error'
+    }
+    throw e
+  }
+}
+
+/** Minimal BTN JSON-RPC client with a local hourly budget so we never trip the API limit (150/h). */
+async function rawBtnCall<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   if (!config.btn.apiKey) throw new Error('BTN_API_KEY is not configured')
   const cutoff = Date.now() - 3600_000
   while (calls.length && calls[0] < cutoff) calls.shift()

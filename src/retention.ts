@@ -24,6 +24,9 @@ export function pendingViewers(torrentId: number): string[] {
 export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; reasons: string[]; pending: string[]; seed: SeedStatus } {
   const pending = pendingViewers(torrentId)
   const seed = seedStatus(t)
+  // A torrent that never got a single byte (no seeders, or the viewer was moved to another source) owes BTN nothing and is
+  // not worth keeping; without this a dead torrent would sit in the engine forever, "still downloading".
+  if (t.downloaded === 0 && !pending.length) return { deletable: true, reasons: [], pending, seed }
   const reasons: string[] = []
   if (t.amount_left > 0) reasons.push('still downloading')
   if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
@@ -45,13 +48,14 @@ export async function removeDownload(torrentId: number, hash: string, reason: st
 /** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled. */
 export async function sweep(): Promise<string[]> {
   const removed: string[] = []
-  const rows = db.prepare(`SELECT torrent_id, info_hash FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string }[]
+  const rows = db.prepare(`SELECT torrent_id, info_hash, added_at FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string; added_at: number }[]
   for (const d of rows) {
     const t = await qb.info(d.info_hash)
     if (!t) { // vanished from the engine (manually deleted) -> reflect it
       db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
       continue
     }
+    if (d.added_at > now() - config.sweepGraceSec) continue // just added: its first viewer's interest may not be written yet
     if (whyKept(t, d.torrent_id).deletable) {
       await removeDownload(d.torrent_id, d.info_hash, 'all viewers done and seeding requirement met')
       removed.push(d.info_hash)

@@ -1,0 +1,70 @@
+diff --git a/blofstedt-flix/docker-compose.yml b/blofstedt-flix/docker-compose.yml
+index b0b6033..952b51c 100644
+--- a/blofstedt-flix/docker-compose.yml
++++ b/blofstedt-flix/docker-compose.yml
+@@ -6,12 +6,17 @@ services:
+     environment:
+       APP_HOST: blofstedt-flix_app_1
+       APP_PORT: 8096
++      # Flix has its own accounts, sign-in links and profile PINs, so Umbrel's
++      # own login is not put in front of it (that made everyone sign in twice).
++      # Only safe while Flix is reachable from the home network and Tailscale
++      # alone: do not publish it with a port forward or Tailscale Funnel.
++      PROXY_AUTH_ADD: "false"
+ 
+   app:
+     # Built by viberific/Flix's own workflow from the repo's package.json
+     # version. Bump this tag (and `version` above) only once that tag exists
+     # in the registry, or an update will fail with "manifest unknown".
+-    image: ghcr.io/viberific/flix:0.1.8
++    image: ghcr.io/viberific/flix:0.3.0
+     restart: unless-stopped
+     environment:
+       # The one address Flix will answer on. Every other host name it is
+diff --git a/blofstedt-flix/umbrel-app.yml b/blofstedt-flix/umbrel-app.yml
+index 98662c4..bd2145c 100644
+--- a/blofstedt-flix/umbrel-app.yml
++++ b/blofstedt-flix/umbrel-app.yml
+@@ -4,7 +4,7 @@ name: Flix
+ tagline: Your own streaming service, sourced straight from BTN
+ icon: https://raw.githubusercontent.com/viberific/Autora/main/blofstedt-flix/icon.svg
+ category: media
+-version: "0.1.8"
++version: "0.3.0"
+ port: 8096
+ description: >-
+   Flix is a private, Jellyfin-style media server whose only source is
+@@ -12,7 +12,8 @@ description: >-
+   sequential torrent download in the bundled qBittorrent and begins streaming
+   the file as its pieces arrive, remuxing or transcoding to HLS when the
+   browser can't play the original format. It is an installable PWA: add it to
+-  your phone's home screen and it behaves like an app.
++  your phone's home screen and it behaves like an app. Everyone in the family
++  has their own profile, watch history, My List and content-rating limits.
+ 
+ 
+   Everything runs in one container: the app, qBittorrent-nox (BTN only allows
+@@ -45,9 +46,17 @@ repo: https://github.com/viberific/Flix
+ support: https://github.com/viberific/Flix/issues
+ gallery: []
+ releaseNotes: >-
+-  Flix can be reached at several addresses at once, and the phone kept landing
+-  on https://<device>:8096, where Umbrel's certificate only covers umbrel.local
+-  and so always warned. Flix now sends every other address to the one HTTPS
+-  address it is given by PUBLIC_URL, keeping the path and query.
+-  Loopback and Docker-internal names are left alone, so nothing inside the box
+-  is affected.
++  Made for the whole family. Each person gets a one-time sign-in link from the
++  admin (no password to type), and a shared phone or TV asks "Who's watching?";
++  a profile can have a PIN. Flix no longer sits behind Umbrel's own login, so
++  there is one sign-in, not two. Shows are listed only when their whole first
++  season is available, season packs are listed episode by episode and
++  downloaded whole so they can be seeded, and every episode now has a title,
++  summary and picture. Playback recovers by itself: a source that delivers
++  nothing is swapped for the next-best one, the next episode starts
++  downloading while you watch, and a flag in the player reports a problem to
++  the admin. Subtitles (embedded or .srt files), audio language, Skip intro,
++  10-second jumps and HDR tone-mapping are in. Home has My List, Because you
++  watched, Up next and New episode badges, and works with a TV remote. The
++  admin sees storage, BTN and seeding health on the Torrents page, with a
++  banner when something needs attention, and the database is backed up daily.

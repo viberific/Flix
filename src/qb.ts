@@ -3,7 +3,7 @@ import { config } from './config.ts'
 export interface QbTorrent {
   hash: string; name: string; state: string; progress: number; size: number; total_size: number
   amount_left: number; uploaded: number; downloaded: number; ratio: number; seeding_time: number
-  dlspeed: number; upspeed: number; num_seeds: number; num_leechs: number; save_path: string; added_on: number
+  dlspeed: number; upspeed: number; eta?: number; num_seeds: number; num_leechs: number; save_path: string; added_on: number
 }
 export interface QbFile { index: number; name: string; size: number; progress: number; priority: number; piece_range: [number, number] }
 
@@ -62,6 +62,11 @@ export const qb = {
   async version(): Promise<string> { return (await raw('/api/v2/app/version').then((r) => r.text())) },
   async info(hash: string): Promise<QbTorrent | undefined> {
     return (await json<QbTorrent[]>(`/api/v2/torrents/info?hashes=${hash}`))[0]
+  },
+  /** 'connected' (others can reach us), 'firewalled' (we can download but nobody can connect to us) or 'disconnected', plus the peer port. */
+  async reachability(): Promise<{ status: string; port: number | null; upnp: boolean }> {
+    const [t, p] = await Promise.all([json<{ connection_status?: string }>('/api/v2/transfer/info'), json<{ listen_port?: number; upnp?: boolean }>('/api/v2/app/preferences').catch(() => ({} as any))])
+    return { status: t.connection_status ?? 'unknown', port: p.listen_port ?? null, upnp: !!p.upnp }
   },
   async infoAll(): Promise<QbTorrent[]> { return json('/api/v2/torrents/info?tag=flix') },
   async files(hash: string): Promise<QbFile[]> { return json(`/api/v2/torrents/files?hash=${hash}`) },

@@ -40,10 +40,14 @@ process.env.PROBE_TIMEOUT_MS = '30000'
 process.env.BTN_API_KEY = 'testkey'
 process.env.TMDB_API_KEY = 'tmdbkey'
 process.env.TMDB_API_URL = `http://127.0.0.1:${P.btn}/tmdb`
+process.env.TVMAZE_URL = '' // no outbound lookups from tests
+process.env.TMDB_IMAGE_URL = `http://127.0.0.1:${P.btn}/tmdbimg`
 process.env.ART_ALLOW_PRIVATE_HOSTS = 'true' // test artwork is served from localhost
 process.env.BTN_API_URL = `http://127.0.0.1:${P.btn}/`
 process.env.QB_URL = `http://127.0.0.1:${P.qb}`
 process.env.SWEEP_INTERVAL_SEC = '3600'
+process.env.SWEEP_GRACE_SEC = '0'
+process.env.MIN_FREE_GB = '0'
 
 let tracker: any, seeder: WebTorrent.Instance, btn: Server, qbProc: ChildProcess
 // 1x1 PNG
@@ -93,10 +97,11 @@ before(async () => {
   btn = createServer((req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/tmdb/')) {
       res.setHeader('content-type', 'application/json')
-      if (req.url.startsWith('/tmdb/find/555')) return void res.end(JSON.stringify({ tv_results: [{ id: 9001 }] }))
+      if (req.url.startsWith('/tmdb/find/555')) return void res.end(JSON.stringify({ tv_results: [{ id: 9001, backdrop_path: '/bd.png' }] }))
       if (req.url.startsWith('/tmdb/tv/9001/content_ratings')) return void res.end(JSON.stringify({ results: [{ iso_3166_1: 'GB', rating: '15' }, { iso_3166_1: 'US', rating: 'TV-14' }] }))
       res.statusCode = 404; return void res.end('{}')
     }
+    if (req.method === 'GET' && req.url === '/tmdbimg/w1280/bd.png') { res.setHeader('content-type', 'image/png'); res.end(PNG); return }
     if (req.method === 'GET' && req.url === '/img/poster.png') { posterFetches++; res.setHeader('content-type', 'application/octet-stream'); res.end(PNG); return }
     if (req.method === 'GET' && req.url?.startsWith('/dl/')) {
       const i = Number(req.url.split('/')[2].split('?')[0]) - 1000
@@ -159,7 +164,7 @@ test('catalog: search stores BTN data and never leaks the passkey', async () => 
 test('artwork: cached on the server, served locally, BTN image URL never reaches the browser', async () => {
   const list = await jget('/api/series?q=Test')
   assert.equal(list.series[0].poster, '/api/art/77/poster')
-  assert.equal(list.series[0].banner, null) // BTN gave no banner
+  assert.equal(list.series[0].banner, '/api/art/77/banner') // BTN gave no banner; the path is always given and the server finds a backup
   const s = await jget('/api/series/77')
   assert.ok(!JSON.stringify([list, s]).includes('127.0.0.1:' + P.btn), 'remote artwork URL leaked')
   const anon = await fetch(`http://127.0.0.1:${P.app}/api/art/77/poster`)
@@ -170,7 +175,11 @@ test('artwork: cached on the server, served locally, BTN image URL never reaches
   assert.ok(Buffer.from(await a.arrayBuffer()).equals(PNG))
   assert.equal(b.status, 200); await b.arrayBuffer()
   assert.equal(posterFetches, 1, 'second view must come from the cache')
-  assert.equal((await api('/api/art/77/banner')).status, 404)
+  // BTN has no banner, so the backup source (TMDB's backdrop) fills in; kinds nobody can supply are a plain 404.
+  const bn = await api('/api/art/77/banner')
+  assert.equal(bn.status, 200); assert.ok(Buffer.from(await bn.arrayBuffer()).equals(PNG))
+  assert.equal((await api('/api/art/77/trailer')).status, 404)
+  assert.equal((await api('/api/art/77/nonsense')).status, 404)
 })
 
 async function playAndFetch(torrentId: number) {

@@ -1,9 +1,10 @@
 // App-shell cache only. API responses and video streams are never cached (auth + huge, partially-downloaded files).
-const CACHE = 'flix-shell-v6'
+const CACHE = 'flix-shell-v8'
 const SHELL = ['/', '/app.js', '/style.css', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/manifest.webmanifest', '/vendor/hls.min.js']
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()))
+  // One missing file must not stop the worker installing (addAll is all-or-nothing, and an app with no worker can't be installed).
+  e.waitUntil(caches.open(CACHE).then((c) => Promise.allSettled(SHELL.map((u) => c.add(u)))).then(() => self.skipWaiting()))
 })
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()))

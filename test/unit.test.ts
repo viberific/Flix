@@ -25,8 +25,8 @@ test('ratio is measured against full torrent size', () => {
 })
 
 test('parseGroupName', () => {
-  assert.deepEqual(parseGroupName('Some Show - S02E05'), { season: 2, episode: 5, label: 'S02E05', isPack: false })
-  assert.deepEqual(parseGroupName('Some Show - Season 3', 'Season'), { season: 3, episode: null, label: 'Season 3', isPack: true })
+  assert.deepEqual(parseGroupName('Some Show - S02E05'), { season: 2, episode: 5, episodeEnd: 5, label: 'S02E05', isPack: false })
+  assert.deepEqual(parseGroupName('Some Show - Season 3', 'Season'), { season: 3, episode: null, episodeEnd: null, label: 'Season 3', isPack: true })
   const d = parseGroupName('Late Show - 2024.03.01')
   assert.equal(d.label, '2024-03-01'); assert.equal(d.season, 2024)
 })
@@ -158,4 +158,86 @@ test('settings: TMDB key overrides the environment, status hides it, clearing re
   assert.ok(!JSON.stringify(st).includes('tmdbsecret'))
   setTmdbApiKey('')
   assert.equal(config.tmdb.apiKey, env)
+})
+
+const { parseEpisodeTag } = await import('../src/btn/parse.ts')
+const { visibleSeasons } = await import('../src/seasons.ts')
+const { torrentFiles } = await import('../src/btn/torrentfile.ts')
+
+test('episode tags: normal, double episodes, 1x02, and no false hits on resolutions', () => {
+  assert.deepEqual(parseEpisodeTag('Show.S01E02.1080p.WEB'), { season: 1, episode: 2, episodeEnd: 2 })
+  assert.deepEqual(parseEpisodeTag('Show.S01E02E03.720p'), { season: 1, episode: 2, episodeEnd: 3 })
+  assert.deepEqual(parseEpisodeTag('Show - S01E05-E06'), { season: 1, episode: 5, episodeEnd: 6 })
+  assert.deepEqual(parseEpisodeTag('Show - S01E05-1080p'), { season: 1, episode: 5, episodeEnd: 5 })
+  assert.deepEqual(parseEpisodeTag('Show 2x07 HDTV'), { season: 2, episode: 7, episodeEnd: 7 })
+  assert.equal(parseEpisodeTag('Show.1920x1080.mkv'), null)
+  assert.equal(parseEpisodeTag('Season 3'), null)
+})
+
+const ep = (season: number, episode: number, end?: number) => ({ season, episode, episode_end: end ?? episode, is_pack: 0 })
+const pack = (season: number) => ({ season, episode: null, episode_end: null, is_pack: 1 })
+const seasons = (rows: any[]) => [...visibleSeasons(rows)]
+
+test('seasons: a show needs a complete season 1, or it is not listed', () => {
+  assert.deepEqual(seasons([]), [])
+  assert.deepEqual(seasons([ep(2, 1), ep(2, 2)]), []) // no season 1
+  assert.deepEqual(seasons([ep(1, 2), ep(1, 3)]), []) // season 1 starts at E02
+  assert.deepEqual(seasons([ep(1, 1), ep(1, 2), ep(1, 4)]), []) // E03 missing
+  assert.deepEqual(seasons([ep(1, 1), ep(1, 2), ep(1, 3)]), [[1, 'episodes']])
+})
+
+test('seasons: only the next sequential season may follow, and only when whole', () => {
+  const s1 = [ep(1, 1), ep(1, 2)]
+  assert.deepEqual(seasons([...s1, ep(3, 1), ep(3, 2)]), [[1, 'episodes']]) // 1 and 3 but no 2: only 1
+  assert.deepEqual(seasons([...s1, ep(2, 1), ep(2, 3)]), [[1, 'episodes']]) // season 2 has a hole
+  assert.deepEqual(seasons([...s1, ep(2, 1), ep(2, 2), ep(3, 2)]), [[1, 'episodes'], [2, 'episodes']])
+  assert.deepEqual(seasons([...s1, ep(2, 1), ep(2, 2), ep(4, 1)]).map(([n]) => n), [1, 2]) // 3 missing hides 4
+})
+
+test('seasons: packs fill seasons with no complete set of single episodes; singles win when complete', () => {
+  assert.deepEqual(seasons([pack(1)]), [[1, 'pack']])
+  assert.deepEqual(seasons([pack(1), ep(1, 1), ep(1, 3)]), [[1, 'pack']]) // singles have a hole, the pack is whole
+  assert.deepEqual(seasons([pack(1), ep(1, 1), ep(1, 2)]), [[1, 'episodes']]) // complete singles are preferred
+  assert.deepEqual(seasons([ep(1, 1), pack(2)]), [[1, 'episodes'], [2, 'pack']])
+})
+
+test('seasons: double episodes cover both numbers; specials and date shows never count', () => {
+  assert.deepEqual(seasons([ep(1, 1, 2), ep(1, 3)]), [[1, 'episodes']])
+  assert.deepEqual(seasons([ep(0, 1), ep(1, 1)]), [[1, 'episodes']])
+  assert.deepEqual(seasons([{ season: 2024, episode: null, episode_end: null, is_pack: 0 }]), [])
+})
+
+test('torrentFiles reads single- and multi-file torrents', () => {
+  const ben = (v: any): string => typeof v === 'number' ? `i${v}e` : typeof v === 'string' ? `${Buffer.byteLength(v)}:${v}` : Array.isArray(v) ? `l${v.map(ben).join('')}e`
+    : `d${Object.keys(v).sort().map((k) => ben(k) + ben(v[k])).join('')}e`
+  const multi = Buffer.from(ben({ info: { name: 'Show.S01', files: [{ length: 100, path: ['S01E01.mkv'] }, { length: 200, path: ['sub', 'S01E02.mkv'] }] } }))
+  assert.deepEqual(torrentFiles(multi), [{ path: 'Show.S01/S01E01.mkv', size: 100 }, { path: 'Show.S01/sub/S01E02.mkv', size: 200 }])
+  assert.deepEqual(torrentFiles(Buffer.from(ben({ info: { name: 'a.mkv', length: 5 } }))), [{ path: 'a.mkv', size: 5 }])
+  assert.throws(() => torrentFiles(Buffer.from('d4:spam')))
+})
+
+const { createUser, createInvite, redeemInvite, newSession, sessionUser, tvToken, userForTvToken } = await import('../src/auth.ts')
+
+test('sign-in links work once; sessions and TV links are checked', () => {
+  const u = createUser('ann', 'password123', false)
+  const inv = createInvite(u.id)
+  const r = redeemInvite(inv)
+  assert.equal(r?.userId, u.id)
+  assert.equal(redeemInvite(inv), null, 'second use is refused')
+  assert.equal(redeemInvite('0'.repeat(48)), null)
+  assert.equal(sessionUser(r!.session), u.id)
+  assert.equal(sessionUser('f'.repeat(64)), null)
+  assert.notEqual(newSession(u.id), newSession(u.id))
+  const tok = tvToken(u.id)
+  assert.equal(userForTvToken(tok)?.id, u.id)
+  assert.equal(userForTvToken(tok.slice(0, -1) + (tok.endsWith('0') ? '1' : '0')), null, 'a tampered token is refused')
+  assert.equal(userForTvToken(`${u.id}.1.${'0'.repeat(32)}`), null)
+})
+
+test('assertSpace refuses when the disk would fill up', async () => {
+  const { assertSpace } = await import('../src/health.ts')
+  assert.doesNotThrow(() => assertSpace(0))
+  config.minFreeGb = 1e9 // more than any disk
+  assert.throws(() => assertSpace(1), /out of storage/)
+  config.minFreeGb = 10
 })

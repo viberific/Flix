@@ -15,6 +15,11 @@ export const config = {
   },
   // Optional: automatic content ratings (TV-Y … TV-MA) via TMDB. Without a key the admin sets ratings by hand.
   tmdb: { apiKey: env.TMDB_API_KEY ?? '', apiUrl: (env.TMDB_API_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, '') },
+  // Backup artwork when BTN has none (or its image host refuses us): TMDB (needs the key above), then TVmaze (no key).
+  // Set TVMAZE_URL to an empty string to turn TVmaze off.
+  art: { tmdbImages: (env.TMDB_IMAGE_URL ?? 'https://image.tmdb.org/t/p').replace(/\/$/, ''), tvmazeUrl: (env.TVMAZE_URL ?? 'https://api.tvmaze.com').replace(/\/$/, ''), youtubeImages: (env.YOUTUBE_IMAGE_URL ?? 'https://i.ytimg.com/vi').replace(/\/$/, ''),
+    // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
+    allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
   qb: {
     url: (env.QB_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, ''),
     user: env.QB_USER ?? 'admin',
@@ -22,14 +27,17 @@ export const config = {
   },
   // BroadcasTheNet's seeding requirement: 130 hours of seeding OR a 1:1 ratio. Fixed on purpose, not configurable.
   seed: { minRatio: 1.0, minHours: 130, mode: 'any' } as { minRatio: number; minHours: number; mode: 'any' | 'all' },
-  // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
-  art: { allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
   // The one address Flix should be reached at, e.g. https://umbrel-1.tail16900.ts.net:9443.
   // Empty (the default) means no redirect: every address serves Flix as before.
   publicUrl: (env.PUBLIC_URL ?? '').replace(/\/$/, ''),
   watchedThreshold: num('WATCHED_THRESHOLD', 0.9),
-  abandonDays: num('ABANDON_DAYS', 0),
+  // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
+  abandonDays: num('ABANDON_DAYS', 30),
+  // Refuse new downloads when less than this much disk would be left (GB).
+  minFreeGb: num('MIN_FREE_GB', 10),
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
+  /** A torrent added less than this long ago is never swept (its first viewer is still being recorded). */
+  sweepGraceSec: num('SWEEP_GRACE_SEC', 300),
   /** Random per-process secret so our own ffmpeg can read the raw stream without a user cookie. */
   internalKey: crypto.randomUUID(),
 }
