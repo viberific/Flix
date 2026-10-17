@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
-import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setSessionCookie, tvToken, userCount, userFor, userForTvToken } from './auth.ts'
+import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
@@ -74,7 +74,25 @@ await app.register(fastifyStatic, { root: join(root, 'public') })
 await app.register(fastifyStatic, { root: join(root, 'node_modules/hls.js/dist'), prefix: '/vendor/', decorateReply: false })
 
 // ---- auth -----------------------------------------------------------------
-app.get('/api/me', async (req) => ({ user: userFor(req), needsSetup: userCount() === 0 }))
+// `cast` tells the app a TV on the same network could reach the media at all (LAN_URL is set), so the header
+// button only appears where casting can actually work.
+app.get('/api/me', async (req) => {
+  const u = userFor(req)
+  return { user: u ? { ...u, cast: !!config.lanUrl } : u, needsSetup: userCount() === 0 }
+})
+
+/** A person changing their own account: the name shown, their picture, their password. */
+app.patch('/api/me', { preHandler: requireUser }, async (req, reply) => {
+  const me = req.user!
+  const b = req.body as any
+  let out = me
+  if (b.newPassword !== undefined) setOwnPassword(me.id, String(b.currentPassword ?? ''), String(b.newPassword))
+  if (b.avatar !== undefined) out = setAvatar(me.id, b.avatar === null || b.avatar === '' ? null : String(b.avatar))
+  if (b.name !== undefined) out = renameUser(me.id, String(b.name))
+  // A new password signs every device out, this one included -- so give this browser a fresh session and keep them here.
+  if (b.newPassword !== undefined) setSessionCookie(reply, newSession(me.id))
+  return { user: out }
+})
 
 app.post('/api/login', async (req, reply) => {
   const { name, password } = req.body as any

@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 `)
 try { db.exec('ALTER TABLE users ADD COLUMN pin_hash TEXT') } catch { /* already present */ }
+// The little creature a person picks for themselves. Null means "no picture": the app shows their initial.
+try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT') } catch { /* already present */ }
 try { db.exec('ALTER TABLE my_list ADD COLUMN seen_at INTEGER') } catch { /* already present */ }
 try { db.exec('ALTER TABLE releases ADD COLUMN youtube_trailer TEXT') } catch { /* already present */ }
 // Last episode a multi-episode file covers (S01E01E02 -> 2); null for everything else.

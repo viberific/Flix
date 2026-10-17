@@ -52,6 +52,27 @@ const go = (h) => { location.hash = h }
 const hue = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7)
 const pct = (p, d) => Math.min(100, Math.round((p / (d || 1)) * 100))
 
+/* ---------- little creatures ---------- */
+// The pictures a person can choose for their own profile. Drawn here as flat shapes so there is nothing to download,
+// they stay sharp at any size, and the whole set costs a few hundred bytes. Each one is a round badge that fills the slot.
+const AVATARS = ['fox', 'owl', 'cat', 'bunny', 'frog', 'whale', 'octopus', 'bee', 'panda', 'axolotl', 'raccoon', 'hedgehog']
+const AV_ART = {
+  fox: '<circle cx="24" cy="24" r="24" fill="#ffbb85"/><path d="M12 17 9 6l11 5Z" fill="#e2703a"/><path d="M36 17l3-11-11 5Z" fill="#e2703a"/><path d="M24 13c8 0 13 6 13 13s-6 13-13 13-13-5-13-13 5-13 13-13Z" fill="#f2843b"/><path d="M24 39c-5 0-9-4-9-9 0-3 2-5 5-5h8c3 0 5 2 5 5 0 5-4 9-9 9Z" fill="#fff3e6"/><circle cx="18.5" cy="23" r="2" fill="#3a2418"/><circle cx="29.5" cy="23" r="2" fill="#3a2418"/><path d="m24 29 2.2 2.4h-4.4Z" fill="#3a2418"/>',
+  owl: '<circle cx="24" cy="24" r="24" fill="#9b8ce0"/><path d="M13 15l-1-6 7 3ZM35 15l1-6-7 3Z" fill="#c3b6f5"/><path d="M24 11c9 0 15 7 15 16s-6 14-15 14-15-5-15-14 6-16 15-16Z" fill="#bfb1f7"/><circle cx="17.5" cy="25" r="5" fill="#fff"/><circle cx="30.5" cy="25" r="5" fill="#fff"/><circle cx="17.5" cy="25" r="2.4" fill="#3b2f5c"/><circle cx="30.5" cy="25" r="2.4" fill="#3b2f5c"/><path d="m24 27 3 4h-6Z" fill="#ffb020"/><path d="M19 38h10" stroke="#8a76d8" stroke-width="2" stroke-linecap="round"/>',
+  cat: '<circle cx="24" cy="24" r="24" fill="#b6c6d6"/><path d="M12 18 11 8l9 5ZM36 18l1-10-9 5Z" fill="#dbe6f0"/><path d="M24 12c8 0 14 6 14 14s-6 14-14 14-14-6-14-14 6-14 14-14Z" fill="#e7eff7"/><path d="M17 23c1.4-2 4-2 5.4 0M25.6 23c1.4-2 4-2 5.4 0" stroke="#41525f" stroke-width="1.9" stroke-linecap="round" fill="none"/><path d="m24 27 1.8 2h-3.6Z" fill="#e0778f"/><path d="M8 27h5M8 31h5M40 27h-5M40 31h-5" stroke="#8496a6" stroke-width="1.4" stroke-linecap="round"/>',
+  bunny: '<circle cx="24" cy="24" r="24" fill="#ffd3e3"/><path d="M17 20c-2-6-1-13 2-13s4 8 3 13ZM31 20c2-6 1-13-2-13s-4 8-3 13Z" fill="#fff5f9"/><path d="M17 19c-1-5 0-10 2-10s3 6 2 10ZM31 19c1-5 0-10-2-10s-3 6-2 10Z" fill="#ffb8d0"/><circle cx="24" cy="28" r="12" fill="#fff5f9"/><circle cx="19.5" cy="26" r="1.8" fill="#4a3a42"/><circle cx="28.5" cy="26" r="1.8" fill="#4a3a42"/><path d="m24 30 1.8 1.8h-3.6Z" fill="#f08ba8"/>',
+  frog: '<circle cx="24" cy="24" r="24" fill="#8ddf7a"/><circle cx="16" cy="17" r="6" fill="#7ed957"/><circle cx="32" cy="17" r="6" fill="#7ed957"/><circle cx="16" cy="17" r="3" fill="#2f4a2a"/><circle cx="32" cy="17" r="3" fill="#2f4a2a"/><path d="M12 25c0-5 5-8 12-8s12 3 12 8c0 7-5 12-12 12s-12-5-12-12Z" fill="#9ee98a"/><path d="M16 29c3 4 13 4 16 0" stroke="#3f7a35" stroke-width="2.4" stroke-linecap="round" fill="none"/>',
+  whale: '<circle cx="24" cy="24" r="24" fill="#6cc4f7"/><path d="M14 18c0-2 1-4 3-4s2 3 0 4Z" fill="#bfe9ff"/><path d="M12 26c0-7 6-11 14-11s13 5 13 12-6 10-14 10-13-4-13-11Z" fill="#8fd8ff"/><path d="M39 27c3-2 5 1 3 4-1 2-4 2-5 0Z" fill="#5fb0e0"/><circle cx="19" cy="25" r="2.2" fill="#123a52"/><path d="M17 32c5 3 11 2 14-1" stroke="#3f9ecc" stroke-width="2.2" stroke-linecap="round" fill="none"/>',
+  octopus: '<circle cx="24" cy="24" r="24" fill="#c084f5"/><path d="M24 11c7 0 12 6 12 13v9H12v-9c0-7 5-13 12-13Z" fill="#d6a4ff"/><path d="M13 33c-2 2-2 5 0 6M19 33c-2 3-1 6 1 7M29 33c2 3 1 6-1 7M35 33c2 2 2 5 0 6" stroke="#a967e0" stroke-width="3" stroke-linecap="round" fill="none"/><circle cx="19" cy="24" r="2.2" fill="#3d1f5c"/><circle cx="29" cy="24" r="2.2" fill="#3d1f5c"/><path d="M21 29c2 1.6 4 1.6 6 0" stroke="#3d1f5c" stroke-width="1.8" stroke-linecap="round" fill="none"/>',
+  bee: '<circle cx="24" cy="24" r="24" fill="#ffd66b"/><ellipse cx="16" cy="17" rx="7" ry="5" fill="#fff" opacity=".8" transform="rotate(-20 16 17)"/><ellipse cx="32" cy="17" rx="7" ry="5" fill="#fff" opacity=".8" transform="rotate(20 32 17)"/><ellipse cx="24" cy="28" rx="13" ry="12" fill="#ffc63d"/><path d="M12 24h24M13 31h22" stroke="#3a2f14" stroke-width="3.4" stroke-linecap="round"/><circle cx="19" cy="20" r="2" fill="#3a2f14"/><circle cx="29" cy="20" r="2" fill="#3a2f14"/>',
+  panda: '<circle cx="24" cy="24" r="24" fill="#eef3f8"/><circle cx="13" cy="14" r="6" fill="#2f3439"/><circle cx="35" cy="14" r="6" fill="#2f3439"/><circle cx="24" cy="26" r="15" fill="#fff"/><ellipse cx="17" cy="24" rx="5" ry="6" fill="#2f3439" transform="rotate(-15 17 24)"/><ellipse cx="31" cy="24" rx="5" ry="6" fill="#2f3439" transform="rotate(15 31 24)"/><circle cx="17.5" cy="24" r="1.8" fill="#fff"/><circle cx="30.5" cy="24" r="1.8" fill="#fff"/><path d="m24 29 2 2h-4Z" fill="#2f3439"/>',
+  axolotl: '<circle cx="24" cy="24" r="24" fill="#ffb3c9"/><path d="M9 16h6M8 22h7M10 28h6" stroke="#ff7ba6" stroke-width="2.6" stroke-linecap="round"/><path d="M39 16h-6M40 22h-7M38 28h-6" stroke="#ff7ba6" stroke-width="2.6" stroke-linecap="round"/><circle cx="24" cy="26" r="13" fill="#ffc9d9"/><circle cx="24" cy="10" r="4" fill="#ffd7e3"/><circle cx="19" cy="25" r="2" fill="#5c2739"/><circle cx="29" cy="25" r="2" fill="#5c2739"/><path d="M20 31c2.5 2 5.5 2 8 0" stroke="#b5517a" stroke-width="2" stroke-linecap="round" fill="none"/>',
+  raccoon: '<circle cx="24" cy="24" r="24" fill="#a9b7c4"/><path d="M11 16 10 7l8 4ZM37 16l1-9-8 4Z" fill="#cfdae4"/><path d="M24 12c9 0 15 6 15 14s-6 14-15 14S9 34 9 26s6-14 15-14Z" fill="#dde6ee"/><path d="M11 22c4-3 9-4 13-4s9 1 13 4c-1 4-6 6-13 6s-12-2-13-6Z" fill="#454f59"/><circle cx="18" cy="22" r="2.2" fill="#fff"/><circle cx="30" cy="22" r="2.2" fill="#fff"/><path d="m24 29 2 2.2h-4Z" fill="#2f3740"/>',
+  hedgehog: '<circle cx="24" cy="24" r="24" fill="#e0b378"/><path d="M10 27c2-10 7-16 14-16s12 6 14 16Z" fill="#8a5a33"/><path d="M13 26l3-5 3 5 3-6 3 6 3-6 3 6 3-5 3 5" stroke="#6d4526" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 28c0-4 4-6 10-6s10 2 10 6-4 8-10 8-10-4-10-8Z" fill="#f3d3a8"/><circle cx="20" cy="28" r="1.9" fill="#3f2a1a"/><circle cx="28" cy="28" r="1.9" fill="#3f2a1a"/><circle cx="24" cy="32" r="2" fill="#3f2a1a"/>',
+}
+/** One creature as inline SVG. Nothing is returned for an id this build does not know, so callers fall back to the initial. */
+function avSvg(id, cls = '') { const a = AV_ART[id]; return a ? `<svg class="avsvg ${cls}" viewBox="0 0 48 48" aria-hidden="true">${a}</svg>` : '' }
+
 const I = {
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
@@ -99,7 +120,25 @@ function renderTop() {
   top.hidden = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
     <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
-    <button class="avatar" id="av" aria-label="Account menu" aria-haspopup="true">${esc(me.name[0].toUpperCase())}</button>`
+    <div class="hact">${me.cast ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
+    // The cast button sits between the search bar and the profile: tap it once to pick the TV, then anything
+    // started plays there. Tapping it again stops the session.
+    casting.headerOff?.()
+    casting.headerOff = onCast(() => {
+      const tb = $('#tc')
+      if (!tb) return
+      tb.classList.toggle('on', casting.connected)
+      tb.setAttribute('aria-pressed', casting.connected ? 'true' : 'false')
+      tb.title = casting.connected ? `Casting to ${casting.device} · tap to stop` : 'Cast to a TV'
+    })
+    const tc = $('#tc')
+    if (tc) tc.onclick = async () => {
+      if (casting.connected) { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* already gone */ } return }
+      try { await castConnect(); castNote(`Casting to ${casting.device}`) } catch (err) {
+        if (err?.code === 'cancel') return // they closed the device picker
+        castNote('No TV found. Check the TV is on and on the same network as this box.')
+      }
+    }
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
   if (cur) q.value = cur
@@ -125,7 +164,7 @@ function renderTop() {
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div>${many ? '<button id="sw">Profile</button>' : '<a href="#/signin">Profile</a>'}<a href="#/downloads">Downloads</a>${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}<a href="#/downloads">Downloads</a>${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
@@ -214,11 +253,11 @@ addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { 
 /* ---------- profiles ("Who's watching?") ---------- */
 // Each profile used on this device keeps its own long-lived sign-in in local storage, so switching never asks for a password.
 const profiles = () => store.get('profiles', [])
-async function rememberProfile() {
+async function rememberProfile(drop) {
   if (!me) return
   try {
     const { token } = await api('/api/device-token', {})
-    store.set('profiles', [...profiles().filter((p) => p.name !== me.name), { name: me.name, token }])
+    store.set('profiles', [...profiles().filter((p) => p.name !== me.name && p.name !== drop), { name: me.name, token }])
   } catch { /* the picker just won't list them */ }
 }
 const picked = () => { try { return sessionStorage.getItem('flix.picked') === '1' } catch { return true } }
@@ -601,6 +640,9 @@ function playView(seriesId, season, label) {
         const i = want ? info.audio.findIndex((t) => t.lang === want) : -1
         if (i > 0 && info.audio[0].lang !== want) return loadInfo(i, startAt)
       }
+      // A TV that is already connected gets the episode: casting stays on until it is stopped, so every
+      // show tapped from now on follows it there.
+      if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
       wireSubs(); wireAudio(); wireExtras()
     }
@@ -731,28 +773,10 @@ function playView(seriesId, season, label) {
       if (c) { b.textContent = /recap|previously/i.test(c.title) ? 'Skip recap' : 'Skip intro'; b.onclick = () => { v.currentTime = c.end } }
     }
     let castWired = false
-    // Casting uses the Cast SDK: the TV opens the signed HLS link itself. It is fetched from the LAN address,
-    // because a cast device cannot resolve the tailnet name the page was loaded from.
-    function loadCastSdk() {
-      if (window.cast?.framework) return Promise.resolve()
-      if (!loadCastSdk.p) loadCastSdk.p = new Promise((ok, no) => {
-        window.__onGCastApiAvailable = (yes) => {
-          if (!yes || !window.cast?.framework) return no(new Error('cast unavailable'))
-          cast.framework.CastContext.getInstance().setOptions({ receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID })
-          ok()
-        }
-        const s = document.createElement('script')
-        s.src = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1'
-        s.onerror = () => no(new Error('cast unavailable'))
-        document.head.append(s)
-      })
-      return loadCastSdk.p
-    }
-    function castNote(msg) {
-      const n = document.createElement('div')
-      n.className = 'castnote'; n.textContent = msg
-      ;(v.parentElement || document.body).append(n)
-      setTimeout(() => n.remove(), 6000)
+    const castTitle = () => `${play?.seriesName || label}${play?.episodeTitle ? ' · ' + play.episodeTitle : ''}`
+    /** Send this episode to the connected TV; its progress is reported from there (see castTrack). */
+    async function castHere(at) {
+      await castSend(info.castUrl, castTitle(), at || 0, play.torrentId, play.fileIndex, info.duration)
     }
     function wireExtras() {
       if (castWired) return
@@ -760,34 +784,28 @@ function playView(seriesId, season, label) {
       // No LAN address configured means the TV could not reach the media anyway,
       // so the button stays away rather than failing at the last step.
       if (!info?.castUrl) return
-      loadCastSdk().then(() => {
-        const ctx = cast.framework.CastContext.getInstance()
-        ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
-          const S = cast.framework.CastState
-          $('#cast').hidden = e.castState === S.NO_DEVICES
-          // Once the TV is playing it, stop the phone playing the same thing.
-          if (e.castState === S.CONNECTED) v.pause?.()
-        })
-      }).catch(() => {})
+      $('#cast').hidden = false
       $('#cast').onclick = async () => {
         try {
-          await loadCastSdk()
-          const session = await cast.framework.CastContext.getInstance().requestSession()
-          if (!session) return
-          const media = new chrome.cast.media.MediaInfo(info.castUrl, 'application/vnd.apple.mpegurl')
-          media.streamType = chrome.cast.media.StreamType.BUFFERED
-          const md = new chrome.cast.media.GenericMediaMetadata()
-          md.title = label
-          media.metadata = md
-          const req = new chrome.cast.media.LoadRequest(media)
-          req.currentTime = Math.floor(v.currentTime || 0)
-          await session.loadMedia(req)
-          v.pause?.()
+          if (!casting.connected) await castConnect()
+          await castHere(v?.currentTime || 0)
+          v?.pause?.() // the TV has it now
+          castNote(`Playing on ${casting.device}`)
         } catch (err) {
           if (err?.code === 'cancel') return // they closed the device picker
           castNote('Could not start on the TV. Check the TV is on the same network as this box.')
         }
       }
+    }
+    /** A connected TV gets the episode instead of the phone; if that fails it plays here as usual. */
+    async function castInstead(at) {
+      try {
+        await castHere(at)
+        clearInterval(timer); clearInterval(subT); clearInterval(cdT); hls?.destroy(); hls = null
+        $('#wait').classList.remove('gone'); $('.pline')?.remove(); $('.mark')?.remove()
+        $('#msg').innerHTML = `Playing on ${esc(casting.device)}<div style="display:flex;gap:10px;justify-content:center;margin-top:16px"><button class="btn" id="cstop">Play on this phone</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
+        $('#cstop').onclick = () => { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* gone */ } ; setTimeout(route, 500) }
+      } catch { attach(at) }
     }
 
     begin()
@@ -1142,6 +1160,56 @@ function settingsPanel(data, root) {
 /* ---------- downloads (watch without a connection) ---------- */
 const mb = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(n / 1048576)) + ' MB')
 
+/** Your own account: the little creature, the name, the password. Each part saves on its own. */
+function profileView() {
+  return () => {
+    app.innerHTML = `<div class="pad page-top prof"><h1 class="stitle">Profile</h1>
+      <p class="dim" style="margin:4px 0 20px">Everything here is yours alone on this Flix.</p>
+      <h2 class="sec" style="margin-top:0">Your creature</h2>
+      <div class="avgrid">${AVATARS.map((id) => `<button class="avpick" data-av="${id}" aria-pressed="${me.avatar === id}" aria-label="${id}">${avSvg(id)}</button>`).join('')}</div>
+      <p class="dim" id="avmsg" style="margin:8px 0 0;font-size:14px">Tap one to use it beside your name.</p>
+      <h2 class="sec">Name</h2>
+      <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
+      <h2 class="sec">Password</h2>
+      <form id="pform" class="pform"><input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required><input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
+
+    const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
+    app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
+      const before = me.avatar
+      const msg = $('avmsg')
+      b.disabled = true
+      try {
+        me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user
+        app.querySelectorAll('.avpick').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.av === me.avatar)))
+        renderTop()
+        setMsg(msg, 'Saved.')
+      } catch (e) { me.avatar = before; setMsg(msg, e.message, true) } finally { b.disabled = false }
+    })
+    $('nform').onsubmit = async (e) => {
+      e.preventDefault()
+      const err = $('nerr'); err.textContent = ''
+      const name = new FormData(e.target).get('name')
+      try {
+        const r = await api('/api/me', { name }, 'PATCH')
+        const old = me.name; me = r.user
+        rememberProfile(old)
+        renderTop()
+        err.textContent = 'Name saved.'; err.classList.add('ok')
+      } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
+    }
+    $('pform').onsubmit = async (e) => {
+      e.preventDefault()
+      const err = $('perr'); err.textContent = ''
+      const f = new FormData(e.target)
+      try {
+        await api('/api/me', { currentPassword: f.get('current'), newPassword: f.get('next') }, 'PATCH')
+        e.target.reset()
+        err.textContent = 'Password changed. Stay signed in here.'; err.classList.add('ok')
+      } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
+    }
+  }
+}
+
 /** Episodes saved on this device. With no connection this is the whole app: `offline` swaps the top bar for a notice. */
 async function downloadsView(offline = false) {
   const items = await dl.list()
@@ -1319,6 +1387,7 @@ async function route() {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
+    else if (parts[0] === 'profile') render = profileView()
     else if (parts[0] === 'downloads') render = await downloadsView()
     else if (parts[0] === 'offplay' && parts[1]) render = await offlinePlayView(parts[1])
     else if ((parts[0] === 'settings' || parts[0] === 'admin') && me.is_admin) render = await settingsView(parts[0] === 'admin' ? LEGACY_SECTION[parts[1] ?? ''] ?? 'torrents' : SETTINGS_PILLS.some(([id]) => id === parts[1]) ? parts[1] : 'torrents')

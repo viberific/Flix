@@ -400,6 +400,34 @@ test('ratings: there is no way to set one by hand; the viewer\'s allowed list de
   assert.equal((await patch({ allowedRatings: ['TV-MA'] })).status, 200)
 })
 
+test('profile: a person picks their own creature, renames themselves and changes their own password', async () => {
+  await jpost('/api/admin/users', { name: 'prof', password: 'password123' })
+  const c = (await loginAs('prof', 'password123'))!
+  const patch = (body: any) => as(c, () => api('/api/me', { method: 'PATCH', body: JSON.stringify(body) }))
+  // the picture has to be one we draw
+  assert.equal((await patch({ avatar: 'not-a-creature' })).status, 400)
+  const picked = await (await patch({ avatar: 'owl' })).json() as any
+  assert.equal(picked.user.avatar, 'owl')
+  await as(c, async () => assert.equal((await jget('/api/me')).user.avatar, 'owl'))
+  // the name is the one shown everywhere, and nobody else may take it
+  assert.equal((await patch({ name: 'kid' })).status, 400) // already taken
+  assert.equal((await (await patch({ name: 'prof2' })).json() as any).user.name, 'prof2')
+  await as(c, async () => assert.equal((await jget('/api/me')).user.name, 'prof2'))
+  // a password needs the current one, and 8+ characters
+  assert.equal((await patch({ currentPassword: 'wrong', newPassword: 'anotherpass1' })).status, 400)
+  assert.equal((await patch({ currentPassword: 'password123', newPassword: 'short' })).status, 400)
+  const changed = await patch({ currentPassword: 'password123', newPassword: 'anotherpass1' })
+  assert.equal(changed.status, 200, await changed.clone().text())
+  // the browser that changed it is kept signed in, on a fresh session; the old cookie is dead
+  const c2 = changed.headers.get('set-cookie')!.split(';')[0]
+  await as(c2, async () => assert.equal((await jget('/api/me')).user.name, 'prof2'))
+  await as(c, async () => assert.equal((await jget('/api/me')).user, null, 'the session it was changed from is signed out'))
+  assert.equal(await loginAs('prof2', 'password123'), null)
+  assert.ok(await loginAs('prof2', 'anotherpass1'))
+  // and a picture can be given up again
+  assert.equal((await (await as(c2, () => api('/api/me', { method: 'PATCH', body: JSON.stringify({ avatar: null }) }))).json() as any).user.avatar, null)
+})
+
 test('accounts: guards for last admin / self, password reset signs the user out, removal works', async () => {
   const users = (await jget('/api/admin/users')).users
   const me = users.find((u: any) => u.name === 'admin').id, kidId = users.find((u: any) => u.name === 'kid').id

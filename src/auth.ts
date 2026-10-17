@@ -4,7 +4,10 @@ import { db, now } from './db.ts'
 import { config } from './config.ts'
 import { parseAllowed, type Allowed } from './ratings.ts'
 
-export interface User { id: number; name: string; is_admin: number; allowed: Allowed }
+export interface User { id: number; name: string; is_admin: number; allowed: Allowed; avatar?: string | null }
+
+/** The little creatures a person can pick for their picture. The app draws each one from this id. */
+export const AVATAR_IDS = ['fox', 'owl', 'cat', 'bunny', 'frog', 'whale', 'octopus', 'bee', 'panda', 'axolotl', 'raccoon', 'hedgehog'] as const
 
 export function hashPassword(pw: string): string {
   const salt = randomBytes(16)
@@ -98,8 +101,8 @@ export function userForTvToken(token: string): User | null {
   if (!m || Number(m[2]) < now()) return null
   const want = createHmac('sha256', tvSecret).update(`${m[1]}.${m[2]}`).digest('hex').slice(0, 32)
   if (!timingSafeEqual(Buffer.from(want), Buffer.from(m[3]))) return null
-  const r = db.prepare('SELECT id, name, is_admin, allowed_ratings FROM users WHERE id = ?').get(Number(m[1])) as any
-  return r ? { id: r.id, name: r.name, is_admin: r.is_admin, allowed: parseAllowed(r.allowed_ratings) } : null
+  const r = db.prepare('SELECT id, name, is_admin, allowed_ratings, avatar FROM users WHERE id = ?').get(Number(m[1])) as any
+  return r ? { id: r.id, name: r.name, is_admin: r.is_admin, allowed: parseAllowed(r.allowed_ratings), avatar: r.avatar ?? null } : null
 }
 
 export const userCount = () => (db.prepare('SELECT COUNT(*) c FROM users').get() as any).c as number
@@ -112,11 +115,11 @@ function cookieToken(req: FastifyRequest): string | null {
 export function userFor(req: FastifyRequest): User | null {
   const t = cookieToken(req)
   if (!t) return null
-  const r = db.prepare(`SELECT u.id, u.name, u.is_admin, u.allowed_ratings, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id
+  const r = db.prepare(`SELECT u.id, u.name, u.is_admin, u.allowed_ratings, u.avatar, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.expires_at > ?`).get(sha(t), now()) as any
   // Sliding expiry: a device in regular use never gets signed out. Written at most about once a day.
   if (r && r.expires_at < now() + (SESSION_DAYS - 1) * 86400) db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(now() + SESSION_DAYS * 86400, sha(t))
-  return r ? { id: r.id, name: r.name, is_admin: r.is_admin, allowed: parseAllowed(r.allowed_ratings) } : null
+  return r ? { id: r.id, name: r.name, is_admin: r.is_admin, allowed: parseAllowed(r.allowed_ratings), avatar: r.avatar ?? null } : null
 }
 
 export function logout(req: FastifyRequest) {
@@ -141,4 +144,39 @@ export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
 export async function requireAdmin(req: FastifyRequest, reply: FastifyReply) {
   await requireUser(req, reply)
   if (!reply.sent && !req.user?.is_admin) reply.code(403).send({ error: 'Admin only' })
+}
+
+/** Is this the right password for this account? */
+export function checkPassword(id: number, password: string): boolean {
+  const r = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(id) as any
+  return !!r && verifyPassword(String(password), r.pass_hash)
+}
+
+/** Change the name shown for this account. Names identify profiles, so they must be free. */
+export function renameUser(id: number, name: string): User {
+  const n = String(name).trim()
+  if (!/^[\w .-]{2,32}$/.test(n)) throw Object.assign(new Error('A name is 2 to 32 letters, numbers, dots, dashes or spaces'), { statusCode: 400 })
+  if (db.prepare('SELECT 1 FROM users WHERE lower(name) = lower(?) AND id <> ?').get(n, id)) throw Object.assign(new Error('That name is already taken'), { statusCode: 400 })
+  db.prepare('UPDATE users SET name = ? WHERE id = ?').run(n, id)
+  return renameBack(id)
+}
+function renameBack(id: number): User {
+  const r = db.prepare('SELECT id, name, is_admin, allowed_ratings, avatar FROM users WHERE id = ?').get(id) as any
+  return { id: r.id, name: r.name, is_admin: r.is_admin, allowed: parseAllowed(r.allowed_ratings), avatar: r.avatar ?? null }
+}
+
+/** Put one of the little creatures on this account, or none (null) for their initial. */
+export function setAvatar(id: number, avatar: string | null): User {
+  const a = avatar === null || avatar === '' ? null : String(avatar)
+  if (a !== null && !(AVATAR_IDS as readonly string[]).includes(a)) throw Object.assign(new Error('No such picture'), { statusCode: 400 })
+  db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(a, id)
+  return renameBack(id)
+}
+
+/** Change this account's own password, having proved the current one. Other devices are signed out. */
+export function setOwnPassword(id: number, current: string, next: string): void {
+  if (!checkPassword(id, current)) throw Object.assign(new Error('That is not your current password'), { statusCode: 400 })
+  if (String(next).length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
+  db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(String(next)), id)
+  db.prepare('UPDATE sessions SET expires_at = 0 WHERE user_id = ?').run(id)
 }
