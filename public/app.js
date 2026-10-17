@@ -997,15 +997,26 @@ function offlineView(why, isGate) {
 }
 
 /** Admins see a red/amber strip on any page when something needs attention (BTN refused us, disk full, engine down). */
+const HB_KEY = 'flix.hb.dismissed'
+const hbKey = (i) => `${i.level}|${i.title}`
+function hbDismissed() { try { return new Set(JSON.parse(sessionStorage.getItem(HB_KEY) || '[]')) } catch { return new Set() } }
+
 async function healthBanner() {
   document.getElementById('hb')?.remove()
   const h = await api('/api/admin/health').catch(() => null)
-  const bad = (h?.issues ?? []).filter((i) => i.level !== 'info')
+  const seen = hbDismissed()
+  const bad = (h?.issues ?? []).filter((i) => i.level !== 'info' && !seen.has(hbKey(i)))
   if (!bad.length || $('.player')) return
   const first = bad[0]
-  const el = document.createElement('a')
-  el.id = 'hb'; el.className = 'hbanner ' + first.level; el.href = first.link || '#/admin'
-  el.innerHTML = `<b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}`
+  const el = document.createElement('div')
+  el.id = 'hb'; el.className = 'hbanner ' + first.level
+  el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/admin')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
+  el.querySelector('.hbx').addEventListener('click', () => {
+    const s = hbDismissed()
+    for (const i of bad) s.add(hbKey(i))
+    try { sessionStorage.setItem(HB_KEY, JSON.stringify([...s])) } catch {}
+    el.remove()
+  })
   app.prepend(el)
 }
 
