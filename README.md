@@ -67,7 +67,7 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
   prioritise arbitrary pieces).
 - Subtitles are not extracted yet.
 - Season packs: if a season exists only as a pack, it shows as one "Season N" entry that resumes at the next unfinished file.
-- Trailers are a plain link to YouTube (nothing is embedded, so nothing is sent to YouTube until someone taps it).
+- Trailers are found automatically (BTN, then TMDB, then a YouTube search) and play in an embedded player only after someone taps them, so nothing is sent to YouTube before that.
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set
   `ABANDON_DAYS` to auto-release inactive viewers.
 - Keep Flix behind HTTPS (reverse proxy) when exposing it; a PWA needs a secure context to install.
