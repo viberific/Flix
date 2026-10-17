@@ -239,14 +239,20 @@ app.get('/api/home', auth, async (req) => {
   }
   // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
   const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
+  // A show watched all the way through is not recommended again (it stays in My List and search, and shows what is new in it there).
+  const finished = new Set<number>()
+  for (const r of db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NOT NULL').all(uid) as { id: number }[]) {
+    const eps = buildEpisodes(r.id, uid)
+    if (eps.length && eps.every((e) => e.watched)) finished.add(r.id)
+  }
   // "Picked for you": the freshest shows that suit their taste, when they have given any thumbs or finished enough to tell.
   let picked: any[] | null = null
   if (taste.genres.size) {
-    const cands = all.filter((r) => !started.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && taste.fit(r.genres) > 0.2)
+    const cands = all.filter((r) => !started.has(r.id) && !finished.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && taste.fit(r.genres) > 0.2)
     const rows = tasteSort(cands, taste, 40).slice(0, ROW_SIZE)
     if (rows.length === ROW_SIZE) { picked = rows.map(clean); rows.forEach((r) => taken.add(r.id)) }
   }
-  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id)), net, taken, taste)
+  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
   const listIds = listed.map((l) => l.series_id)
   return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because, picked }
 })
