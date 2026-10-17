@@ -255,6 +255,7 @@ async function homeView(q) {
   const series = q ? list.series : []
   const featured = q ? null : home.hero // the billboard: top trending show, else the newest streaming original
   const items = cont.items
+  const listIds = new Set(home.listIds ?? [])
   return () => {
     let html = ''
     if (!q && (items[0] || featured)) {
@@ -262,6 +263,7 @@ async function homeView(q) {
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? (items[0]?.next ? 'Up next' : 'Continue watching') : 'Featured'}</div>
         <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? (c.next ? 'Up next · ' + esc(c.label) : esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched') : 'Tap to see episodes'}</p>
         <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} ${c.next ? 'Play' : 'Resume'}</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
+        <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
@@ -278,11 +280,24 @@ async function homeView(q) {
     wireRows(app)
     const hs = !q && (items[0] ? { id: items[0].seriesId } : featured)
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
+    const hml = $('#hml'); if (hml) hml.onclick = async () => {
+      const on = hml.getAttribute('aria-pressed') !== 'true'
+      try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+    }
     const hp = $('#hp'); if (hp) hp.onclick = () => go(`#/play/${items[0].seriesId}/${items[0].season ?? 'x'}/${encodeURIComponent(items[0].label)}`)
   }
 }
 
 /* ---------- series ---------- */
+let ytLoading
+/** YouTube's player script (its error events tell us a video is private or unavailable), fetched the first time a trailer is played. */
+const ytApi = () => ytLoading ??= new Promise((ok, no) => {
+  if (window.YT?.Player) return ok()
+  const sc = document.createElement('script'); sc.src = 'https://www.youtube.com/iframe_api'
+  sc.onerror = () => { ytLoading = null; no(new Error('blocked')) }
+  window.onYouTubeIframeAPIReady = ok
+  document.head.append(sc)
+})
 async function seriesView(id) {
   const { series, episodes } = await api('/api/series/' + id)
   const seasons = new Map()
@@ -300,7 +315,7 @@ async function seriesView(id) {
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${resume ? 'Resume' : 'Play'} ${esc(hero.label)}${hero.title ? ' · ' + esc(hero.title) : ''}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
-        ${series.trailerId ? `<a class="trailer-link" href="#trailer" id="tl">${I.play} Trailer</a>` : `<a class="trailer-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}" target="_blank" rel="noopener noreferrer">${I.play} Find trailer on YouTube</a>`}</div></div></div></section>
+        </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
@@ -326,13 +341,28 @@ async function seriesView(id) {
       const on = ml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
-    const loadTrailer = () => {
-      const tr = $('#tr'); if (!tr || tr.querySelector('iframe')) return
+    const ids = series.trailerIds?.length ? series.trailerIds : series.trailerId ? [series.trailerId] : []
+    const loadTrailer = async () => {
+      const tr = $('#tr'); if (!tr || tr.querySelector('iframe') || tr.dataset.busy) return
+      tr.dataset.busy = '1'
       // Loaded only on tap, so Flix never contacts YouTube until someone asks for the trailer.
-      tr.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(series.trailerId)}?autoplay=1&rel=0&playsinline=1" title="${esc(series.name)} trailer" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`
+      const search = `https://www.youtube.com/results?search_query=${encodeURIComponent(series.name + ' official trailer')}`
+      const giveUp = () => { tr.innerHTML = `<div class="tr-fail">This trailer can’t be played here. <a href="${search}" target="_blank" rel="noopener noreferrer">Find it on YouTube</a></div>` }
+      try {
+        await ytApi()
+        tr.innerHTML = '<div id="ytp"></div>'
+        let n = 0, player
+        // 1080p is a request, not an order: YouTube lowers it when the connection or the video can't do it.
+        const hd = () => { try { player.setPlaybackQuality('hd1080') } catch { /* not offered */ } }
+        const next = () => { if (++n < ids.length) player.loadVideoById({ videoId: ids[n], suggestedQuality: 'hd1080' }); else giveUp() } // private, removed or not embeddable: the next link
+        player = new YT.Player('ytp', { videoId: ids[0], host: 'https://www.youtube-nocookie.com',
+          playerVars: { autoplay: 1, rel: 0, playsinline: 1, vq: 'hd1080' },
+          events: { onReady: hd, onStateChange: (e) => { if (e.data === 1) hd() }, onError: next } })
+      } catch { // YouTube's player script is blocked: a plain embed of the first link
+        tr.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(ids[0])}?autoplay=1&rel=0&playsinline=1&vq=hd1080" title="${esc(series.name)} trailer" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`
+      }
     }
     const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
-    const tl = $('#tl'); if (tl) tl.onclick = (e) => { e.preventDefault(); $('#tr').scrollIntoView({ behavior: smooth(), block: 'center' }); loadTrailer() }
   }
 }
 

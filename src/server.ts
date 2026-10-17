@@ -158,10 +158,12 @@ app.get('/api/series/:id', auth, async (req) => {
   let genres: string[] = []
   try { genres = JSON.parse(info.genres ?? '[]') } catch { /* none */ }
   const { trailer, ...rest } = info
-  const trailerId = youtubeId(trailer) ?? youtubeId(d?.trailer)
+  // Checked trailers first (BTN's own link is only used while none are known: it can be private or removed). The player tries them in turn.
+  const trailerIds = d?.trailers.length ? d.trailers : [youtubeId(trailer) ?? youtubeId(d?.trailer)].filter((x): x is string => !!x)
+  const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   return {
-    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
+    series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), year: d?.year ?? null, overview: d?.overview ?? null, cast: d?.cast ?? [], trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: withInfo(id, buildEpisodes(id, req.user!.id)),
   }
 })
@@ -223,7 +225,8 @@ app.get('/api/home', auth, async (req) => {
   // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
   const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
   const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id)), net, taken)
-  return { hero: hero && clean(hero), sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
+  const listIds = listed.map((l) => l.series_id)
+  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because }
 })
 
 /** Add or remove a show from the viewer's own list. */

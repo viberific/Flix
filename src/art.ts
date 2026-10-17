@@ -134,7 +134,8 @@ const btnUrl = (seriesId: number, kind: 'poster' | 'banner'): string | null => {
 /** The trailer's YouTube id, from BTN's own field or the details lookup. */
 function trailerIdFor(seriesId: number): string | null {
   const r = db.prepare('SELECT MAX(youtube_trailer) AS u FROM releases WHERE series_id = ?').get(seriesId) as { u: string | null } | undefined
-  return youtubeId(r?.u) ?? youtubeId(getDetails(seriesId)?.trailer)
+  const d = getDetails(seriesId)
+  return d?.trailers[0] ?? youtubeId(d?.trailer) ?? youtubeId(r?.u) // a checked trailer first: BTN's own link may be private
 }
 
 /** Where to try getting this picture from, best first. Later entries are only looked up when the earlier ones fail. */
