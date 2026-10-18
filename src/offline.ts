@@ -43,7 +43,7 @@ export async function offlineCopy(t: number, f: number, p: Probe, source: string
   const part = out + '.part.mp4'
   rmSync(part, { force: true })
   const args = ['-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1', '-i', source, '-map', '0:v:0', '-map', '0:a:0?', '-sn',
-    ...(p.copyVideo ? ['-c:v', 'copy'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...(filters.length ? ['-vf', filters.join(',')] : [])]),
+    ...(p.copyVideo ? ['-c:v', 'copy', ...(/hevc|h265/i.test(String(p.videoCodec ?? '')) ? ['-tag:v', 'hvc1'] : [])] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...(filters.length ? ['-vf', filters.join(',')] : [])]),
     '-c:a', 'aac', '-ac', '2', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', part]
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
   const job: Job = { proc, progress: 0, out, last: Date.now() }

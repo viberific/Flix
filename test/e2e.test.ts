@@ -189,10 +189,35 @@ before(async () => {
   cookie = r.headers.get('set-cookie')!.split(';')[0]
 })
 
+/**
+ * Stop a child and wait for it to be gone: SIGTERM, then SIGKILL once the grace period is up. Polling the handle
+ * instead would answer for a process whose exit has not been delivered yet; the 'exit' event is the real moment.
+ */
+async function stopChild(child: ChildProcess | undefined, graceMs = 5_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  const pid = child.pid
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  child.kill('SIGTERM')
+  const hard = setTimeout(() => child.kill('SIGKILL'), graceMs)
+  hard.unref()
+  await exited
+  clearTimeout(hard)
+  if (child.exitCode === null && child.signalCode === null) throw new Error(`child ${pid} would not stop`)
+}
+
+// Teardown returns; it never calls process.exit. The runner reports a file's results as each test finishes but only
+// prints its totals once every test has reported, so an exit() here threw away the report of whatever had not been
+// counted yet -- in 0.3.26 that was this file's last test, which ran and passed and was never counted (16 declared,
+// 15 reported). A status still gets out: anything left running is a failure, so it is thrown (the runner reports the
+// hook as failed) and process.exitCode carries it rather than ending the process early.
 after(async () => {
-  qbProc?.kill('SIGKILL'); await seeder?.destroy(); tracker?.close(); btn?.close()
-  const { app } = await import('../src/server.ts'); await app.close()
-  process.exit(0)
+  let stuck: Error | undefined
+  const { app } = await import('../src/server.ts')
+  await app.close() // stop answering first, so nothing new is queued against the tracker, the seeder or qBittorrent
+  try { await stopChild(qbProc) } catch (e) { stuck = e as Error }
+  await seeder?.destroy()
+  tracker?.close(); btn?.close()
+  if (stuck) { process.exitCode = 1; throw stuck }
 })
 
 test('catalog: search stores BTN data and never leaks the passkey', async () => {
@@ -291,11 +316,42 @@ test('downloads: an MKV is converted to one MP4 for the device', async () => {
   assert.equal(body.subarray(4, 8).toString(), 'ftyp')
 })
 
+test('casting: a finished episode goes to the TV as one seekable file, not a playlist built forwards', async () => {
+  // A plain MP4 as it is: the whole length is known from the first byte.
+  const one = await playAndFetch(1000)
+  const direct: any = await jget(`/api/stream/1000/${one.fileIndex}/info?cast=1`)
+  assert.equal(direct.seekable, true)
+  assert.match(direct.tvUrl, /\/raw$/)
+  assert.equal(direct.tvType, 'video/mp4')
+  // An MKV goes over as the single remuxed MP4. This is the whole point: the playlist for a passed-through picture is built
+  // forwards and a cast receiver never re-reads it, so the TV would only ever have the part converted so far to drag in.
+  const two = await playAndFetch(1001)
+  await offlineReady(1001, two.fileIndex)
+  const info: any = await jget(`/api/stream/1001/${two.fileIndex}/info?cast=1`)
+  assert.equal(info.seekable, true)
+  assert.match(info.tvUrl, /\/offline\/file$/)
+  assert.equal(info.tvType, 'video/mp4')
+  assert.match(info.castFallbackUrl ?? '/hls/index.m3u8', /\/hls\/index\.m3u8$/)
+  // Fetched the way the TV does -- the token in the path, no cookie -- a range comes back with the whole episode's length
+  // in it, which is what the scrubber is drawn from.
+  const part = await api(info.tvUrl, { headers: { range: 'bytes=0-1023' } })
+  assert.equal(part.status, 206)
+  assert.equal(part.headers.get('content-type'), 'video/mp4')
+  const cr = part.headers.get('content-range') ?? ''
+  assert.match(cr, /^bytes 0-1023\/[1-9]\d+$/, `content-range ${cr}`)
+  const s: any = await jget(`/api/stream/1001/${two.fileIndex}/offline`)
+  assert.equal(Number(/(\d+)$/.exec(cr)![1]), s.size)
+})
+
 test('transcode path: mkv/ac3 is served as HLS', async () => {
   // Torrent 1002: its own show, and a picture no remux can put in an MP4, so the mode is HLS whatever ran before this.
   const play = await playAndFetch(1002)
   const info = await jget(`/api/stream/1002/${play.fileIndex}/info`)
   assert.equal(info.mode, 'hls')
+  // Nothing finished can be handed over as a file, so the TV is given the playlist and told that is what it is.
+  assert.equal(info.seekable, false)
+  assert.equal(info.tvType, 'application/vnd.apple.mpegurl')
+  assert.match(info.tvUrl, /hls\/index\.m3u8$/)
   const pl = await api(info.url)
   assert.equal(pl.status, 200)
   const text = await pl.text()

@@ -411,6 +411,10 @@ const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInt
 app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const { t, f } = req.params as any
   const a = audioIdx((req.query as any).a)
+  // A cast is about to be handed to a TV, and a receiver keeps whatever timeline it was given when it loaded: a playlist
+  // still being built would leave it with only the part converted so far, and no way to drag past it. So a cast waits
+  // longer for the one seekable file, while an ordinary play starts at once and lets the remux catch up in the background.
+  const cast = (req.query as any).cast === '1'
   // A remux this call starts may hold the play for a moment; a viewer who has closed the page must not hold it at all.
   let closed = false
   reply.raw.on('close', () => { closed = true })
@@ -419,20 +423,31 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // A file that is fully downloaded and needs only its container changed (MKV holding H.264, say) is remuxed once into
   // one MP4 and served with byte ranges. That is what makes the whole episode seekable: the HLS fallback for a passed
   // through picture is built forwards from the start, so a seek ahead of it cannot work until it catches up.
-  const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p, () => closed) : null
+  const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
   const path = direct ? 'raw' : a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'
   const base = `/api/stream/${t}/${f}`
-  // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead.
-  const tv = `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/${path}`
-  // Casting always uses the HLS playlist: the cast receiver plays HLS but not Matroska. It is made absolute on the
-  // LAN address when one is configured, because the receiver cannot resolve the tailnet name this page came from.
-  const tvHls = `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/${a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'}`
+  const token = tvToken(req.user!.id)
+  // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
+  // to it as one file served by byte range -- the plain MP4 as it is, anything else as the remuxed MP4 -- because only a
+  // file carries its whole length at once. The growing playlist is what is left when there is no finished file to send.
+  // direct is decided from the container and codecs alone, so it says nothing about how much is downloaded: a file still
+  // arriving is served as raw bytes that run out partway with no way for a receiver to retry, so only a complete one is
+  // handed over as a file and an unfinished one keeps the playlist it has always had.
+  const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
+  const seekable = direct && complete ? 'raw' : remux ? 'offline/file' : null
+  const tvPath = seekable ?? (a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8')
+  const tv = `/api/tv/${token}/${t}/${f}/${tvPath}`
+  // The playlist, kept as the fallback for a receiver that will not take the file: same picture, built forwards.
+  const tvHls = `/api/tv/${token}/${t}/${f}/${a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'}`
+  // What the receiver must be told the link is, since it decides how to play it from this alone.
+  const tvType = seekable ? (direct ? await rawType(+t, +f) : 'video/mp4') : 'application/vnd.apple.mpegurl'
   // The HDR path: the HEVC stream is copied, not re-encoded, into fragmented MP4 so the TV keeps its HDR metadata
   // and the picture is bit-for-bit the source instead of an 8-bit downconvert. Only offered when the source is HDR.
   const hdrUrl = p.hdr ? `${base}/hdr/index.m3u8?a=${a}` : null
   const tvHdr = p.hdr ? `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/hdr/index.m3u8?a=${a}` : null
   return {
-    mode: direct ? 'direct' : remux ? 'file' : 'hls', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, castUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    mode: direct ? 'direct' : remux ? 'file' : 'hls', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, tvType, seekable: !!seekable,
+    castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
     hdrUrl, hdrTvUrl: tvHdr, hdrCastUrl: config.lanUrl && tvHdr ? config.lanUrl + tvHdr : null,
     audio: p.audio, chapters: p.chapters,
     subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
@@ -477,6 +492,8 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
 // ---- downloads to a device ----------------------------------------------------
 /** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
 const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
+/** How long a cast waits for it instead. Longer: the TV cannot be given a longer timeline later, the phone can. */
+const CAST_WAIT_MS = Number(process.env.CAST_WAIT_MS ?? 60_000)
 
 /**
  * One MP4 of a fully downloaded episode, the picture copied rather than re-encoded, so the whole episode can be seeked
@@ -487,7 +504,7 @@ const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
  *  so those stay on HLS however well the file is downloaded. */
 const REMUX_VIDEO = new Set(['h264', 'hevc', 'av1'])
 
-async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boolean): Promise<boolean> {
+async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boolean, waitMs = REMUX_WAIT_MS): Promise<boolean> {
   // The same picture rule probe() uses (4K is re-encoded down to 1080p), minus the codecs MP4 cannot hold.
   if (!REMUX_VIDEO.has(String(p.videoCodec ?? '')) || (p.height ?? 0) > 1080) return false
   const fi = await fileInfo(t, f)
@@ -497,8 +514,11 @@ async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boole
   if (first.state === 'ready') return true
   // Only a job this call started is worth waiting for. One already in flight was started by an earlier /info, and the
   // 12 s spent waiting on it again is 12 s on every later play of the same episode, for a picture that is coming anyway.
-  if (first.state !== 'working' || !first.started) return false
-  const deadline = Date.now() + REMUX_WAIT_MS
+  // A cast is the exception: its wait is the long one, and it has nowhere else to get a timeline from, so it waits even
+  // for a remux someone else started.
+  if (first.state !== 'working') return false
+  if (!first.started && waitMs <= REMUX_WAIT_MS) return false
+  const deadline = Date.now() + waitMs
   for (;;) {
     await new Promise((done) => setTimeout(done, 250))
     if (closed()) return false // the viewer closed the page: nothing left to wait for
@@ -540,7 +560,7 @@ app.get('/api/stream/:t/:f/offline', guarded, async (req) => {
   return r.state === 'ready' ? { state: 'ready', size: r.size } : r
 })
 
-app.get('/api/stream/:t/:f/offline/file', guarded, async (req, reply) => {
+const offlineFileHandler = async (req: any, reply: any) => {
   const { t, f } = req.params as any
   const fi = await fileInfo(+t, +f)
   if (!fi || fi.file.progress < 1) return reply.code(409).send({ error: 'Not ready yet' })
@@ -554,7 +574,13 @@ app.get('/api/stream/:t/:f/offline/file', guarded, async (req, reply) => {
     reply.code(206).header('content-range', `bytes ${start}-${end}/${r.size}`)
   }
   return reply.header('accept-ranges', 'bytes').header('content-length', end - start + 1).header('cache-control', 'no-store').type(r.type).send(createReadStream(r.path, { start, end }))
-})
+}
+/** The container's own type, so a receiver is told video/mp4 for an MP4 rather than being left to guess. */
+async function rawType(t: number, f: number) {
+  const fi = await fileInfo(t, f).catch(() => null)
+  const ext = String(fi?.file.name.split('.').pop() ?? 'mp4').toLowerCase()
+  return MIME[ext] ?? 'video/mp4'
+}
 
 const MIME: Record<string, string> = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska' }
 
@@ -619,6 +645,9 @@ app.options('/api/tv/*', async (_req, reply) =>
     .header('access-control-allow-headers', 'range, origin, content-type').header('access-control-max-age', '86400').code(204).send())
 for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/api/tv/:token', [tvAuth, torrentGuard]]] as const) {
   app.get(`${prefix}/:t/:f/raw`, { preHandler: pre as any }, rawHandler)
+  // The one file of a finished episode, behind the TV's token: a cast receiver fetches it by byte range, which is what
+  // gives it the whole episode to seek in. MIME names it, and rawType is declared below with MIME itself.
+  app.get(`${prefix}/:t/:f/offline/file`, { preHandler: pre as any }, offlineFileHandler)
   app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)
   app.get(`${prefix}/:t/:f/hls-a/:a/:file`, { preHandler: pre as any }, hlsHandler)
   app.get(`${prefix}/:t/:f/hdr/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, true))

@@ -179,10 +179,10 @@ async function castConnect() {
 
 let castTick = null
 /** Put one episode on the TV, from `at` seconds in. Rejects when the TV cannot open the link. */
-async function castSend(url, title, at = 0, torrentId, fileIndex, duration) {
+async function castSend(url, title, at = 0, torrentId, fileIndex, duration, type = 'application/vnd.apple.mpegurl', fallbackUrl = null) {
   if (!url) throw new Error('no LAN address for the TV')
   const session = await castConnect()
-  const media = new chrome.cast.media.MediaInfo(url, 'application/vnd.apple.mpegurl')
+  const media = new chrome.cast.media.MediaInfo(url, type)
   media.streamType = chrome.cast.media.StreamType.BUFFERED
   if (duration) media.duration = duration
   const md = new chrome.cast.media.GenericMediaMetadata()
@@ -190,7 +190,15 @@ async function castSend(url, title, at = 0, torrentId, fileIndex, duration) {
   media.metadata = md
   const req = new chrome.cast.media.LoadRequest(media)
   req.currentTime = Math.max(0, (at || 0) - 3) // a few seconds back, so it does not open mid-sentence
-  const player = await session.loadMedia(req)
+  let player
+  try {
+    player = await session.loadMedia(req)
+  } catch (e) {
+    // The receiver would not take the file. The playlist plays forwards, which is worse than a timeline and better than
+    // nothing on the TV; anything else is a real failure and is reported as one.
+    if (!fallbackUrl || url === fallbackUrl) throw e
+    return castSend(fallbackUrl, title, at, torrentId, fileIndex, duration, 'application/vnd.apple.mpegurl', null)
+  }
   castTrack(player, { torrentId, fileIndex, duration })
   return player
 }
@@ -1269,7 +1277,19 @@ function playView(seriesId, season, label) {
     const castTitle = () => `${play?.seriesName || label}${play?.episodeTitle ? ' · ' + play.episodeTitle : ''}`
     /** Send this episode to the connected TV; its progress is reported from there (see castTrack). */
     async function castHere(at) {
-      await castSend(info.castUrl, castTitle(), at || 0, play.torrentId, play.fileIndex, info.duration)
+      // A TV keeps whatever timeline it was handed when it loaded, so an episode that is not yet one file is worth waiting
+      // for: this asks the server to finish the single MP4 first. The cast splash is already on screen, so it reads as the
+      // TV taking a moment. If it still cannot be had, the playlist is cast and plays forwards as before.
+      if (!info.seekable) {
+        const where = $('#msg .cs-where')
+        if (where) where.textContent = `Getting the whole episode for ${casting.device}…`
+        try {
+          const q = `cast=1${info.audioIndex ? '&a=' + info.audioIndex : ''}`
+          const fresh = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/info?${q}`)
+          if (fresh) info = { ...info, ...fresh }
+        } catch { /* keep what we have */ }
+      }
+      await castSend(info.castUrl, castTitle(), at || 0, play.torrentId, play.fileIndex, info.duration, info.castType, info.castFallbackUrl)
     }
     function wireExtras() {
       if (castWired) return
