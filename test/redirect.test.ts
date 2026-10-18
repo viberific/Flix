@@ -23,15 +23,29 @@ const CANON = 'https://umbrel-1.tail16900.ts.net:9443'
 test('another host name is sent to the one address, path and query kept', async () => {
   for (const host of ['umbrel-1.tail16900.ts.net:8096', '100.122.77.59:8096']) {
     const res = await app.inject({ method: 'GET', url: '/shows?tab=recent', headers: { host } })
-    assert.equal(res.statusCode, 308, host)
+    assert.equal(res.statusCode, 307, host)
     assert.equal(res.headers.location, `${CANON}/shows?tab=recent`, host)
   }
+})
+
+// A 308 is permanently cacheable, and a WebView that pinned one keeps replaying it without ever reaching Flix: that
+// is how a TV went on failing on its LAN address long after the redirect had stopped applying there.
+test('the redirect can never be cached by a browser or a WebView', async () => {
+  const res = await app.inject({ method: 'GET', url: '/', headers: { host: '100.122.77.59:8096' } })
+  assert.equal(res.statusCode, 307)
+  assert.match(String(res.headers['cache-control'] ?? ''), /no-store/)
+})
+
+// A 307 (not 301/302/303) is what keeps a POST a POST, with its body, on the way to the one address.
+test('a POST keeps its method and body when it is sent to the one address', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/progress', headers: { host: '100.122.77.59:8096' }, payload: '{}' })
+  assert.equal(res.statusCode, 307)
 })
 
 test('home-network addresses serve Flix themselves, so a TV needs no Tailscale', async () => {
   for (const host of ['10.0.0.247:8096', '192.168.1.50:8096', '172.16.4.4:8096', 'umbrel.local:8096']) {
     const res = await app.inject({ method: 'GET', url: '/shows?tab=recent', headers: { host } })
-    assert.notEqual(res.statusCode, 308, host)
+    assert.notEqual(res.statusCode, 307, host)
     assert.equal(res.headers.location, undefined, host)
   }
 })
@@ -45,12 +59,13 @@ test('the good address serves Flix', async () => {
 test('loopback and Docker service names are left alone', async () => {
   for (const host of ['127.0.0.1:8096', 'localhost:8096', 'blofstedt-flix_app_1:8096', 'app:8096']) {
     const res = await app.inject({ method: 'GET', url: '/api/me', headers: { host } })
-    assert.notEqual(res.statusCode, 308, host)
+    assert.notEqual(res.statusCode, 307, host)
   }
 })
 
 test('a POST keeps its method, so a stale cached shell can still recover', async () => {
   const res = await app.inject({ method: 'POST', url: '/api/login', headers: { host: 'umbrel-1.tail16900.ts.net:8096' }, payload: {} })
-  assert.equal(res.statusCode, 308)
+  assert.equal(res.statusCode, 307)
   assert.equal(res.headers.location, `${CANON}/api/login`)
+  assert.match(String(res.headers['cache-control'] ?? ''), /no-store/)
 })

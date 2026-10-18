@@ -700,7 +700,7 @@ function playView(seriesId, season, label) {
         <div class="p-info" id="pinfo" aria-hidden="true"><div class="eyebrow"><span class="p-rate" id="pirate" hidden></span><span id="pis"></span></div>
           <h2 id="pit"></h2><span class="ep" id="pie"></span><div class="p-castrow" id="picast"></div></div>
         <div class="p-ctl" id="pctl">
-          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-rail"><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
+          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><img id="ptipimg" alt="" decoding="async"><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
@@ -813,21 +813,55 @@ function playView(seriesId, season, label) {
     }
     function wirePlayer() {
       const bar = $('#pseek')
+      // The picture above the bar while scrubbing: one small JPEG of that second, cut by the server and cached (/frame).
+      // It is debounced because dragging across the bar asks for a frame per pixel, and a TV seeks back over ground
+      // it has already covered, which the cache answers with no work at all.
+      const tip = $('#ptip'), tipImg = $('#ptipimg'), tipLab = $('#ptipt')
+      let tipAsk = 0, tipHide = 0, tipFor = -1
+      function hideTip() { clearTimeout(tipHide); tip.hidden = true }
+      function showTip(t, hold) {
+        const d = totalT()
+        if (!d || !play) return
+        const pct = Math.max(0, Math.min(100, (t / d) * 100))
+        // Kept inside the bar's own width, so the picture never hangs off the edge of a narrow screen.
+        const w = bar.clientWidth || 1
+        const half = Math.min(88, w / 2)
+        tip.style.left = Math.max(half, Math.min(w - half, (pct / 100) * w)) + 'px'
+        tip.hidden = false
+        tipLab.textContent = fmtT(Math.max(0, t))
+        clearTimeout(tipHide)
+        if (hold) tipHide = setTimeout(hideTip, 1600)
+        const sec = Math.max(1, Math.round(t))
+        if (sec === tipFor) return
+        tipFor = sec
+        clearTimeout(tipAsk)
+        tipAsk = setTimeout(() => {
+          const url = `/api/stream/${play.torrentId}/${play.fileIndex}/frame?at=${sec}`
+          const img = new Image()
+          img.onload = () => { if (tipFor === sec) tipImg.src = url }
+          img.onerror = () => { if (tipFor === sec) tipImg.removeAttribute('src') }
+          img.src = url
+        }, 90)
+      }
       const seekTo = (e) => {
         const d = totalT(); if (!d || !(v || remoteOn())) return
         const r = bar.getBoundingClientRect()
-        setT(Math.min(d - 0.4, ((e.clientX - r.left) / r.width) * d))
+        const t = Math.min(d - 0.4, ((e.clientX - r.left) / r.width) * d)
+        showTip(t)
+        setT(t)
         syncBar()
       }
       bar.addEventListener('pointerdown', (e) => { if (!v && !remoteOn()) return; e.preventDefault(); bar.classList.add('on'); try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ } seekTo(e) })
       bar.addEventListener('pointermove', (e) => { if (bar.classList.contains('on')) seekTo(e) })
-      bar.addEventListener('pointerup', () => bar.classList.remove('on'))
-      bar.addEventListener('pointercancel', () => bar.classList.remove('on'))
+      bar.addEventListener('pointerup', () => { bar.classList.remove('on'); hideTip() })
+      bar.addEventListener('pointercancel', () => { bar.classList.remove('on'); hideTip() })
       bar.addEventListener('keydown', (e) => {
         if ((!v && !remoteOn()) || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
         e.preventDefault(); e.stopPropagation() // the window handler would move the same 10 s twice
-        setT(nowT() + (e.key === 'ArrowRight' ? 15 : -15))
+        const t = Math.max(0, Math.min((totalT() || 1e9) - 0.4, nowT() + (e.key === 'ArrowRight' ? 15 : -15)))
+        setT(t)
         syncBar()
+        showTip(t, true)
       })
       $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) v.play().catch(() => {}); else v.pause() }; wake() }
       $('#pbw').onclick = () => { if (v || remoteOn()) { setT(nowT() - 10); wake() } }
@@ -959,7 +993,9 @@ function playView(seriesId, season, label) {
       info.useHdr = canHdr
       // Casting needs a link the TV can open on its own (no cookie), so plain playback uses the signed one where the browser can cast.
       const src = canHdr ? info.hdrUrl : info.url
-      const url = !viaHls && 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
+      // A single-file ("file") play is the page's own origin, so a TV's WebView already carries the session cookie the
+      // signed path in a cast link stands in for: it gets the same URL as everyone else.
+      const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       if (viaHls) {
         // startPosition: open straight at the resume point instead of loading the first piece and jumping.
         hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, ...(startAt > 5 ? { startPosition: startAt } : {}) })

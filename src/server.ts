@@ -12,8 +12,9 @@ import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, jobDir, probe, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
-import { offlineCopy, startOfflineSweeper } from './offline.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, jobDir, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
+import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
+import { frame as frameAt, startThumbSweeper } from './thumbs.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -83,8 +84,10 @@ if (config.publicUrl) {
     // A TV or cast device fetches the media itself and cannot resolve the tailnet name, so the signed stream links
     // are served on whatever address the device used. They carry an unguessable token in the path, never a cookie.
     if (req.url.startsWith('/api/tv/')) return
-    // 308 so a POST keeps its method and body; only a stale cached shell sends one here.
-    return reply.redirect(config.publicUrl + req.url, 308)
+    // 307 so a POST keeps its method and body; only a stale cached shell sends one here.
+    // Never 308: that is permanently cacheable, and a WebView that pinned one keeps replaying it without ever
+    // reaching Flix -- which is exactly how a TV came to fail on its LAN address long after the redirect was gone.
+    return reply.code(307).header('cache-control', 'no-store').redirect(config.publicUrl + req.url, 307)
   })
 }
 
@@ -410,6 +413,10 @@ app.get('/api/stream/:t/:f/info', guarded, async (req) => {
   const a = audioIdx((req.query as any).a)
   const p = await probe(+t, +f)
   const direct = p.direct && a === 0 // another audio track needs the transcode path (raw bytes can't switch tracks)
+  // A file that is fully downloaded and needs only its container changed (MKV holding H.264, say) is remuxed once into
+  // one MP4 and served with byte ranges. That is what makes the whole episode seekable: the HLS fallback for a passed
+  // through picture is built forwards from the start, so a seek ahead of it cannot work until it catches up.
+  const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p) : null
   const path = direct ? 'raw' : a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'
   const base = `/api/stream/${t}/${f}`
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead.
@@ -422,7 +429,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req) => {
   const hdrUrl = p.hdr ? `${base}/hdr/index.m3u8?a=${a}` : null
   const tvHdr = p.hdr ? `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/hdr/index.m3u8?a=${a}` : null
   return {
-    mode: direct ? 'direct' : 'hls', url: `${base}/${path}`, tvUrl: tv, castUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    mode: direct ? 'direct' : remux ? 'file' : 'hls', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, castUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
     hdrUrl, hdrTvUrl: tvHdr, hdrCastUrl: config.lanUrl && tvHdr ? config.lanUrl + tvHdr : null,
     audio: p.audio, chapters: p.chapters,
     subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
@@ -465,6 +472,47 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
 })
 
 // ---- downloads to a device ----------------------------------------------------
+/** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
+const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
+
+/**
+ * One MP4 of a fully downloaded episode, the picture copied rather than re-encoded, so the whole episode can be seeked
+ * to at once. Null means play it as HLS instead: still downloading, an audio track other than the first, HDR, or a
+ * remux that has not finished yet.
+ */
+async function remuxPlayback(t: number, f: number, p: Probe): Promise<boolean> {
+  if (!p.copyVideo) return false
+  const fi = await fileInfo(t, f)
+  if (!fi || fi.file.progress < 1) return false
+  const source = join(fi.layout.savePath, fi.file.name)
+  const deadline = Date.now() + REMUX_WAIT_MS
+  for (;;) {
+    const r = await offlineCopy(t, f, p, source)
+    if (r.state === 'ready') return true
+    if (r.state === 'error' || Date.now() >= deadline) return false
+    await new Promise((done) => setTimeout(done, 250))
+  }
+}
+
+/**
+ * The picture above the seek bar while someone scrubs: one small JPEG at the asked-for second. Cached on disk, so a
+ * thumb dragged back and forth across the same ground costs one cut per second and nothing after that.
+ */
+app.get('/api/stream/:t/:f/frame', guarded, async (req, reply) => {
+  const { t, f } = req.params as any
+  const at = Number((req.query as any).at)
+  if (!Number.isFinite(at) || at < 0) return reply.code(400).send({ error: 'Bad time' })
+  const fi = await fileInfo(+t, +f)
+  if (!fi) return reply.code(404).send({ error: 'Not downloading' })
+  const p = await probe(+t, +f)
+  // A finished remux is a plain MP4 with an index, so a frame anywhere in it is cut instantly; otherwise ffmpeg seeks
+  // in the torrent's own bytes, which the raw route serves by range.
+  const source = offlineReadyPath(+t, +f) ?? rawUrl(+t, +f)
+  const buf = await frameAt(+t, +f, at, source, p.duration ?? 0, fi.file.progress)
+  if (!buf) return reply.code(404).send({ error: 'No frame there yet' })
+  return reply.header('content-type', 'image/jpeg').header('cache-control', 'private, max-age=604800').send(buf)
+})
+
 /**
  * Make one episode ready to save on a device for watching offline: a single MP4, 1080p at most. It can only be made from a file that
  * has finished downloading here, so until then this says how far along it is. Asking again is how the device waits.
@@ -796,6 +844,7 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
 // ---- boot -------------------------------------------------------------------
 cleanHlsCache()
 startOfflineSweeper()
+startThumbSweeper()
 const runSweep = startSweeper()
 
 let btnSyncStarted = false

@@ -21,6 +21,12 @@ export function isPlainMp4(p: Probe) {
   return p.direct && /mp4/.test(p.container ?? '') && p.videoCodec === 'h264' && (!p.audioCodec || p.audioCodec === 'aac')
 }
 
+/** The finished single-file copy for this episode, if one is already on disk. A frame is far cheaper to cut from it. */
+export function offlineReadyPath(t: number, f: number): string | null {
+  const out = outFor(t, f)
+  return existsSync(out) ? out : null
+}
+
 /** Where the finished copy is, or the state of making it. `source` is the downloaded video file on disk. */
 export async function offlineCopy(t: number, f: number, p: Probe, source: string): Promise<OfflineState> {
   if (isPlainMp4(p)) return { state: 'ready', path: source, size: statSync(source).size, type: 'video/mp4' }

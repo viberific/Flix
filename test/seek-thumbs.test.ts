@@ -1,0 +1,49 @@
+// A show that has finished downloading should seek anywhere in the episode, and the seek bar should show the frame it
+// is over. These cover the two pieces that make it work without a live torrent: the guard that refuses a frame from
+// bytes that have not arrived, and the cache that answers a scrub over ground already covered.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const tmp = mkdtempSync(join(tmpdir(), 'flix-seek-'))
+process.env.DB_PATH = join(tmp, 'flix.db')
+process.env.DATA_DIR = join(tmp, 'data')
+process.env.DOWNLOAD_DIR = join(tmp, 'downloads')
+process.env.LOG_LEVEL = 'silent'
+
+const { frame } = await import('../src/thumbs.ts')
+const { isPlainMp4, offlineReadyPath } = await import('../src/offline.ts')
+
+test('a frame is refused past the point the download has reached, instead of hanging on it', async () => {
+  // 25% of a 40 minute episode is about 600 s: a cut at 1800 s would wait for bytes that are not there.
+  assert.equal(await frame(1, 1, 1800, '/nope.mkv', 2400, 0.25), null)
+})
+
+test('a frame already cut is answered from disk, so scrubbing back and forth costs nothing', async () => {
+  const dir = join(tmp, 'data', 'thumbs', '2-3')
+  mkdirSync(dir, { recursive: true })
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(400)])
+  writeFileSync(join(dir, '42.jpg'), jpg)
+  const got = await frame(2, 3, 42, '/nope.mkv', 600, 1)
+  assert.ok(got && got.equals(jpg))
+})
+
+test('nothing is offered when ffmpeg cannot cut the frame: no picture, not a broken one', async () => {
+  assert.equal(await frame(4, 5, 60, '/nope.mkv', 600, 1), null)
+})
+
+test('a single-file copy is only offered once it is actually on disk', () => {
+  assert.equal(offlineReadyPath(9, 9), null)
+})
+
+// The case the person hit: a Matroska file holding H.264 plays as a growing HLS playlist, which cannot be seeked ahead
+// of. It is not `direct` (so no byte ranges), but its picture can be copied, so one MP4 is made from it and seeked in.
+test('an MKV holding H.264 needs the remux; a plain MP4 does not', () => {
+  const base = { duration: 2400, copyVideo: true, videoCodec: 'h264', audioCodec: 'aac', height: 1080, container: 'matroska,webm', direct: false }
+  assert.equal(isPlainMp4(base), false)
+  assert.equal(isPlainMp4({ ...base, container: 'mov,mp4,m4a,3gp,3g2,mj2', direct: true }), true)
+  // A file whose picture must be re-encoded is never direct, so it is never sent as it is without a remux either.
+  assert.equal(isPlainMp4({ ...base, copyVideo: false, videoCodec: 'hevc', direct: false }), false)
+})

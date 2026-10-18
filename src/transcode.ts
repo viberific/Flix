@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { config } from './config.ts'
 
 const execFileP = promisify(execFile)
-const rawUrl = (t: number, f: number) => `http://127.0.0.1:${config.port}/api/stream/${t}/${f}/raw?k=${config.internalKey}`
+export const rawUrl = (t: number, f: number) => `http://127.0.0.1:${config.port}/api/stream/${t}/${f}/raw?k=${config.internalKey}`
 
 export interface AudioTrack { n: number; lang: string; label: string; channels?: number; default: boolean }
 export interface SubTrack { n: number; lang: string; label: string; forced: boolean; default: boolean }
