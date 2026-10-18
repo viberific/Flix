@@ -711,6 +711,8 @@ function playView(seriesId, season, label) {
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
+    const INTRO_MS = 5000, introAt = Date.now()
+    let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
@@ -788,7 +790,7 @@ function playView(seriesId, season, label) {
     }
     /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
     function paint() {
-      const paused = !v || v.paused
+      const paused = (!v || v.paused) && !holding
       pl.classList.toggle('paused', paused)
       $('#pinfo').setAttribute('aria-hidden', String(!paused))
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
@@ -837,7 +839,7 @@ function playView(seriesId, season, label) {
       $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
@@ -916,7 +918,13 @@ function playView(seriesId, season, label) {
         if (fill) v.style.objectFit = 'cover'
         const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
-        v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake() }, { once: true })
+        v.addEventListener('playing', () => {
+          started = true
+          // The Flix logo gets its full 5 seconds: hold the picture until then, then let the logo fade away and start the show.
+          const left = INTRO_MS - (Date.now() - introAt)
+          const reveal = () => { holding = false; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
+        }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
         v.ontimeupdate = () => {
