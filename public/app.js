@@ -711,7 +711,7 @@ function playView(seriesId, season, label) {
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
-    const INTRO_MS = 5000, introAt = Date.now()
+    const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
@@ -920,7 +920,7 @@ function playView(seriesId, season, label) {
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
         v.addEventListener('playing', () => {
           started = true
-          // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (5 seconds after opening).
+          // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
           const reveal = () => { holding = false; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
