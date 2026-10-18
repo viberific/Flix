@@ -711,6 +711,8 @@ function playView(seriesId, season, label) {
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
+    const INTRO_MS = 4000, introAt = Date.now()
+    let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
@@ -722,7 +724,22 @@ function playView(seriesId, season, label) {
     let castingOnly = false
     const avoid = []
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused) pl.classList.add('idle') }, 3000) }
-    pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
+    // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
+    pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
+    // Touching the bar itself only restarts the hide timer.
+    $('#pctl').addEventListener('pointerdown', wake)
+    wake()
+    // On a phone, play in landscape: fullscreen is what lets the browser lock the orientation. Needs a tap, so it is retried on the first one.
+    const touchy = matchMedia('(pointer: coarse)').matches
+    let landscape = false
+    const goLandscape = async () => {
+      if (!touchy || landscape) return
+      try { if (!document.fullscreenElement) await pl.requestFullscreen?.({ navigationUI: 'hide' }) } catch { /* not allowed without a tap */ }
+      try { await screen.orientation?.lock?.('landscape') } catch { /* unsupported (iOS) or refused */ }
+      landscape = !!document.fullscreenElement // done once truly fullscreen; until then every tap tries again
+    }
+    goLandscape()
+    pl.addEventListener('pointerup', goLandscape)
 
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
@@ -745,8 +762,8 @@ function playView(seriesId, season, label) {
     }
     // Pinch out to fill the screen (the edges are cropped a little), pinch in to fit it again; Z does the same on a keyboard. Remembered on this device.
     // object-fit rather than a zoom, so the captions stay inside the screen.
-    let fill = store.get('fill', false), pinch = null
-    const setFill = (on) => { fill = on; store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
+    let fill = touchy ? false : store.get('fill', false), pinch = null // phones always open fitted (nothing cropped); the button or a pinch zooms to fill
+    const setFill = (on) => { fill = on; if (!touchy) store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
     const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
     pl.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), done: false } }, { passive: true, capture: true })
     pl.addEventListener('touchmove', (e) => {
@@ -773,7 +790,7 @@ function playView(seriesId, season, label) {
     }
     /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
     function paint() {
-      const paused = !v || v.paused
+      const paused = (!v || v.paused) && !holding
       pl.classList.toggle('paused', paused)
       $('#pinfo').setAttribute('aria-hidden', String(!paused))
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
@@ -808,7 +825,7 @@ function playView(seriesId, season, label) {
       $('#pvol').onclick = () => { if (v) { v.muted = !v.muted; paint() } }
       $('#pfull').onclick = () => { setFill(!fill); paint() }
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
-      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); pl.classList.contains('idle') ? wake() : pl.classList.add('idle') })
+      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('idle')) wake(); else { clearTimeout(idleT); pl.classList.add('idle') } })
       paint()
     }
     /** The paused screen: the show's own art, its certificate and who is in it, all from the details page's data. */
@@ -822,7 +839,7 @@ function playView(seriesId, season, label) {
       $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
@@ -901,7 +918,13 @@ function playView(seriesId, season, label) {
         if (fill) v.style.objectFit = 'cover'
         const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
-        v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake() }, { once: true })
+        v.addEventListener('playing', () => {
+          started = true
+          // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
+          const left = INTRO_MS - (Date.now() - introAt)
+          const reveal = () => { holding = false; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
+        }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
         v.ontimeupdate = () => {
