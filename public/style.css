@@ -194,6 +194,81 @@ img.fade.in { opacity: 1; }
   background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); }
 .p-next small { color: rgba(255,255,255,.65); } .p-next b { display: block; font-size: 20px; margin: 2px 0 14px; } .p-next .actions { display: flex; gap: 10px; }
 .p-next .btn { padding: 10px 16px; flex: 1; }
+
+/* ---------- Flix's own player bar ----------
+   The TV's WebView drew the native <video controls> bar itself: the scrubber sat off centre, the
+   title could not be aligned and there was no caption menu. Everything below is our bar instead. */
+.player #vw { position: absolute; inset: 0; z-index: 1; }
+.player .p-mark { flex: none; display: grid; place-items: center; width: 34px; height: 34px; }
+.player .p-mark svg { width: 100%; height: 100%; }
+.player .p-rate { flex: none; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; line-height: 1.2; color: #fff; border: 1px solid rgba(255,255,255,.45); }
+.player .p-rate[hidden] { display: none; }
+
+.p-ctl { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; color: #fff; padding: 10px clamp(16px, 4vw, 44px) max(12px, env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0,0,0,.8), rgba(0,0,0,.34) 52%, transparent); transition: opacity .35s var(--ease), transform .35s var(--ease); }
+.player.idle .p-ctl { opacity: 0; transform: translateY(10px); pointer-events: none; }
+.p-seek { position: relative; display: flex; align-items: center; height: 24px; cursor: pointer; touch-action: none; }
+.p-rail { position: relative; width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,.26); }
+.p-buf { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: rgba(255,255,255,.34); }
+.p-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: var(--accent); }
+.p-dot { position: absolute; top: 50%; left: 0; width: 13px; height: 13px; margin: 0; border-radius: 50%; background: #fff; transform: translate(-50%, -50%) scale(.85);
+  box-shadow: 0 1px 6px rgba(0,0,0,.55); transition: transform .15s var(--ease); }
+.p-seek:hover .p-dot, .p-seek.on .p-dot, .p-seek:focus-visible .p-dot { transform: translate(-50%, -50%) scale(1.2); }
+.p-seek:focus-visible { outline: none; }
+.p-seek:focus-visible .p-rail { box-shadow: 0 0 0 2px rgba(255,255,255,.55); }
+
+/* three columns, so play/pause sits on the middle of the bar whatever the times are worth */
+.p-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; margin-top: 4px; }
+.p-l { display: flex; justify-content: flex-start; min-width: 0; }
+.p-c { display: flex; align-items: center; justify-content: center; gap: clamp(8px, 3vw, 24px); }
+.p-r { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.p-time { font-size: 13px; font-weight: 500; color: rgba(255,255,255,.82); font-variant-numeric: tabular-nums; }
+.p-btn { display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 0; border-radius: 50%; background: none; color: #fff; opacity: .94; cursor: pointer; }
+.p-btn svg { width: 24px; height: 24px; }
+.p-btn:hover { background: rgba(255,255,255,.13); opacity: 1; }
+.p-btn.big { width: 60px; height: 60px; background: rgba(255,255,255,.15); backdrop-filter: blur(8px); }
+.p-btn.big svg { width: 30px; height: 30px; }
+.p-btn.cc { width: auto; min-width: 44px; padding: 0 10px; border-radius: 10px; font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
+.p-btn.cc.on { color: var(--accent); }
+.p-btn[hidden] { display: none; }
+.p-ctl .p-menu .menu { top: auto; bottom: 54px; right: 0; background: rgba(20,22,30,.97); color: #fff; max-height: 46vh; overflow: auto; }
+
+/* ---------- paused: what you are watching, left-aligned, with its art fading in from the right ---------- */
+.p-poster { position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; width: min(46vw, 760px); background-size: cover; background-position: center; opacity: 0;
+  filter: saturate(.92) brightness(.72);
+  -webkit-mask-image: linear-gradient(to left, #000 0%, rgba(0,0,0,.55) 46%, transparent 100%);
+  mask-image: linear-gradient(to left, #000 0%, rgba(0,0,0,.55) 46%, transparent 100%);
+  transition: opacity .55s var(--ease); pointer-events: none; }
+.p-info { position: absolute; z-index: 3; left: clamp(18px, 5vw, 64px); top: 50%; transform: translateY(-50%); max-width: min(50vw, 620px);
+  text-align: left; color: #fff; opacity: 0; pointer-events: none; transition: opacity .4s var(--ease); }
+.player.paused .p-poster { opacity: .38; }
+.player.paused .p-info { opacity: 1; }
+.player.paused .p-bg { opacity: .55; }
+.player.paused video { opacity: .45; transition: opacity .4s var(--ease); }
+.p-info .eyebrow { display: flex; align-items: center; gap: 10px; font-size: 12px; letter-spacing: .14em; }
+.p-info .eyebrow #pis { color: rgba(255,255,255,.72); }
+.p-info h2 { margin: 8px 0 4px; font-size: clamp(21px, 3vw, 38px); line-height: 1.12; letter-spacing: -.02em; }
+.p-info .ep { display: block; font-size: 15px; color: rgba(255,255,255,.75); }
+.p-castrow { display: flex; gap: 16px; margin-top: 18px; padding-bottom: 4px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.p-castrow::-webkit-scrollbar { display: none; }
+.p-actor { flex: none; width: 78px; display: flex; flex-direction: column; gap: 3px; text-align: center; }
+.p-actor .pic { position: relative; display: block; width: 64px; height: 64px; margin: 0 auto 6px; border-radius: 50%; overflow: hidden; background: rgba(255,255,255,.1); }
+.p-actor .pic .ph { position: absolute; inset: 0; display: grid; place-items: center; font-size: 22px; font-weight: 700; color: #fff; border-radius: 50%; }
+.p-actor .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .3s var(--ease); }
+.p-actor .pic img.on { opacity: 1; }
+.p-actor b { font-size: 12px; line-height: 1.25; color: #fff; }
+.p-actor small { font-size: 11px; line-height: 1.25; color: rgba(255,255,255,.6); }
+
+@media (max-width: 640px) {
+  .p-poster { width: 58vw; }
+  .p-info { top: auto; bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 108px); transform: none; max-width: calc(100% - 36px); right: 18px; }
+  .p-info h2 { font-size: 20px; }
+  .p-castrow { margin-top: 12px; }
+  .p-actor { width: 68px; } .p-actor .pic { width: 54px; height: 54px; }
+  .p-btn { width: 38px; height: 38px; } .p-btn.big { width: 54px; height: 54px; }
+  .p-row { gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) { .p-ctl, .p-info, .p-poster, .p-dot { transition: none; } }
 .cd { height: 3px; border-radius: 2px; background: rgba(255,255,255,.2); margin-top: 14px; overflow: hidden; } .cd i { display: block; height: 100%; width: 100%; background: var(--accent); transform-origin: left; }
 
 /* ---------- auth ---------- */

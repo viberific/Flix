@@ -670,24 +670,45 @@ const ICON = {
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>',
   flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></svg>',
   cast: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/><path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5M3 20h.01"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6a.9.9 0 0 0 1.37.77l10.6-6.8a.9.9 0 0 0 0-1.54L9.37 4.43A.9.9 0 0 0 8 5.2Z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.4" y="4.8" width="4" height="14.4" rx="1.5"/><rect x="13.6" y="4.8" width="4" height="14.4" rx="1.5"/></svg>',
+  vol: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 4.5 6.6 8.6H3.2v6.8h3.4l4.9 4.1V4.5Z" fill="currentColor" stroke="none"/><path d="M15.6 8.6a4.9 4.9 0 0 1 0 6.8"/><path d="M18.6 6a8.6 8.6 0 0 1 0 12"/></svg>',
+  volOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 4.5 6.6 8.6H3.2v6.8h3.4l4.9 4.1V4.5Z" fill="currentColor" stroke="none"/><path d="m16.2 9.4 5 5.2M21.2 9.4l-5 5.2"/></svg>',
+  fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
 }
 
 function playView(seriesId, season, label) {
   label = decodeURIComponent(label)
   return () => {
     app.innerHTML = `<div class="player" id="pl"><div class="p-bg" id="pbg"></div>
-      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a><div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span>
-        <button class="icon-btn" id="b10" aria-label="Back 10 seconds" hidden>${ICON.back10}</button><button class="icon-btn" id="f10" aria-label="Forward 10 seconds" hidden>${ICON.fwd10}</button>
+      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a>
+        <span class="p-mark" aria-hidden="true">${I.logo}</span><span class="p-rate" id="prate" hidden></span>
+        <div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span>
         <div class="p-menu"><button class="icon-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
         <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
+        <div class="p-poster" id="pposter" aria-hidden="true"></div>
+        <div class="p-info" id="pinfo" aria-hidden="true"><div class="eyebrow"><span class="p-rate" id="pirate" hidden></span><span id="pis"></span></div>
+          <h2 id="pit"></h2><span class="ep" id="pie"></span><div class="p-castrow" id="picast"></div></div>
+        <div class="p-ctl" id="pctl">
+          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-rail"><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
+          <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
+            <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
+            <div class="p-r"><span class="p-time" id="pdur">0:00</span>
+              <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-haspopup="true" hidden>CC</button></div>
+              <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Picture quality" aria-haspopup="true" hidden></button></div>
+              <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
+              <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
+        </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
+    // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
+    Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
@@ -728,6 +749,71 @@ function playView(seriesId, season, label) {
       if (!pinch.done && (k > 1.15 || k < 0.87)) { pinch.done = true; setFill(k > 1) }
     }, { passive: false, capture: true })
     pl.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null }, { passive: true, capture: true })
+    /* ---- Flix's own player bar: the native <video controls> let the TV's WebView draw its own bar, with the scrubber off centre and no room for a caption menu ---- */
+    const fmtT = (s) => {
+      s = Math.max(0, Math.floor(Number(s) || 0))
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60
+      return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(sec).padStart(2, '0')
+    }
+    const totalT = () => (v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
+    function syncBar() {
+      const d = totalT(), t = v?.currentTime || 0, pct = d ? Math.min(100, (t / d) * 100) : 0
+      if (!$('#pprog')) return
+      $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
+      $('#ptime').textContent = fmtT(t); $('#pdur').textContent = fmtT(d)
+      $('#pseek').setAttribute('aria-valuenow', String(Math.round(pct)))
+      try { const b = v?.buffered; if (b?.length && d) $('#pbuf').style.width = Math.min(100, (b.end(b.length - 1) / d) * 100) + '%' } catch { /* nothing buffered yet */ }
+    }
+    /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
+    function paint() {
+      const paused = !v || v.paused
+      pl.classList.toggle('paused', paused)
+      $('#pinfo').setAttribute('aria-hidden', String(!paused))
+      $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
+      $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
+      $('#pvol').innerHTML = v?.muted ? ICON.volOff : ICON.vol
+      $('#pvol').setAttribute('aria-label', v?.muted ? 'Unmute' : 'Mute')
+      $('#pfull').setAttribute('aria-pressed', String(fill))
+      if (paused) wake()
+      syncBar()
+    }
+    function wirePlayer() {
+      const bar = $('#pseek')
+      const seekTo = (e) => {
+        const d = totalT(); if (!d || !v) return
+        const r = bar.getBoundingClientRect()
+        v.currentTime = Math.min(d - 0.4, Math.max(0, ((e.clientX - r.left) / r.width) * d))
+        syncBar()
+      }
+      bar.addEventListener('pointerdown', (e) => { if (!v || castingOnly) return; e.preventDefault(); bar.classList.add('on'); try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ } seekTo(e) })
+      bar.addEventListener('pointermove', (e) => { if (bar.classList.contains('on')) seekTo(e) })
+      bar.addEventListener('pointerup', () => bar.classList.remove('on'))
+      bar.addEventListener('pointercancel', () => bar.classList.remove('on'))
+      bar.addEventListener('keydown', (e) => {
+        if (!v || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+        e.preventDefault(); e.stopPropagation() // the window handler would move the same 10 s twice
+        v.currentTime = Math.max(0, Math.min(totalT() || 1e9, v.currentTime + (e.key === 'ArrowRight' ? 15 : -15)))
+        syncBar()
+      })
+      $('#ppp').onclick = () => { if (!v || castingOnly) return; if (v.paused) v.play().catch(() => {}); else v.pause(); wake() }
+      $('#pbw').onclick = () => { if (v) { v.currentTime = Math.max(0, v.currentTime - 10); wake() } }
+      $('#pfw').onclick = () => { if (v) { v.currentTime = Math.min(totalT() || 1e9, v.currentTime + 10); wake() } }
+      $('#pvol').onclick = () => { if (v) { v.muted = !v.muted; paint() } }
+      $('#pfull').onclick = () => { setFill(!fill); paint() }
+      // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
+      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); pl.classList.contains('idle') ? wake() : pl.classList.add('idle') })
+      paint()
+    }
+    /** The paused screen: the show's own art, its certificate and who is in it, all from the details page's data. */
+    async function loadMeta() {
+      const s = await api(`/api/series/${seriesId}`).catch(() => null)
+      if (!s || !alive) return
+      const rate = s.rating && s.rating !== 'Unrated' ? s.rating : ''
+      for (const id of ['#prate', '#pirate']) { const el = $(id); if (!el) continue; el.hidden = !rate; el.textContent = rate }
+      $('#pis').textContent = [s.name, s.year].filter(Boolean).join(' · ')
+      $('#pposter').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
+      $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
+    }
     addEventListener('keydown', key)
     cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
 
@@ -763,6 +849,8 @@ function playView(seriesId, season, label) {
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid })
         if (!alive) return
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
+        $('#pit').textContent = play.episodeTitle || play.title || label
+        $('#pie').textContent = [play.season != null ? 'Season ' + play.season : '', label ? 'Episode ' + label : '', play.quality].filter(Boolean).join(' · ')
         $('#rep').hidden = false
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
@@ -794,23 +882,21 @@ function playView(seriesId, season, label) {
       // show tapped from now on follows it there.
       if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
-      wireSubs(); wireAudio(); wireExtras()
+      wireSubs(); wireSubMenu(); wireAudio(); wireExtras()
     }
 
     function attach(startAt) {
       if (castingOnly) return // the TV has it; nothing plays here
       hls?.destroy(); hls = null
       if (!v) {
-        $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
+        $('#vw').innerHTML = '<video autoplay playsinline></video>'
         v = $('video')
         if (fill) v.style.objectFit = 'cover'
         const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
-        v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake(); for (const id of ['b10', 'f10']) $('#' + id).hidden = false }, { once: true })
-        v.addEventListener('pause', () => pl.classList.remove('idle'))
-        v.addEventListener('play', wake)
-        $('#b10').onclick = () => { v.currentTime = Math.max(0, v.currentTime - 10) }
-        $('#f10').onclick = () => { v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+        v.addEventListener('playing', () => { started = true; $('#wait').classList.add('gone'); wake() }, { once: true })
+        for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
+        for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
         v.ontimeupdate = () => {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           skipCheck()
@@ -910,6 +996,37 @@ function playView(seriesId, season, label) {
           store.set('audio', info.audio[n].lang)
           const at = v.currentTime
           try { await loadInfo(n, at) } catch (err) { fail(err.message) }
+        })
+      }
+    }
+
+    /* captions: a menu of our own, because the bar is ours now and the TV's WebView draws no CC button */
+    function wireSubMenu() {
+      const btn = $('#pcc')
+      const tracks = () => [...v.textTracks].filter((t) => t.kind === 'subtitles' || t.kind === 'captions' || t.kind === 'forced')
+      const mark = () => {
+        const list = tracks()
+        btn.hidden = !list.length
+        btn.classList.toggle('on', list.some((t) => t.mode === 'showing'))
+      }
+      mark()
+      btn.onclick = (e) => {
+        e.stopPropagation()
+        const old = btn.parentElement.querySelector('.menu'); if (old) return closeMenu(old)
+        const list = tracks()
+        if (!list.length) return
+        const on = list.find((t) => t.mode === 'showing')
+        const m = document.createElement('div'); m.className = 'menu'
+        m.innerHTML = `<div class="who">Captions</div>` +
+          `<button data-i="-1"${on ? '' : ' aria-current="true"'}>${on ? '' : '\u2713 '}Off</button>` +
+          list.map((t, i) => `<button data-i="${i}"${t.mode === 'showing' ? ' aria-current="true"' : ''}>${t.mode === 'showing' ? '\u2713 ' : ''}${esc(t.label || 'Track ' + (i + 1))}</button>`).join('')
+        btn.parentElement.appendChild(m)
+        m.querySelectorAll('button[data-i]').forEach((b) => b.onclick = () => {
+          const i = +b.dataset.i; closeMenu(m)
+          list.forEach((t, j) => { t.mode = j === i ? 'showing' : 'disabled' })
+          const picked = i < 0 ? null : list[i]
+          store.set('subs', picked ? { lang: picked.language || info.subs.find((s) => s.label === picked.label)?.lang } : 'off')
+          mark()
         })
       }
     }
