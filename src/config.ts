@@ -61,7 +61,9 @@ export const config = {
   // A show counts as watched only when it has played to the end (within a few seconds, for the credits' last frame); lower this to count e.g. 0.9 as watched.
   watchedThreshold: num('WATCHED_THRESHOLD', 1),
   // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
-  abandonDays: num('ABANDON_DAYS', 30),
+  abandonDays: num('ABANDON_DAYS', 14),
+  // A finished, fully seeded season pack that some allowed viewers never opened is shown to them as "Leaving soon" for this many days, then removed (0 = off).
+  leavingDays: num('LEAVING_DAYS', 7),
   // Refuse new downloads when less than this much disk would be left (GB).
   minFreeGb: num('MIN_FREE_GB', 10),
   /** ...and when less than this share of the disk is free (the larger of the two limits applies). */
@@ -74,10 +76,6 @@ export const config = {
     /** No automatic downloads below this share of free disk. */
     pausePct: num('AUTO_PAUSE_FREE_PCT', 25),
     perUser: num('AUTO_PER_USER', 3),
-    /** Total size of torrents held only by automatic downloads. */
-    maxGb: num('AUTO_MAX_GB', 50),
-    /** A season pack bigger than this is never fetched automatically (a pack downloads whole). */
-    packMaxGb: num('AUTO_PACK_MAX_GB', 15),
     /** An automatic download nobody opens is let go after this many days. */
     expireDays: num('AUTO_EXPIRE_DAYS', 7),
   },

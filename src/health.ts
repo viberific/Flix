@@ -84,7 +84,7 @@ export async function health(): Promise<Issue[]> {
     const pct = Math.round((d.free / d.total) * 100)
     if (d.free < freeFloor(d)) out.push({ level: 'bad', title: 'Please remove some videos: storage is nearly full', detail: `Only ${gb(d.free)} (${pct}%) of ${gb(d.total)} is left, so new shows are refused and nothing is fetched ahead of time. “Free up space” on the Torrents page lists what can go, biggest first. Finished, fully seeded torrents are removed automatically.` })
     else if (pct < config.warnFreePct) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} (${pct}%) left of ${gb(d.total)}. Shows are no longer fetched ahead of time below ${config.auto.pausePct}%; below ${config.minFreePct}% new ones are refused. “Free up space” on the Torrents page lists what can go.` })
-    else if (config.auto.enabled && pct < config.auto.pausePct) out.push({ level: 'info', title: 'Pre-downloading is paused', detail: `${pct}% of storage is free; next episodes and watchlist shows are not fetched ahead of time below ${config.auto.pausePct}%.` })
+    else if (config.auto.enabled && pct < config.auto.pausePct) out.push({ level: 'info', title: 'Pre-downloading is paused', detail: `${pct}% of storage is free; the next episode is not fetched ahead of time below ${config.auto.pausePct}%.` })
   }
   const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number
   if (reported) out.push({ level: 'warn', title: `${reported} playback problem${reported === 1 ? '' : 's'} reported`, detail: 'Someone tapped “Something’s wrong”, or an episode failed to start. The Torrents page lists which.', link: '#/admin' })

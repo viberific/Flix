@@ -444,6 +444,11 @@ const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
+/** A season pack others have finished that will be removed in a few days unless someone keeps it. */
+const leavingTile = (l, i) => {
+  const days = Math.max(1, Math.ceil((l.leavesAt - Date.now() / 1000) / 86400))
+  return `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${l.seriesId}">${art(l.poster, l.series)}<div class="tt">${esc(l.series)}</div><div class="ts">${esc(l.label)} · leaves in ${days} day${days === 1 ? '' : 's'}</div></a>`
+}
 function rowOf(items, html) {
   return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
 }
@@ -462,10 +467,11 @@ function wireRows(root) {
 }
 
 async function homeView(q, local = false) {
-  const [list, cont, home] = await Promise.all([
+  const [list, cont, home, leaving] = await Promise.all([
     q ? api('/api/series?q=' + encodeURIComponent(q) + (local ? '&local=1' : '')) : { series: [] },
     q ? { items: [] } : api('/api/continue'),
     q ? { hero: null, sections: [] } : api('/api/home'),
+    q ? { items: [] } : api('/api/leaving').catch(() => ({ items: [] })),
   ])
   const series = q ? list.series : []
   const featured = q ? null : home.hero // the billboard: top trending show, else the newest streaming original
@@ -485,6 +491,7 @@ async function homeView(q, local = false) {
     // The billboard already shows the first thing to resume, so the row holds only the rest.
     const more = !q && items[0] ? items.slice(1) : items
     if (more.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(more, contTile)}`
+    if (!q && leaving.items.length) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items, leavingTile)}`
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
     if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
     if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
@@ -517,7 +524,7 @@ const ytApi = () => ytLoading ??= new Promise((ok, no) => {
   document.head.append(sc)
 })
 async function seriesView(id) {
-  const { series, episodes } = await api('/api/series/' + id)
+  const { series, episodes, leavesAt } = await api('/api/series/' + id)
   const seasons = new Map()
   for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
   const resume = episodes.find((e) => e.position > 30 && !e.watched)
@@ -531,7 +538,7 @@ async function seriesView(id) {
     let gone = false, seasonRun = 0
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
-      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
@@ -1210,7 +1217,12 @@ function downloadsPanel(data, root) {
       ${ok.length ? `<div class="dim sm cap">Ready to remove</div><ul class="trows">${ok.map((x) => row(x, { note: x.waitingFor?.length ? `Seeding goal met · ${esc(x.waitingFor.join(', '))} hasn’t finished it` : 'Seeding goal met · everyone is done', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">${x.waitingFor?.length ? 'Remove anyway' : 'Remove'}</button>` })).join('')}</ul>` : ''}
       ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}` : ''
     $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
-    $('#tinfo').innerHTML = `${space}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
+    // What is using the disk, biggest first, and who is keeping it, so it is clear what to ask about when space runs short.
+    const big = d.downloads.filter((x) => x.state === 'active' && !x.missing).map((x) => ({ ...x, held: x.size * (x.progress ?? 0) })).sort((a, b) => b.held - a.held).slice(0, 5)
+    const using = big.length ? `<div class="sub-h">Using the most space</div><ul class="trows">${big.map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}${x.is_pack ? ' · season pack' : ''}</span><div class="dim sm">${x.deletable ? 'Done: goes on the next sweep' : x.holders?.length ? 'Kept for ' + esc(x.holders.map((h) => h.name).join(', ')) : esc((x.reasons || [])[0] || '')}${x.leaving_at ? ' · leaving soon' : ''}</div></div><span class="size">${gb(x.held)}</span><span></span></li>`).join('')}</ul>` : ''
+    const fc = chartData?.fullInDays
+    const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
+    $('#tinfo').innerHTML = `${forecast}${space}${using}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
   }
   let chartData = null, lastHealth = data.health
@@ -1231,11 +1243,15 @@ function downloadsPanel(data, root) {
     const when = (h) => ({ partway: 'partway through', queued: 'lined up to watch', ahead: 'fetched ahead of time', unwatched: 'can watch it, hasn’t yet' }[h.state]) + (h.lapsesAt ? `, lapses in ${dur(h.lapsesAt - Date.now() / 1000)}` : '')
     // Who is keeping it on disk. Anyone allowed to watch it who hasn't yet holds it too. A hold from starting it lapses if they never come back to it.
     const held = (x.holders || []).length ? `<div class="sm"><span class="dim">Held by</span> ${x.holders.map((h) => `<b>${esc(h.name)}</b> <span class="dim">(${when(h)})</span>`).join(', ')}</div>` : x.deletable ? '' : '<div class="dim sm">Held by nobody.</div>'
-    const why = (x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : '') + held + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
+    const leaving = x.leaving_at && !x.deletable ? `<div class="dim sm">Leaving soon: removed in ${dur(Math.max(0, x.leaving_at - Date.now() / 1000))} unless someone presses play.</div>` : ''
+    const asked = x.remove_when_seeded ? `<div class="dim sm">Goes as soon as the seeding goal is met${x.waitingFor?.length ? ` and ${esc(x.waitingFor.join(', '))} finishes` : ''}.</div>` : ''
+    const why = (x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : '') + held + leaving + asked + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
     return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
-      <div class="tfoot"><span class="dim sm">Added ${ago(x.added_at)}</span><button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button></div></div>`
+      <div class="tfoot"><span class="dim sm">Added ${ago(x.added_at)} · ${gb(x.size * (x.progress ?? 0))} on disk</span><span>${x.missing || x.deletable ? '' : `<button class="btn sm-btn" data-ws="${x.torrent_id}" aria-pressed="${!!x.remove_when_seeded}">${x.remove_when_seeded ? '✓ Remove when seeded' : 'Remove when seeded'}</button> `}<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button></span></div></div>`
   }
+  let lastData = data
   const draw = (d) => {
+    lastData = d
     const act = d.downloads.filter((x) => x.state === 'active'), gone = d.downloads.filter((x) => x.state !== 'active')
     const dl = act.filter((x) => !x.missing && x.left > 0), seed = act.filter((x) => !x.missing && x.left === 0 && !x.seedMet), done = act.filter((x) => !x.missing && x.left === 0 && x.seedMet), miss = act.filter((x) => x.missing)
     storage(d, lastHealth)
@@ -1244,6 +1260,9 @@ function downloadsPanel(data, root) {
     $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
       + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
     $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><ul class="trows">${gone.slice(0, 50).map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}</span><div class="dim sm">${esc(x.remove_reason || '')}</div></div><span class="size dim">${x.removed_at ? ago(x.removed_at) : ''}</span><span></span></li>`).join('')}</ul></details>` : ''
+    root.querySelectorAll('[data-ws]').forEach((b) => b.onclick = async () => {
+      try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { alert(e.message) }
+    })
     root.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
       try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
     })
@@ -1258,7 +1277,7 @@ function downloadsPanel(data, root) {
       reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
     })
   }
-  const loadChart = async () => { chartData = await api('/api/admin/storage').catch(() => chartData); if (chartData) storageChart($('#tchart'), chartData) }
+  const loadChart = async () => { chartData = await api('/api/admin/storage').catch(() => chartData); if (chartData) { storageChart($('#tchart'), chartData); storage(lastData, lastHealth) } }
   draw(data); reports(data.reports ?? []); loadChart()
   const t = setInterval(async () => {
     const d = await api('/api/admin/downloads').catch(() => data)

@@ -110,7 +110,8 @@ export const qb = {
   async pieceStates(hash: string): Promise<number[]> { return json(`/api/v2/torrents/pieceStates?hash=${hash}`) },
   async properties(hash: string): Promise<{ piece_size: number; save_path: string }> { return json(`/api/v2/torrents/properties?hash=${hash}`) },
 
-  async add(torrentFile: Buffer, savePath: string) {
+  /** `paused` adds it stopped (`paused` for qBittorrent 4, `stopped` for 5), so nothing downloads until `resume`: used to choose a pack's files first. */
+  async add(torrentFile: Buffer, savePath: string, opts: { paused?: boolean } = {}) {
     const form = new FormData()
     form.set('torrents', new Blob([new Uint8Array(torrentFile)], { type: 'application/x-bittorrent' }), 'x.torrent')
     form.set('savepath', savePath)
@@ -118,6 +119,7 @@ export const qb = {
     form.set('sequentialDownload', 'true')
     form.set('firstLastPiecePrio', 'true')
     form.set('autoTMM', 'false')
+    if (opts.paused) { form.set('paused', 'true'); form.set('stopped', 'true') }
     const res = await raw('/api/v2/torrents/add', { method: 'POST', body: form })
     const text = await res.text()
     const refused = addRefusal(res.ok, text)

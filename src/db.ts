@@ -103,8 +103,13 @@ try { db.exec('ALTER TABLE series_net ADD COLUMN ver INTEGER NOT NULL DEFAULT 0'
 
 // Where a download came from: 'flix' (someone pressed play), 'auto' (started ahead of time) or 'adopted' (already in the Downloads folder, outside Flix).
 try { db.exec(`ALTER TABLE downloads ADD COLUMN origin TEXT NOT NULL DEFAULT 'flix'`) } catch { /* already present */ }
-// 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 30 days.
+// 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 14 days.
 try { db.exec('ALTER TABLE interests ADD COLUMN auto INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+
+// When a finished, fully seeded season pack nobody else has touched is removed (see retention.ts); null = not leaving.
+try { db.exec('ALTER TABLE downloads ADD COLUMN leaving_at INTEGER') } catch { /* already present */ }
+// 1 = the admin asked for this one to go as soon as BTN's seeding rule is met, whoever has not watched it yet.
+try { db.exec('ALTER TABLE downloads ADD COLUMN remove_when_seeded INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
 
 // Thumbs up (1) / thumbs down (-1) a person gave a show; it steers what the home screen offers them.
 db.exec('CREATE TABLE IF NOT EXISTS votes (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, series_id INTEGER NOT NULL, vote INTEGER NOT NULL, voted_at INTEGER NOT NULL, PRIMARY KEY (user_id, series_id))')

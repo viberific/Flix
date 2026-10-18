@@ -498,9 +498,7 @@ test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads
     db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (8001, 'x1', 'active', 0)`).run()
     const t = Math.floor(Date.now() / 1000)
     ins.run(u, 8001, 0, t, t)
-    config.auto.maxGb = 0.05 // a 50 MB budget keeps the test independent of how much disk the machine has
-    assert.match(autoBlocked(u, 25e6)!, /budget/, '30 MB already held + 25 MB is over the 50 MB budget')
-    assert.equal(autoBlocked(u, 5e6), null)
+    assert.equal(autoBlocked(u, 25e6), null, 'no size budget: only whole episodes per person are counted')
     for (let i = 1; i < config.auto.perUser; i++) ins.run(u, 8001, i, t, t)
     assert.match(autoBlocked(u, 1)!, /enough lined up/)
     db.prepare('UPDATE interests SET updated_at = ? WHERE user_id = ?').run(t - (config.auto.expireDays + 1) * 86400, u)
@@ -627,4 +625,56 @@ test('taste: thumbs steer genres and hide downvoted shows, but the newest still 
   const many = [row(4), ...Array.from({ length: 40 }, (_, i) => ({ id: 100 + i, genres: ['Comedy'] })), row(2)]
   assert.equal(tasteSort(many, t, 30).at(-1)!.id, 2, 'beyond the freshest window nothing is promoted')
   assert.equal(tasteSort([row(4), row(2)], undefined).map((r) => r.id).join(), '4,2', 'no taste, no change')
+})
+
+test('leaving soon: a seeded, finished pack nobody else opened leaves after the window; playing it stops the clock', async () => {
+  const { updateLeaving, unwatchedEligible, leavingSoonFor, pendingViewers } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  const watcher = createUser('lv_watcher', 'password123', false).id
+  const sleeper = createUser('lv_sleeper', 'password123', false)
+  const tid = 9100
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (?,?,?,?,1,?,?)`).run(tid, 9100, 'Leaving Show', 'S01', 'abc', now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (?,?,?)`).run(tid, 'abc', now() - 1e6)
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,?,0,?,?,?)`).run(watcher, tid, now(), now(), now())
+  const seeded = { amount_left: 0, uploaded: 2, total_size: 1, seeding_time: 0 }
+  assert.equal(updateLeaving(tid, { ...seeded, uploaded: 0 }), null, 'seed rule not met: no clock')
+  assert.equal(updateLeaving(tid, { ...seeded, amount_left: 5 }), null, 'still downloading: no clock')
+  const at = updateLeaving(tid, seeded)
+  assert.ok(at && at > now(), 'clock starts')
+  assert.ok(unwatchedEligible(tid).includes('lv_sleeper'), 'still held during the window')
+  assert.ok(leavingSoonFor(sleeper).some((r) => r.torrentId === tid), 'shown on the sleeper\'s Home')
+  db.prepare('UPDATE downloads SET leaving_at = ? WHERE torrent_id = ?').run(now() - 1, tid)
+  assert.ok(!unwatchedEligible(tid).includes('lv_sleeper'), 'window over: the sleeper no longer holds it')
+  assert.ok(updateLeaving(tid, seeded)! <= now(), 'expired clock is left in place, not restarted')
+  // The sleeper presses play: that holds the pack and stops the clock; finishing it restarts nothing because nobody is left untouched.
+  db.prepare('INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at) VALUES (?,?,0,?,?)').run(sleeper.id, tid, now(), now())
+  assert.deepEqual(pendingViewers(tid), ['lv_sleeper'])
+  assert.equal(updateLeaving(tid, seeded), null, 'someone is playing it: the clock stops')
+})
+
+test('leaving soon also covers single episodes; a pack counts as done only once every episode is', async () => {
+  const { updateLeaving, unwatchedEligible } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  const a = createUser('lv2_a', 'password123', false).id
+  createUser('lv2_b', 'password123', false)
+  const seeded = { amount_left: 0, uploaded: 2, total_size: 1, seeding_time: 0 }
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (9200, 9200, 'Ep Show', 'S01E01', 0, 'ep1', ?)`).run(now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (9200, 'ep1', ?)`).run(now() - 1e6)
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9200, 0, ?, ?, ?)`).run(a, now(), now(), now())
+  assert.ok(updateLeaving(9200, seeded), 'a single episode gets the window too')
+
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (9201, 9201, 'Pack Show', 'Season 1', 1, 'pk1', ?)`).run(now())
+  db.prepare(`INSERT INTO pack_files (torrent_id, idx, path, size, season, episode) VALUES (9201, 0, 'e1.mkv', 1, 1, 1), (9201, 1, 'e2.mkv', 1, 1, 2)`).run()
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9201, 0, ?, ?, ?)`).run(a, now(), now(), now())
+  assert.ok(unwatchedEligible(9201).includes('lv2_a'), 'one episode of two watched: not done with the pack')
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9201, 1, ?, ?, ?)`).run(a, now(), now(), now())
+  assert.ok(!unwatchedEligible(9201).includes('lv2_a'), 'both watched: done')
+})
+
+test('storage forecast: days left at the recent pace, none when flat', async () => {
+  const { fullInDays } = await import('../src/storage.ts')
+  const D = 86400
+  assert.equal(fullInDays([[0, 0], [14 * D, 14e9]], 10e9), 10, '1 GB a day, 10 GB of room')
+  assert.equal(fullInDays([[0, 5e9], [14 * D, 5e9]], 10e9), null)
+  assert.equal(fullInDays([[0, 0], [2 * D, 2e9]], 10e9), null, 'too little history')
 })

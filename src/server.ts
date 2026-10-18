@@ -20,13 +20,13 @@ import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { ensurePackFiles } from './packs.ts'
-import { diskInfo, health, lastBackup, startBackups } from './health.ts'
+import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
-import { storageHistory } from './storage.ts'
-import { autoForListed, autoNext, autoWarm, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { fullInDays, storageHistory } from './storage.ts'
+import { autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
-import { holdersOf, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -194,8 +194,9 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   const episodes = buildEpisodes(id, req.user!.id)
-  void autoWarm(req.user!.id, episodes) // quietly starts what they would resume, so Play is near-instant
   return {
+    // The soonest of this show's downloads that is leaving and that this person has not finished, for a note on the show page.
+    leavesAt: leavingSoonFor(req.user!).filter((l) => l.seriesId === id).map((l) => l.leavesAt as number).sort((a, b) => a - b)[0] ?? null,
     series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), vote: (db.prepare('SELECT vote FROM votes WHERE user_id = ? AND series_id = ?').get(req.user!.id, id) as any)?.vote ?? 0, year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: withInfo(id, episodes),
   }
@@ -295,11 +296,13 @@ app.post('/api/mylist', auth, async (req) => {
   if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
   if (on) db.prepare('INSERT OR IGNORE INTO my_list (user_id, series_id, added_at, seen_at) VALUES (?,?,?,(SELECT MAX(time) FROM releases WHERE series_id = ?))').run(req.user!.id, id, now(), id)
   else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
-  if (on) void autoForListed(req.user!.id, id) // its first unwatched episode starts downloading, within the pre-download limits
   return { inList: !!on }
 })
 
 app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!) }))
+
+/** Season packs already watched by others and about to be removed, which this person never opened (see updateLeaving in retention.ts). */
+app.get('/api/leaving', auth, async (req) => ({ items: leavingSoonFor(req.user!) }))
 
 /** Rating guard for every route that names a torrent: a restricted user cannot reach a blocked show's streams. */
 const torrentGuard = async (req: any, reply: any) => {
@@ -574,7 +577,7 @@ app.post('/api/release', auth, async (req) => {
 // ---- admin ------------------------------------------------------------------
 const admin = { preHandler: requireAdmin }
 app.get('/api/admin/downloads', admin, async () => {
-  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, d.origin, r.series, r.group_name, r.resolution, r.is_pack
+  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, d.origin, d.leaving_at, d.remove_when_seeded, r.series, r.group_name, r.resolution, r.is_pack
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id ORDER BY d.added_at DESC LIMIT 200`).all() as any[]
   const out = []
   for (const d of rows) {
@@ -611,7 +614,17 @@ app.post('/api/admin/reports/resolve', admin, async (req) => {
   return { ok: true }
 })
 app.get('/api/admin/health', admin, async () => ({ issues: await health(), backup: lastBackup() }))
-app.get('/api/admin/storage', admin, async () => ({ ...storageHistory(), disk: diskInfo() }))
+app.get('/api/admin/storage', admin, async () => {
+  const h = storageHistory(), disk = diskInfo()
+  return { ...h, disk, fullInDays: disk ? fullInDays(h.points, disk.free - freeFloor(disk)) : null }
+})
+/** Let a download go as soon as BTN's seeding rule is met, without waiting for people who have not started it (anyone partway through still keeps it). */
+app.post('/api/admin/downloads/:id/when-seeded', admin, async (req) => {
+  const id = Number((req.params as any).id), on = !!(req.body as any)?.on
+  const r = db.prepare(`UPDATE downloads SET remove_when_seeded = ? WHERE torrent_id = ? AND state = 'active'`).run(on ? 1 : 0, id)
+  if (!r.changes) throw Object.assign(new Error('Not an active download'), { statusCode: 404 })
+  return { on }
+})
 app.delete('/api/admin/downloads/:id', admin, async (req) => {
   const id = Number((req.params as any).id)
   const d = db.prepare(`SELECT info_hash FROM downloads WHERE torrent_id=? AND state='active'`).get(id) as any

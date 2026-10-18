@@ -31,3 +31,18 @@ export function storageHistory(at = now()): StorageHistory {
   points.push([at, valueAt(at)])
   return { points, since }
 }
+
+/**
+ * At the pace of the last two weeks, in how many days Flix's downloads use up `room` more bytes (the space left before new shows
+ * are refused). Null when use is flat or falling, or there is not yet a week of history to judge by.
+ */
+export function fullInDays(points: [number, number][], room: number, span = 14 * DAY): number | null {
+  if (points.length < 2) return null
+  const last = points[points.length - 1]
+  const first = points.find((p) => p[0] >= last[0] - span) ?? points[0]
+  const secs = last[0] - first[0]
+  if (secs < 7 * DAY) return null
+  const perDay = ((last[1] - first[1]) / secs) * DAY
+  if (perDay <= 0) return null
+  return Math.max(0, Math.round(room / perDay))
+}
