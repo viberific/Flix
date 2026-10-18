@@ -58,6 +58,10 @@ export const config = {
   // Tailscale name, so this is usually the box's plain-HTTP LAN address (http://10.0.0.247:8096). Empty means
   // "same address as the page", which only works when the page itself is reachable from the TV.
   lanUrl: (env.LAN_URL ?? '').replace(/\/$/, ''),
+  // Host names or addresses served directly even though PUBLIC_URL is set, besides the home-network ones
+  // already allowed (a private IPv4 literal, an mDNS .local name, and whatever LAN_URL names). Comma-separated,
+  // e.g. "flix.home.arpa,media.lan" — for a router DNS name or a phone book name the LAN happens to resolve.
+  lanHosts: (env.LAN_HOSTS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   // A show counts as watched only when it has played to the end (within a few seconds, for the credits' last frame); lower this to count e.g. 0.9 as watched.
   watchedThreshold: num('WATCHED_THRESHOLD', 1),
   // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.

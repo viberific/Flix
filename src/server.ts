@@ -39,6 +39,21 @@ app.setErrorHandler((err: any, _req, reply) => {
   reply.code(status).send({ error: err.message })
 })
 
+/** True for a host that only exists on the home network: a private IPv4 literal, an mDNS .local name, whatever
+ *  LAN_URL names, or a name listed in LAN_HOSTS. Those are served directly even when PUBLIC_URL is set, so a TV
+ *  that cannot install Tailscale reaches Flix by its LAN address. A tailnet address (100.64/10) is not one of
+ *  these: it still goes to the one address. */
+function isLanHost(name: string): boolean {
+  if (config.lanHosts.includes(name) || name.endsWith('.local')) return true
+  try {
+    if (config.lanUrl && new URL(config.lanUrl).hostname.toLowerCase() === name) return true
+  } catch { /* an unparseable LAN_URL is ignored, as it is in health.ts */ }
+  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(name)
+  if (!m) return false
+  const a = Number(m[1]); const b = Number(m[2])
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)
+}
+
 // ---- one address ------------------------------------------------------------
 // Umbrel puts its own HTTPS in front of Flix's plain-HTTP port 8096, and that
 // certificate is only issued for umbrel.local — so https://<tailnet-name>:8096 can
@@ -62,6 +77,9 @@ if (config.publicUrl) {
     // original Host) and Docker service names, which have no dot
     // (blofstedt-flix_app_1, app), keep working.
     if (name === 'localhost' || name === '[::1]' || name.startsWith('127.') || !name.includes('.')) return
+    // The home network: http://10.0.0.247:8096 and http://umbrel.local:8096 serve Flix themselves, so the TV
+    // needs no Tailscale. Tailscale keeps working exactly as before: its name and its 100.x address still redirect here.
+    if (isLanHost(name)) return
     // A TV or cast device fetches the media itself and cannot resolve the tailnet name, so the signed stream links
     // are served on whatever address the device used. They carry an unguessable token in the path, never a cookie.
     if (req.url.startsWith('/api/tv/')) return
@@ -78,7 +96,10 @@ await app.register(fastifyStatic, { root: join(root, 'node_modules/hls.js/dist')
 // button only appears where casting can actually work.
 app.get('/api/me', async (req) => {
   const u = userFor(req)
-  return { user: u ? { ...u, cast: !!config.lanUrl, hasPassword: hasPassword(u.id) } : u, needsSetup: userCount() === 0 }
+  // Where this server answers. The home-network address is what a TV uses when it cannot install Tailscale, and the
+  // tailnet one is the trustworthily-certificated address; both are shown under Settings so nobody has to guess.
+  const addresses = { lan: config.lanUrl || null, tailnet: config.publicUrl || null }
+  return { user: u ? { ...u, cast: !!config.lanUrl, hasPassword: hasPassword(u.id) } : u, needsSetup: userCount() === 0, addresses }
 })
 
 /** A person changing their own account: the name shown, their picture, their password. */

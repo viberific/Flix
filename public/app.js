@@ -1193,6 +1193,17 @@ const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['btn', 
 const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
 
 /** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
+/** Where this server answers, so the address for a TV is on the page rather than in someone's head: the home-network
+ *  address (works without Tailscale) and the tailnet one (real certificate). The one you are reading this on is left out. */
+function addressHint() {
+  const a = st?.addresses ?? {}
+  const parts = []
+  if (a.lan && a.lan !== location.origin) parts.push(`<b>${esc(a.lan)}</b> on the home network`)
+  if (a.tailnet && a.tailnet !== location.origin) parts.push(`<b>${esc(a.tailnet)}</b> over Tailscale`)
+  if (!parts.length) return ''
+  return `<p class="dim sm" style="margin:8px 0 0;max-width:70ch">Flix answers at ${parts.join(' &middot; ')}. A TV that cannot install Tailscale uses the home-network address.</p>`
+}
+
 async function settingsView(section = 'torrents') {
   const [downloads, health, reports, family, conns] = await Promise.all([
     api('/api/admin/downloads'), api('/api/admin/health').catch(() => ({ issues: [] })), api('/api/admin/reports').catch(() => ({ reports: [] })),
@@ -1200,7 +1211,7 @@ async function settingsView(section = 'torrents') {
   ])
   downloads.health = health; downloads.reports = reports.reports
   return () => {
-    app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Settings</h1>
+    app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Settings</h1>${addressHint()}
       <nav class="snav" aria-label="Settings sections"><div class="pills">${SETTINGS_PILLS.map(([id, l]) => `<a class="pill" href="#/settings/${id}" data-s="${id}">${l}</a>`).join('')}</div></nav>
       <section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
     downloadsPanel(downloads, $('#s-torrents')); familyPanel(family, $('#s-family')); settingsPanel(conns, $('#s-conn'))
