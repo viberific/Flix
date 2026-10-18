@@ -2,8 +2,13 @@
 import * as nodeTest from 'node:test'
 import { execFileSync as probe } from 'node:child_process'
 
-// These need the real tools. Without them every test would fail the same way and hide a real breakage, so they are skipped instead.
-const lacking = ['qbittorrent-nox', 'ffmpeg'].filter((bin) => { try { probe(bin, ['--version'], { stdio: 'ignore' }); return false } catch { return true } })
+// These need the real tools. Without them every test would fail the same way and hide a real breakage, so they are skipped
+// instead. Each tool is asked with the flag it actually has: ffmpeg answers -version (and exits 8 on --version, which
+// made every one of these skip on a machine that has it), while qbittorrent-nox reads -version as "start the server" and
+// never returns -- so the probe gets a timeout as well.
+const lacking = [['qbittorrent-nox', '--version'], ['ffmpeg', '-version']]
+  .filter(([bin, flag]) => { try { probe(bin, [flag], { stdio: 'ignore', timeout: 15_000 }); return false } catch { return true } })
+  .map(([bin]) => bin)
 const skip = lacking.length ? `needs ${lacking.join(' and ')} installed` : false
 const test = (name: string, fn: (...a: any[]) => any) => nodeTest.test(name, { skip }, fn)
 const before = (fn: () => any) => { if (!skip) nodeTest.before(fn) }
@@ -96,7 +101,14 @@ before(async () => {
       '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-g', '50', ...extra, out])
     return out
   }
-  const files = { 'direct.mp4': mk('Test.Show.S01E01.mp4', ['-c:a', 'aac', '-movflags', '+faststart']), 'hls.mkv': mk('Test.Show.S01E02.mkv', ['-c:a', 'ac3']) }
+  const files = {
+    'direct.mp4': mk('Test.Show.S01E01.mp4', ['-c:a', 'aac', '-movflags', '+faststart']),
+    'hls.mkv': mk('Test.Show.S01E02.mkv', ['-c:a', 'ac3']),
+    // A picture the remux cannot put in an MP4 (MPEG-4 part 2 in Matroska, which is neither direct nor remuxable), so a
+    // play of it is HLS however much of anything else on disk is finished: this test does not depend on another test's
+    // remux, and it is its own show so it does not change the episode count of series 77 either.
+    'mpeg4.mkv': mk('Second.Show.S01E01.mkv', ['-c:v', 'mpeg4', '-c:a', 'ac3']),
+  }
 
   // 2. tracker + seeder
   tracker = new Tracker({ udp: false, ws: false, http: true, stats: false })
@@ -113,8 +125,9 @@ before(async () => {
 
   // 3. mock BTN
   const torrents = Object.entries(media).map(([k, m], i) => ({
-    GroupName: `Test Show - S01E0${i + 1}`, GroupID: String(100 + i), TorrentID: String(1000 + i), SeriesID: '77', Series: 'Test Show',
-    SeriesPoster: `http://127.0.0.1:${P.btn}/img/poster.png`, ReleaseName: m.path.split('/').pop(), Category: 'Episode', Codec: 'H.264', Container: k.split('.')[1].toUpperCase(),
+    GroupName: i < 2 ? `Test Show - S01E0${i + 1}` : 'Second Show - S01E01', GroupID: String(100 + i), TorrentID: String(1000 + i),
+    SeriesID: i < 2 ? '77' : '78', Series: i < 2 ? 'Test Show' : 'Second Show',
+    SeriesPoster: `http://127.0.0.1:${P.btn}/img/poster.png`, ReleaseName: m.path.split('/').pop(), Category: 'Episode', Codec: i < 2 ? 'H.264' : 'MPEG-4', Container: k.split('.')[1].toUpperCase(),
     Source: 'WEB-DL', Resolution: '360p', Origin: 'P2P', Size: String(m.data.length), Time: String(1700000000 + i), InfoHash: m.hash.toUpperCase(),
     TvdbID: '555', ImdbID: 'tt0903747', Seeders: '1', Leechers: '0', Genres: ['Test'], DownloadURL: `http://127.0.0.1:${P.btn}/dl/${1000 + i}?torrent_pass=SECRETPASSKEY`,
   }))
@@ -279,15 +292,16 @@ test('downloads: an MKV is converted to one MP4 for the device', async () => {
 })
 
 test('transcode path: mkv/ac3 is served as HLS', async () => {
-  const play = await playAndFetch(1001)
-  const info = await jget(`/api/stream/1001/${play.fileIndex}/info`)
+  // Torrent 1002: its own show, and a picture no remux can put in an MP4, so the mode is HLS whatever ran before this.
+  const play = await playAndFetch(1002)
+  const info = await jget(`/api/stream/1002/${play.fileIndex}/info`)
   assert.equal(info.mode, 'hls')
   const pl = await api(info.url)
   assert.equal(pl.status, 200)
   const text = await pl.text()
   assert.match(text, /#EXTM3U/)
   const seg = text.split('\n').find((l) => l.endsWith('.ts'))!
-  const sr = await api(`/api/stream/1001/${play.fileIndex}/hls/${seg}`)
+  const sr = await api(`/api/stream/1002/${play.fileIndex}/hls/${seg}`)
   assert.equal(sr.status, 200)
   assert.ok((await sr.arrayBuffer()).byteLength > 1000)
 })

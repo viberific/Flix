@@ -25,6 +25,14 @@ const wanted = new Map<string, number>()
 const QUEUE_WAIT_MS = 1500
 
 /**
+ * Runs after a frame has been written beside its own name and before that file is renamed into place -- the one moment
+ * the folder holds both. A test uses it to look at the two files while the write is in flight, or to make the write fail;
+ * nothing in the app ever sets it.
+ */
+let cacheWriteHook: ((tmp: string, dest: string) => void) | null = null
+export function setCacheWriteHook(fn: ((tmp: string, dest: string) => void) | null) { cacheWriteHook = fn }
+
+/**
  * The frame at `at` seconds, or null when there is none to be had: the download has not reached that far, or ffmpeg
  * could not cut it. `progress` is the file's own 0..1, so a partly downloaded episode shows pictures only where it has
  * picture instead of hanging on the rest.
@@ -52,10 +60,17 @@ export function frame(t: number, f: number, at: number, source: string, duration
         try {
           mkdirSync(dirFor(t, f), { recursive: true })
           // Written to one side and renamed into place: a crash mid-write would otherwise leave a truncated JPEG that
-          // is served for ever, because the cache hit path trusts whatever is on disk.
+          // is served for ever, because the cache hit path trusts whatever is on disk. A write that dies part-way is
+          // cleaned up, so no stray file is left beside the frames either.
           const tmp = `${cached}.${process.pid}.tmp`
-          writeFileSync(tmp, buf)
-          renameSync(tmp, cached)
+          try {
+            writeFileSync(tmp, buf)
+            cacheWriteHook?.(tmp, cached)
+            renameSync(tmp, cached)
+          } catch (e) {
+            rmSync(tmp, { force: true })
+            throw e
+          }
         } catch { /* the cache is best effort */ }
       }
       return buf

@@ -3,7 +3,7 @@
 // that have not arrived, and the cache that answers a scrub over ground already covered.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -56,13 +56,48 @@ test('answering from the cache counts as a look, so the week-old sweeper leaves 
   assert.ok(Date.now() - statSync(dir).mtimeMs < 60_000)
 })
 
-test('a cut is cached in one step, with no half-written file left beside it', async () => {
-  const got = await frame(6, 7, 60, '/nope.mkv', 600, 1)
-  assert.ok(got && got.length > 200)
-  assert.equal(got[0], 0xff) // the JPEG the stub wrote
-  const dir = join(tmp, 'data', 'thumbs', '6-7')
+// The cache hit path trusts whatever is on disk, so a frame must never appear under its finished name before it is whole:
+// whoever looks at the folder mid-write must find that name absent, never a short file. The hook runs between the write
+// and the rename, so a plain writeFileSync to the finished name fails here -- the name exists, and it is there early.
+// (Checked because a test that only looked afterwards passed even when the write was no longer atomic.)
+test('a cut is written beside its name and renamed into place, never half-written under it', async () => {
+  const { setCacheWriteHook } = await import('../src/thumbs.ts')
+  const dir = join(tmp, 'data', 'thumbs', '6-7'), done = join(dir, '60.jpg')
+  const seen: { dest: string; destThere: boolean; tmpSize: number }[] = []
+  setCacheWriteHook((tmpFile, dest) => {
+    seen.push({ dest, destThere: existsSync(done), tmpSize: existsSync(tmpFile) ? statSync(tmpFile).size : -1 })
+  })
+  let got: Buffer | null = null
+  try {
+    got = await frame(6, 7, 60, '/nope.mkv', 600, 1)
+    assert.ok(got && got.length > 200)
+    assert.equal(got[0], 0xff) // the JPEG the stub wrote
+  } finally { setCacheWriteHook(null) }
+  // The finished name is reached in exactly one step, and it was not there while the write was still in flight.
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].dest, done)
+  assert.equal(seen[0].destThere, false, '60.jpg must not exist before it is complete')
+  assert.equal(seen[0].tmpSize, STUB_SIZE + 3)
   assert.deepEqual(readdirSync(dir), ['60.jpg'])
-  assert.ok(readFileSync(join(dir, '60.jpg')).equals(got))
+  assert.ok(readFileSync(done).equals(got!))
+})
+
+// A write that dies before the rename (a full disk, a crash) must leave nothing a later view would be served: no truncated
+// JPEG under the frame's own name, and no stray temp file beside it. The picture is still returned to the viewer, and the
+// next ask cuts it again rather than trusting a name that is not there.
+test('a cut that dies before the rename leaves nothing to be served, and is cut again next time', async () => {
+  const { setCacheWriteHook } = await import('../src/thumbs.ts')
+  const dir = join(tmp, 'data', 'thumbs', '10-11'), dest = join(dir, '80.jpg')
+  setCacheWriteHook(() => { throw new Error('the disk filled up') })
+  try {
+    const got = await frame(10, 11, 80, '/nope.mkv', 600, 1)
+    assert.ok(got && got.length > 200, 'the frame asked for is still answered')
+  } finally { setCacheWriteHook(null) }
+  assert.equal(existsSync(dest), false, 'a truncated JPEG must never be served from the cache')
+  assert.deepEqual(readdirSync(dir), [], 'and no half-written file is left behind')
+  const again = await frame(10, 11, 80, '/nope.mkv', 600, 1)
+  assert.ok(again && again.length > 200)
+  assert.deepEqual(readdirSync(dir), ['80.jpg'])
 })
 
 test('nothing is offered when ffmpeg cannot cut the frame: no picture, not a broken one', async () => {

@@ -557,15 +557,19 @@ function artSlideshow(items) {
     const s = show[n], back = 1 - front, el = lay[back], img = $('img', el)
     $('.arts-bg', el).style.backgroundImage = `url("/api/art/${s.id}/poster")`
     $('b', el).textContent = s.name || ''
+    // One picture that 404s (a show with no artwork) or 401s (a session that has expired on a television left idle) must
+    // not walk the whole list at network speed for ever: a run of failures with no picture in between takes the
+    // slideshow away. A poster that does arrive clears the count, so one missing poster among the others is not a run.
+    // The count is NOT reset here, in draw(): that reset was what made the run impossible to complete.
+    img.onload = () => { misses = 0 }
     img.onerror = () => {
       if (!on) return
       clearTimeout(hold)
       n = (n + 1) % show.length
-      if (++misses > show.length) { hide(); return } // nothing to show at all: leave the page alone
+      if (++misses > show.length) { misses = 0; hide(); return } // nothing to show at all: leave the page alone
       draw()
     }
     img.src = `/api/art/${s.id}/poster`
-    misses = 0
     el.classList.add('on')
     lay[front].classList.remove('on')
     front = back
@@ -823,6 +827,8 @@ function playView(seriesId, season, label) {
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
+    // An element whose source is taken away on purpose reports an error for it: that one is ours, not playback's.
+    let ignoreError = false
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
     let castingOnly = false
     const avoid = []
@@ -1090,22 +1096,28 @@ function playView(seriesId, season, label) {
         }
         v.onpause = report
         v.onended = onEnded
-        // Attached once, for the whole player. Nothing else listens for an error on the <video>, so a "file" play that
-        // the server refuses (409 while the remux is still being written, 404, a 5xx) left the loading mark turning
-        // over a black screen for ever. Ask /info once more -- the remux has either finished or been given up on by
-        // then, so this time it answers with the HLS cut -- and play that instead.
+        // Attached once, for the whole player, and it must be able to fire more than once. Nothing else listens for an
+        // error on the <video>, so a "file" play the server refuses (409 while the remux is still being written, 404, a
+        // 5xx) gets one more ask of /info -- the remux has either finished or been given up on by then, so this time it
+        // answers with the HLS cut -- and plays that instead. With { once: true } a second failure called nothing at all
+        // and left a black screen with the loading mark turning over for ever, which is the very thing this stops. The
+        // error the unload below causes on purpose is skipped; attach() clears that again as soon as a source is set.
         v.addEventListener('error', () => {
           if (!alive) return
+          if (ignoreError) { ignoreError = false; return }
+          if (!v.currentSrc && !v.getAttribute('src') && !v.srcObject) return // no source at all is not playback going wrong
           if (info?.mode === 'file' && !fileRetry) {
             fileRetry = true
             $('#msg').textContent = 'Starting a little further back…'
+            const at = v.currentTime || 0 // read first: emptying the element puts it back at zero
             v.removeAttribute('src')
+            ignoreError = true
             try { v.load() } catch { /* nothing to unload */ }
-            loadInfo(info.audioIndex ?? 0, v.currentTime || 0).catch((e) => fail(e.message))
+            loadInfo(info.audioIndex ?? 0, at).catch((e) => fail(e.message))
             return
           }
           fail('Something went wrong playing this. Go back and try again.')
-        }, { once: true })
+        })
       }
       const viaHls = info.mode === 'hls' && window.Hls?.isSupported()
       // HDR: the source's HEVC stream copied through untouched looks better than any downconvert to 8-bit, but only
@@ -1118,6 +1130,7 @@ function playView(seriesId, season, label) {
       // A single-file ("file") play is the page's own origin, so a TV's WebView already carries the session cookie the
       // signed path in a cast link stands in for: it gets the same URL as everyone else.
       const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
+      ignoreError = false // a source is about to be set: from here on an error is a real one
       if (viaHls) {
         // startPosition: open straight at the resume point instead of loading the first piece and jumping.
         hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, ...(startAt > 5 ? { startPosition: startAt } : {}) })
