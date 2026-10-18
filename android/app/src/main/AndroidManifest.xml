@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Lets the app install its own updates from the GitHub release (see Updater). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Runs on Android TV (Leanback launcher, remote, no touchscreen) as well as phones and tablets. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -30,5 +32,7 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver android:name=".Updater$Result" android:exported="false" />
     </application>
 </manifest>

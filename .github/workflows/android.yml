@@ -6,6 +6,9 @@ name: Build Android / TV app
 # to the GitHub release for that version (v<package.json version>), so it can be
 # downloaded straight onto a TV (e.g. with the Downloader app) or pushed with adb.
 #
+# The installed app checks the latest release on launch and installs a newer APK itself (Updater.java);
+# that only works when every build is signed with the same key, so set the secrets below.
+#
 # Signing: set the repository secrets ANDROID_KEYSTORE_BASE64,
 # ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS (and ANDROID_KEY_PASSWORD if it
 # differs) so every build is signed with the same key and installs as an update.
@@ -74,4 +77,6 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --target "$GITHUB_SHA" --title "Flix $VERSION" --notes "Flix $VERSION. Install \`flix-$VERSION.apk\` on an Android TV or phone."
           fi
-          gh release upload "$tag" "flix-$VERSION.apk" --clobber
+          # The installed app reads this to learn whether the APK on the release is newer than itself.
+          echo "{\"versionCode\": $GITHUB_RUN_NUMBER, \"versionName\": \"$VERSION\", \"apk\": \"flix-$VERSION.apk\"}" > update.json
+          gh release upload "$tag" "flix-$VERSION.apk" update.json --clobber
