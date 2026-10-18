@@ -9,7 +9,7 @@ import { canToneMap, TONEMAP, type Probe } from './transcode.ts'
  * A file that is already H.264/AAC in an MP4 is sent as it is; anything else (MKV, HEVC, AC3, 4K) is converted once and kept
  * for a while in Flix's own data folder (never in Downloads), so a second device or a retry doesn't convert it again.
  */
-export type OfflineState = { state: 'working'; progress: number } | { state: 'ready'; path: string; size: number; type: string } | { state: 'error'; message: string }
+export type OfflineState = { state: 'working'; progress: number; started?: boolean } | { state: 'ready'; path: string; size: number; type: string } | { state: 'error'; message: string }
 
 interface Job { proc: ChildProcess; progress: number; error?: string; out: string; last: number }
 const jobs = new Map<string, Job>()
@@ -60,7 +60,7 @@ export async function offlineCopy(t: number, f: number, p: Probe, source: string
   proc.on('exit', (code) => {
     if (code === 0 && existsSync(part)) { renameSync(part, out); jobs.delete(key) } else { rmSync(part, { force: true }); job.error = `ffmpeg failed: ${err.trim() || code}`; setTimeout(() => jobs.delete(key), 60_000) }
   })
-  return { state: 'working', progress: 0 }
+  return { state: 'working', progress: 0, started: true }
 }
 
 function touch(path: string) { const t = new Date(); try { utimesSync(path, t, t) } catch { /* gone */ } }

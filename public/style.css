@@ -544,7 +544,7 @@ html.tv * { cursor: none; }
 @keyframes ripple { 0% { opacity: 0; transform: scale(.94); } 14% { opacity: .75; } 100% { opacity: 0; transform: scale(2.3); border-radius: 50%; } }
 @keyframes sweep { to { left: 130%; } }
 #msg:empty { display: none; }
-@media (prefers-reduced-motion: reduce) { .mark svg { animation: markFade .5s forwards; } .mark svg g { animation: none; opacity: 1; } .mark .aura, .mark .ripple, .mark .sweep { display: none; } @keyframes markFade { to { opacity: 1; } } }
+@media (prefers-reduced-motion: reduce) { .mark svg { animation: markFade .5s forwards; } .mark svg g { animation: none; opacity: 1; } .mark .aura, .mark .ripple, .mark .sweep, .mark .tracer { display: none; } @keyframes markFade { to { opacity: 1; } } }
 
 /* ---------- downloads ---------- */
 .eside { display: flex; align-items: center; gap: 10px; }
@@ -569,3 +569,13 @@ html.tv * { cursor: none; }
 .prog-line { height: 4px; border-radius: 2px; background: var(--surface-2); margin-top: 10px; overflow: hidden; }
 .prog-line i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s; }
 .dl-item { cursor: pointer; }
+
+/* ---------- the idle sit-back slideshow: the top shows' art, one at a time, on a television left alone ---------- */
+.arts { position: fixed; inset: 0; z-index: 58; background: #05060a; opacity: 0; transition: opacity 1.2s var(--ease); pointer-events: none; overflow: hidden; }
+.arts.on { opacity: 1; }
+.arts-l { position: absolute; inset: 0; opacity: 0; transition: opacity 1.6s var(--ease); }
+.arts-l.on { opacity: 1; }
+.arts-bg { position: absolute; inset: -8%; background-size: cover; background-position: center; filter: blur(64px) saturate(1.05) brightness(.4); transform: scale(1.08); }
+.arts-p { position: absolute; inset: 0; margin: auto; height: min(68vh, 1000px); width: auto; max-width: 82vw; object-fit: contain; border-radius: 16px; box-shadow: 0 30px 90px rgba(0,0,0,.65); }
+.arts-t { position: absolute; left: 6vw; right: 6vw; bottom: 7vh; margin: 0; text-align: center; font-size: clamp(20px, 2.2vw, 38px); font-weight: 700; letter-spacing: .01em; color: #fff; text-shadow: 0 2px 24px rgba(0,0,0,.8); }
+@media (prefers-reduced-motion: reduce) { .arts { display: none; } }

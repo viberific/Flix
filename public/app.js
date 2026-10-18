@@ -504,12 +504,110 @@ async function homeView(q, local = false) {
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
+    // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
+    // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
+    artShow?.()
+    const art = (artShow = artSlideshow([...(featured ? [featured] : []), ...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])]))
+    const beforeCleanup = cleanup
+    cleanup = () => { beforeCleanup?.(); art?.(); if (artShow === art) artShow = null }
     const hs = !q && featured
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
+  }
+}
+
+/* ---------- the idle sit-back slideshow ---------- */
+/** Where a slideshow of artwork belongs: a television, or a window big enough to be watched from a sofa. A phone never shows it. */
+const bigScreen = () => isTv || matchMedia('(min-width: 1100px)').matches
+/** Long enough that nobody reading the page sees it appear under them. */
+const ART_IDLE_MS = 45_000
+/** How long one picture stays up before the next fades over it. */
+const ART_HOLD_MS = 6000
+let artShow = null
+
+/**
+ * The top shows' posters, one at a time, fading in and out on a screen nobody has touched for a while -- what a television
+ * left on the home screen does. The next poster is fetched while the one before it is still up, so there is never a burst
+ * of requests, and any input at all takes it away at once. Returns its stop(), or null when it must not run.
+ */
+function artSlideshow(items) {
+  if (rmq.matches || !bigScreen()) return null
+  const show = [...new Map((items || []).filter((s) => s && s.id != null).map((s) => [s.id, s])).values()].slice(0, 12)
+  if (show.length < 2) return null
+  const box = document.createElement('div')
+  box.className = 'arts'
+  box.setAttribute('aria-hidden', 'true')
+  box.innerHTML = [0, 1].map(() => '<div class="arts-l"><i class="arts-bg"></i><img class="arts-p" alt=""><b class="arts-t"></b></div>').join('')
+  const lay = [...box.querySelectorAll('.arts-l')]
+  const warm = new Map()
+  let n = 0, front = 1, idle = null, hold = null, on = false, stopped = false, armedAt = 0, misses = 0
+
+  /** The next picture, fetched now: the change is then only a fade, and the server sees one request per slide. */
+  const preload = (s) => {
+    if (warm.has(s.id)) return
+    const im = new Image()
+    im.src = `/api/art/${s.id}/poster`
+    warm.set(s.id, im)
+    if (warm.size > 4) { const [oldest] = warm.keys(); if (oldest !== s.id) warm.delete(oldest) }
+  }
+  const draw = () => {
+    const s = show[n], back = 1 - front, el = lay[back], img = $('img', el)
+    $('.arts-bg', el).style.backgroundImage = `url("/api/art/${s.id}/poster")`
+    $('b', el).textContent = s.name || ''
+    img.onerror = () => {
+      if (!on) return
+      clearTimeout(hold)
+      n = (n + 1) % show.length
+      if (++misses > show.length) { hide(); return } // nothing to show at all: leave the page alone
+      draw()
+    }
+    img.src = `/api/art/${s.id}/poster`
+    misses = 0
+    el.classList.add('on')
+    lay[front].classList.remove('on')
+    front = back
+    preload(show[(n + 1) % show.length])
+    hold = setTimeout(() => { n = (n + 1) % show.length; draw() }, ART_HOLD_MS)
+  }
+  const start = () => {
+    if (stopped || on || document.hidden) return
+    on = true
+    misses = 0
+    box.classList.add('on')
+    draw()
+  }
+  const hide = () => {
+    if (!on) return
+    on = false
+    clearTimeout(hold)
+    box.classList.remove('on')
+    lay.forEach((e) => e.classList.remove('on'))
+  }
+  const arm = () => { clearTimeout(idle); if (!stopped) idle = setTimeout(start, ART_IDLE_MS) }
+  // Any input at all: a remote's arrow key, a finger, a mouse, a wheel. The overlay goes at once, and the count starts
+  // again. Re-arming at most once a second, because a drag is thousands of pointer moves.
+  const touched = () => {
+    if (on) hide()
+    const now = Date.now()
+    if (now - armedAt > 1000) { armedAt = now; arm() }
+  }
+  const seen = () => { if (document.hidden) hide(); else arm() }
+  const events = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll']
+  document.body.appendChild(box)
+  events.forEach((e) => addEventListener(e, touched, true))
+  addEventListener('visibilitychange', seen)
+  arm()
+  return () => {
+    if (stopped) return
+    stopped = true
+    clearTimeout(idle)
+    clearTimeout(hold)
+    events.forEach((e) => removeEventListener(e, touched, true))
+    removeEventListener('visibilitychange', seen)
+    box.remove()
   }
 }
 
@@ -724,6 +822,7 @@ function playView(seriesId, season, label) {
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
+    let fileRetry = false
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
     let castingOnly = false
     const avoid = []
@@ -991,6 +1090,22 @@ function playView(seriesId, season, label) {
         }
         v.onpause = report
         v.onended = onEnded
+        // Attached once, for the whole player. Nothing else listens for an error on the <video>, so a "file" play that
+        // the server refuses (409 while the remux is still being written, 404, a 5xx) left the loading mark turning
+        // over a black screen for ever. Ask /info once more -- the remux has either finished or been given up on by
+        // then, so this time it answers with the HLS cut -- and play that instead.
+        v.addEventListener('error', () => {
+          if (!alive) return
+          if (info?.mode === 'file' && !fileRetry) {
+            fileRetry = true
+            $('#msg').textContent = 'Starting a little further back…'
+            v.removeAttribute('src')
+            try { v.load() } catch { /* nothing to unload */ }
+            loadInfo(info.audioIndex ?? 0, v.currentTime || 0).catch((e) => fail(e.message))
+            return
+          }
+          fail('Something went wrong playing this. Go back and try again.')
+        }, { once: true })
       }
       const viaHls = info.mode === 'hls' && window.Hls?.isSupported()
       // HDR: the source's HEVC stream copied through untouched looks better than any downconvert to 8-bit, but only

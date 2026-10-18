@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
 
@@ -19,6 +19,10 @@ const fileFor = (t: number, f: number, at: number) => join(dirFor(t, f), `${Math
 
 let running = 0
 const pending = new Map<string, Promise<Buffer | null>>()
+/** The newest second asked for, per download: a scrub queues a frame a second and the ones behind the finger are waste. */
+const wanted = new Map<string, number>()
+/** How long a job may wait for a permit before it is dropped: a preview 1.5 s late is worse than no preview. */
+const QUEUE_WAIT_MS = 1500
 
 /**
  * The frame at `at` seconds, or null when there is none to be had: the download has not reached that far, or ffmpeg
@@ -30,48 +34,72 @@ export function frame(t: number, f: number, at: number, source: string, duration
   if (progress < 1 && duration > 0 && sec > duration * progress * 0.9) return Promise.resolve(null)
   const cached = fileFor(t, f, sec)
   if (existsSync(cached)) {
-    try { return Promise.resolve(readFileSync(cached)) } catch { /* cut it again */ }
+    try {
+      // The sweeper goes by the folder's mtime, which only moves when a frame is written: without this a show watched
+      // every night would look untouched for a week and its frames would be thrown away.
+      touch(dirFor(t, f))
+      return Promise.resolve(readFileSync(cached))
+    } catch { /* cut it again */ }
   }
-  const key = `${t}:${f}:${Math.round(sec)}`
+  const want = `${t}:${f}`
+  wanted.set(want, Math.round(sec))
+  const key = `${want}:${Math.round(sec)}`
   const already = pending.get(key)
   if (already) return already
-  const job = cut(source, sec)
+  const job = cut(source, sec, want)
     .then((buf) => {
       if (buf) {
-        try { mkdirSync(dirFor(t, f), { recursive: true }); writeFileSync(cached, buf) } catch { /* the cache is best effort */ }
+        try {
+          mkdirSync(dirFor(t, f), { recursive: true })
+          // Written to one side and renamed into place: a crash mid-write would otherwise leave a truncated JPEG that
+          // is served for ever, because the cache hit path trusts whatever is on disk.
+          const tmp = `${cached}.${process.pid}.tmp`
+          writeFileSync(tmp, buf)
+          renameSync(tmp, cached)
+        } catch { /* the cache is best effort */ }
       }
       return buf
     })
-    .finally(() => { pending.delete(key); running-- })
+    .finally(() => { pending.delete(key) })
   pending.set(key, job)
   return job
 }
 
-/** ffmpeg, no more than CONCURRENCY at once: one scrub across the bar asks for a dozen frames in a second. */
-async function cut(source: string, sec: number): Promise<Buffer | null> {
-  while (running >= CONCURRENCY) await new Promise((r) => setTimeout(r, 40))
+function touch(path: string) { const t = new Date(); try { utimesSync(path, t, t) } catch { /* gone */ } }
+
+/** ffmpeg, no more than CONCURRENCY at once: one scrub across the bar asks for a dozen frames in a second. The permit is
+ *  taken and given back inside this function, so no early return anywhere above can leave the count stuck up. */
+async function cut(source: string, sec: number, want: string): Promise<Buffer | null> {
+  const since = Date.now()
+  while (running >= CONCURRENCY) {
+    if (wanted.get(want) !== Math.round(sec)) return null // the finger has moved on: this frame is no longer the one wanted
+    if (Date.now() - since > QUEUE_WAIT_MS) return null
+    await new Promise((r) => setTimeout(r, 40))
+  }
   running++
-  return new Promise<Buffer | null>((resolve) => {
-    const args = ['-hide_banner', '-loglevel', 'error', '-ss', String(sec), '-i', source,
-      '-frames:v', '1', '-vf', `scale=${MAX_SIDE}:-2`, '-q:v', '6', '-f', 'mjpeg', 'pipe:1']
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] })
-    const chunks: Buffer[] = []
-    let done = false
-    const finish = (buf: Buffer | null) => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      try { proc.kill('SIGKILL') } catch { /* already gone */ }
-      resolve(buf)
-    }
-    const timer = setTimeout(() => finish(null), TIMEOUT_MS)
-    proc.stdout!.on('data', (d: Buffer) => chunks.push(d))
-    proc.on('error', () => finish(null))
-    proc.on('exit', (code) => {
-      const buf = Buffer.concat(chunks)
-      finish(code === 0 && buf.length > 200 ? buf : null)
+  try {
+    return await new Promise<Buffer | null>((resolve) => {
+      const args = ['-hide_banner', '-loglevel', 'error', '-ss', String(sec), '-i', source,
+        '-frames:v', '1', '-vf', `scale=${MAX_SIDE}:-2`, '-q:v', '6', '-f', 'mjpeg', 'pipe:1']
+      const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] })
+      const chunks: Buffer[] = []
+      let done = false
+      const finish = (buf: Buffer | null) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        try { proc.kill('SIGKILL') } catch { /* already gone */ }
+        resolve(buf)
+      }
+      const timer = setTimeout(() => finish(null), TIMEOUT_MS)
+      proc.stdout!.on('data', (d: Buffer) => chunks.push(d))
+      proc.on('error', () => finish(null))
+      proc.on('exit', (code) => {
+        const buf = Buffer.concat(chunks)
+        finish(code === 0 && buf.length > 200 ? buf : null)
+      })
     })
-  })
+  } finally { running-- }
 }
 
 /** Frames nobody has looked at in a week go; cutting them again is cheap. */

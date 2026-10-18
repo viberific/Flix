@@ -408,15 +408,18 @@ app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
 
 const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInteger(n) && n >= 0 && n < 32 ? n : 0 }
 
-app.get('/api/stream/:t/:f/info', guarded, async (req) => {
+app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const { t, f } = req.params as any
   const a = audioIdx((req.query as any).a)
+  // A remux this call starts may hold the play for a moment; a viewer who has closed the page must not hold it at all.
+  let closed = false
+  reply.raw.on('close', () => { closed = true })
   const p = await probe(+t, +f)
   const direct = p.direct && a === 0 // another audio track needs the transcode path (raw bytes can't switch tracks)
   // A file that is fully downloaded and needs only its container changed (MKV holding H.264, say) is remuxed once into
   // one MP4 and served with byte ranges. That is what makes the whole episode seekable: the HLS fallback for a passed
   // through picture is built forwards from the start, so a seek ahead of it cannot work until it catches up.
-  const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p) : null
+  const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p, () => closed) : null
   const path = direct ? 'raw' : a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'
   const base = `/api/stream/${t}/${f}`
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead.
@@ -480,17 +483,28 @@ const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
  * to at once. Null means play it as HLS instead: still downloading, an audio track other than the first, HDR, or a
  * remux that has not finished yet.
  */
-async function remuxPlayback(t: number, f: number, p: Probe): Promise<boolean> {
-  if (!p.copyVideo) return false
+/** The codecs an MP4 can hold with the picture copied. MP4 cannot carry VP8, and a browser will not play VP9 inside one,
+ *  so those stay on HLS however well the file is downloaded. */
+const REMUX_VIDEO = new Set(['h264', 'hevc', 'av1'])
+
+async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boolean): Promise<boolean> {
+  // The same picture rule probe() uses (4K is re-encoded down to 1080p), minus the codecs MP4 cannot hold.
+  if (!REMUX_VIDEO.has(String(p.videoCodec ?? '')) || (p.height ?? 0) > 1080) return false
   const fi = await fileInfo(t, f)
   if (!fi || fi.file.progress < 1) return false
   const source = join(fi.layout.savePath, fi.file.name)
+  const first = await offlineCopy(t, f, p, source)
+  if (first.state === 'ready') return true
+  // Only a job this call started is worth waiting for. One already in flight was started by an earlier /info, and the
+  // 12 s spent waiting on it again is 12 s on every later play of the same episode, for a picture that is coming anyway.
+  if (first.state !== 'working' || !first.started) return false
   const deadline = Date.now() + REMUX_WAIT_MS
   for (;;) {
+    await new Promise((done) => setTimeout(done, 250))
+    if (closed()) return false // the viewer closed the page: nothing left to wait for
     const r = await offlineCopy(t, f, p, source)
     if (r.state === 'ready') return true
     if (r.state === 'error' || Date.now() >= deadline) return false
-    await new Promise((done) => setTimeout(done, 250))
   }
 }
 

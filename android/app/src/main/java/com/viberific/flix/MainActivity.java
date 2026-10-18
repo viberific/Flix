@@ -44,6 +44,7 @@ public class MainActivity extends Activity {
     private static final int BG = 0xFF090B0F;
 
     private FrameLayout root;
+    private FrameLayout stage;
     private WebView web;
     private View setup, fullscreenView;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
@@ -83,26 +84,43 @@ public class MainActivity extends Activity {
             s.setLoadWithOverviewMode(true);
             s.setUseWideViewPort(true);
             // The page is drawn edge to edge (see the immersive flags further down), so on a phone it ran under the
-            // status bar and the camera cutout and the search bar sat behind them. Pad the page by whatever the
-            // system calls unusable; a television has neither, so this is zero there and the picture keeps the whole
-            // screen. The native video view is a sibling, not this view, so a fullscreen film is never letterboxed.
-            web.setOnApplyWindowInsetsListener((view, insets) -> {
-                int top, bottom;
+            // status bar and the camera cutout and the search bar sat behind them. Padding the WebView itself does not
+            // move its content -- a WebView lays the page out across its whole width whatever its padding -- so the
+            // WebView goes inside a wrapper and the wrapper is padded: then the view really is narrower and the page is
+            // laid out inside it. All four sides, because this app is used sideways as much as upright; on a television
+            // every inset is zero, so the picture keeps the whole screen. The native video view is a sibling of the
+            // wrapper, added straight to root, so a fullscreen film is never letterboxed.
+            stage = new FrameLayout(this);
+            stage.setBackgroundColor(BG);
+            stage.setOnApplyWindowInsetsListener((view, insets) -> {
+                int top, bottom, left, right;
                 if (Build.VERSION.SDK_INT >= 30) {
-                    android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-                    top = bars.top;
-                    bottom = bars.bottom;
+                    // Ignoring visibility: a status bar swiped in over a fullscreen page must not re-lay out the page
+                    // under it and back again, which is what made the picture jump on a phone.
+                    android.graphics.Insets bars = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
+                    android.graphics.Insets cut = insets.getInsets(WindowInsets.Type.displayCutout());
+                    top = Math.max(bars.top, cut.top);
+                    bottom = Math.max(bars.bottom, cut.bottom);
+                    left = Math.max(bars.left, cut.left);
+                    right = Math.max(bars.right, cut.right);
                 } else {
                     // Before Android 11 the cutout is asked for separately, and in fullscreen the system-bar inset is
                     // often zero where the cutout's is not.
                     top = insets.getSystemWindowInsetTop();
                     bottom = insets.getSystemWindowInsetBottom();
+                    left = insets.getSystemWindowInsetLeft();
+                    right = insets.getSystemWindowInsetRight();
                     if (Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
-                        top = Math.max(top, insets.getDisplayCutout().getSafeInsetTop());
+                        android.view.DisplayCutout c = insets.getDisplayCutout();
+                        top = Math.max(top, c.getSafeInsetTop());
+                        bottom = Math.max(bottom, c.getSafeInsetBottom());
+                        left = Math.max(left, c.getSafeInsetLeft());
+                        right = Math.max(right, c.getSafeInsetRight());
                     }
                 }
-                if (view.getPaddingTop() != top || view.getPaddingBottom() != bottom) {
-                    view.setPadding(0, top, 0, bottom);
+                if (view.getPaddingTop() != top || view.getPaddingBottom() != bottom
+                        || view.getPaddingLeft() != left || view.getPaddingRight() != right) {
+                    view.setPadding(left, top, right, bottom);
                 }
                 return insets;
             });
@@ -135,8 +153,9 @@ public class MainActivity extends Activity {
                 @Override
                 public void onHideCustomView() { leaveFullscreen(); }
             });
-            root.addView(web, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            web.requestApplyInsets(); // the padding above is set the moment the window reports its insets
+            root.addView(stage, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            stage.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            stage.requestApplyInsets(); // the padding above is set the moment the window reports its insets
             web.requestFocus();
         }
         if (state == null || web.restoreState(state) == null) web.loadUrl(url);

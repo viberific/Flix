@@ -19,16 +19,17 @@
                 android:endColor="#b8155a" />
         </aapt:attr>
     </path>
-    <!-- The soft sheen across the top, as public/icon.svg has it. -->
-    <path android:pathData="M0,0h512v300h-512z">
+    <!-- The soft sheen: radial from the top-left quarter, widening over the whole canvas, exactly as public/icon.svg paints it
+         (cx .25 cy 0 r 1 on a 512 box, white at 32% fading out by half the radius). -->
+    <path android:pathData="M0,0h512v512h-512z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:type="linear"
-                android:startX="128"
-                android:startY="0"
-                android:endX="128"
-                android:endY="300"
-                android:startColor="#55ffffff"
+                android:type="radial"
+                android:centerX="128"
+                android:centerY="0"
+                android:gradientRadius="512"
+                android:startColor="#52ffffff"
+                android:centerColor="#00ffffff"
                 android:endColor="#00ffffff" />
         </aapt:attr>
     </path>
