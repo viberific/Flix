@@ -103,7 +103,7 @@ try { db.exec('ALTER TABLE series_net ADD COLUMN ver INTEGER NOT NULL DEFAULT 0'
 
 // Where a download came from: 'flix' (someone pressed play), 'auto' (started ahead of time) or 'adopted' (already in the Downloads folder, outside Flix).
 try { db.exec(`ALTER TABLE downloads ADD COLUMN origin TEXT NOT NULL DEFAULT 'flix'`) } catch { /* already present */ }
-// 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 30 days.
+// 1 = started ahead of time for this person, not yet opened by them; lapses after a week (AUTO_EXPIRE_DAYS) instead of the usual 14 days.
 try { db.exec('ALTER TABLE interests ADD COLUMN auto INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
 
 // When a finished, fully seeded season pack nobody else has touched is removed (see retention.ts); null = not leaving.
