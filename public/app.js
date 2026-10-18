@@ -759,8 +759,8 @@ function playView(seriesId, season, label) {
     }
     // Pinch out to fill the screen (the edges are cropped a little), pinch in to fit it again; Z does the same on a keyboard. Remembered on this device.
     // object-fit rather than a zoom, so the captions stay inside the screen.
-    let fill = store.get('fill', false), pinch = null
-    const setFill = (on) => { fill = on; store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
+    let fill = touchy ? false : store.get('fill', false), pinch = null // phones always open fitted (nothing cropped); the button or a pinch zooms to fill
+    const setFill = (on) => { fill = on; if (!touchy) store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
     const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
     pl.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), done: false } }, { passive: true, capture: true })
     pl.addEventListener('touchmove', (e) => {
