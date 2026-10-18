@@ -481,18 +481,17 @@ async function homeView(q, local = false) {
   const listIds = new Set(home.listIds ?? [])
   return () => {
     let html = ''
-    if (!q && (items[0] || featured)) {
-      const c = items[0], s = c ? { id: c.seriesId, name: c.series } : featured
-      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">${c ? (items[0]?.next ? 'Up next' : 'Continue watching') : 'Featured'}</div>
-        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${c ? (c.next ? 'Up next · ' + esc(c.label) : esc(c.label) + ' · ' + pct(c.position, c.duration) + '% watched') : 'Tap to see episodes'}</p>
-        <div class="actions rise" style="--i:3">${c ? `<button class="btn primary" id="hp">${I.play} ${c.next ? 'Play' : 'Resume'}</button>` : `<a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>`}
+    if (!q && featured) {
+      const s = featured
+      html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">Featured</div>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">Tap to see episodes</p>
+        <div class="actions rise" style="--i:3"><a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>
         <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
-    // The billboard already shows the first thing to resume, so the row holds only the rest.
-    const more = !q && items[0] ? items.slice(1) : items
-    if (more.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(more, contTile)}`
+    // The featured show is never one being resumed (the server keeps it out), so every show to resume is in this row.
+    if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
     if (!q && leaving.items.length) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items, leavingTile)}`
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
     if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
@@ -505,13 +504,12 @@ async function homeView(q, local = false) {
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
-    const hs = !q && (items[0] ? { id: items[0].seriesId } : featured)
+    const hs = !q && featured
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
-    const hp = $('#hp'); if (hp) hp.onclick = () => go(`#/play/${items[0].seriesId}/${items[0].season ?? 'x'}/${encodeURIComponent(items[0].label)}`)
   }
 }
 
