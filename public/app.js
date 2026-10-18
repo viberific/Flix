@@ -722,7 +722,21 @@ function playView(seriesId, season, label) {
     let castingOnly = false
     const avoid = []
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused) pl.classList.add('idle') }, 3000) }
-    pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
+    // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
+    pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
+    // Touching the bar itself only restarts the hide timer.
+    $('#pctl').addEventListener('pointerdown', wake)
+    wake()
+    // On a phone, play in landscape: fullscreen is what lets the browser lock the orientation. Needs a tap, so it is retried on the first one.
+    const touchy = matchMedia('(pointer: coarse)').matches
+    let landscape = false
+    const goLandscape = async () => {
+      if (!touchy || landscape) return
+      try { if (!document.fullscreenElement) await pl.requestFullscreen?.({ navigationUI: 'hide' }) } catch { /* not allowed without a tap */ }
+      try { await screen.orientation?.lock?.('landscape'); landscape = true } catch { /* unsupported (iOS) or refused */ }
+    }
+    goLandscape()
+    pl.addEventListener('pointerup', goLandscape, { once: true })
 
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
@@ -808,7 +822,7 @@ function playView(seriesId, season, label) {
       $('#pvol').onclick = () => { if (v) { v.muted = !v.muted; paint() } }
       $('#pfull').onclick = () => { setFill(!fill); paint() }
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
-      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); pl.classList.contains('idle') ? wake() : pl.classList.add('idle') })
+      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('idle')) wake(); else { clearTimeout(idleT); pl.classList.add('idle') } })
       paint()
     }
     /** The paused screen: the show's own art, its certificate and who is in it, all from the details page's data. */
@@ -822,7 +836,7 @@ function playView(seriesId, season, label) {
       $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
