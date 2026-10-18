@@ -910,12 +910,23 @@ function playView(seriesId, season, label) {
         v.onended = onEnded
       }
       const viaHls = info.mode === 'hls' && window.Hls?.isSupported()
+      // HDR: the source's HEVC stream copied through untouched looks better than any downconvert to 8-bit, but only
+      // a device that decodes HEVC main10 in MP4 can show it. Ask the browser, and fall back to the 1080p HLS cut.
+      let canHdr = !!(info.hdrUrl && !info.useHdrOff && window.MediaSource && ['hvc1.2.4.L153.B0', 'hvc1.1.6.L153.B0', 'hev1.1.6.L153.B0', 'hvc1.1.6.L150.B0']
+        .some((c) => MediaSource.isTypeSupported(`video/mp4; codecs="${c}"`)))
+      info.useHdr = canHdr
       // Casting needs a link the TV can open on its own (no cookie), so plain playback uses the signed one where the browser can cast.
-      const url = !viaHls && 'remote' in v ? info.tvUrl : info.url
+      const src = canHdr ? info.hdrUrl : info.url
+      const url = !viaHls && 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       if (viaHls) {
         hls = new Hls({ maxBufferLength: 60 })
         hls.loadSource(url); hls.attachMedia(v)
-        hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls?.destroy(); fail('Something went wrong playing this. Go back and try again.') } })
+        hls.on(Hls.Events.ERROR, (_, d) => {
+          if (!d.fatal) return
+          hls?.destroy()
+          // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
+          if (canHdr) { info.useHdrOff = true; canHdr = false; attach(v.currentTime || startAt) } else fail('Something went wrong playing this. Go back and try again.')
+        })
       } else v.src = url
       if (startAt > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = startAt }, { once: true })
       v.play?.().catch(() => {})

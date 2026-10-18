@@ -12,7 +12,7 @@ import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, jobDir, probe, releaseHls, subtitleVtt, touchHls } from './transcode.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, jobDir, probe, releaseHls, subtitleVtt, touchHls } from './transcode.ts'
 import { offlineCopy, startOfflineSweeper } from './offline.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
@@ -393,8 +393,13 @@ app.get('/api/stream/:t/:f/info', guarded, async (req) => {
   // Casting always uses the HLS playlist: the cast receiver plays HLS but not Matroska. It is made absolute on the
   // LAN address when one is configured, because the receiver cannot resolve the tailnet name this page came from.
   const tvHls = `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/${a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'}`
+  // The HDR path: the HEVC stream is copied, not re-encoded, into fragmented MP4 so the TV keeps its HDR metadata
+  // and the picture is bit-for-bit the source instead of an 8-bit downconvert. Only offered when the source is HDR.
+  const hdrUrl = p.hdr ? `${base}/hdr/index.m3u8?a=${a}` : null
+  const tvHdr = p.hdr ? `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/hdr/index.m3u8?a=${a}` : null
   return {
     mode: direct ? 'direct' : 'hls', url: `${base}/${path}`, tvUrl: tv, castUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    hdrUrl, hdrTvUrl: tvHdr, hdrCastUrl: config.lanUrl && tvHdr ? config.lanUrl + tvHdr : null,
     audio: p.audio, chapters: p.chapters,
     subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
   }
@@ -491,17 +496,19 @@ async function rawHandler(req: any, reply: any) {
   return reply.send(stream)
 }
 
-async function hlsHandler(req: any, reply: any) {
+async function hlsHandler(req: any, reply: any, hdr = false) {
   const { t, f, file } = req.params as any
-  const a = audioIdx(req.params.a)
-  if (!/^(index\.m3u8|seg\d{5}\.ts)$/.test(file)) return reply.code(400).send({ error: 'bad file' })
-  if (file === 'index.m3u8' || !touchHls(+t, +f, a)) {
+  const a = audioIdx(req.params.a ?? req.query?.a)
+  if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
+  if (file === 'index.m3u8' || !touchHls(+t, +f, a, hdr)) {
     const p = await probe(+t, +f)
-    try { await ensureHls(+t, +f, p, a) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+    if (hdr && !hdrCopyOk(p, true)) return reply.code(409).send({ error: 'this file is not HDR' })
+    try { await ensureHls(+t, +f, p, a, hdr) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   }
-  const path = join(jobDir(+t, +f, a), file)
+  const path = join(jobDir(+t, +f, a, hdr), file)
   if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
-  return reply.type(file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t').header('cache-control', 'no-store').send(createReadStream(path))
+  const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
+  return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
 }
 
 /** The same video routes twice: with the login cookie, and with a signed token in the path for TVs and cast devices. */
@@ -520,6 +527,7 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
   app.get(`${prefix}/:t/:f/raw`, { preHandler: pre as any }, rawHandler)
   app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)
   app.get(`${prefix}/:t/:f/hls-a/:a/:file`, { preHandler: pre as any }, hlsHandler)
+  app.get(`${prefix}/:t/:f/hdr/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, true))
 }
 
 // ---- watch state ------------------------------------------------------------

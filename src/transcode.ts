@@ -14,6 +14,8 @@ export interface Chapter { start: number; end: number; title: string }
 export interface Probe {
   direct: boolean; videoCodec?: string; audioCodec?: string; container?: string; duration?: number; copyVideo: boolean; height?: number
   hdr: boolean; audio: AudioTrack[]; subs: SubTrack[]; chapters: Chapter[]
+  /** More about the picture, so the encoder settings can be sized to it instead of one guess for every file. */
+  hdrKind?: 'pq' | 'hlg'; fps?: number; srcBitrate?: number; tenBit?: boolean
 }
 const probes = new Map<string, Probe>()
 
@@ -52,11 +54,17 @@ export async function probe(torrentId: number, fileIndex: number): Promise<Probe
     .filter(({ s }: any) => TEXT_SUBS.has(s.codec_name))
     .map(({ s, n }: any) => ({ n, lang: s.tags?.language ?? 'und', forced: !!s.disposition?.forced, default: !!s.disposition?.default,
       label: [langName(s.tags?.language), s.tags?.title && !/^(full|default)$/i.test(s.tags.title) ? s.tags.title : '', s.disposition?.forced ? 'Forced' : '', s.disposition?.hearing_impaired ? 'CC' : ''].filter(Boolean).join(' · ') }))
+  const fpsRaw = String(v?.avg_frame_rate ?? v?.r_frame_rate ?? '')
+  const [fn, fd] = fpsRaw.split('/').map(Number)
+  const fps = fn > 0 && fd > 0 ? Math.min(120, fn / fd) : undefined
   const chapters: Chapter[] = (j.chapters ?? []).map((c: any) => ({ start: Number(c.start_time), end: Number(c.end_time), title: String(c.tags?.title ?? '') })).filter((c: Chapter) => c.end > c.start)
   const p: Probe = {
     direct: containerOk && vOk && aOk, videoCodec: v?.codec_name, audioCodec: a?.codec_name, container: fmt,
     duration: j.format?.duration ? Number(j.format.duration) : undefined, copyVideo: vOk, height,
     hdr: HDR_TRC.has(v?.color_transfer ?? ''), audio, subs, chapters,
+    hdrKind: v?.color_transfer === 'arib-std-b67' ? 'hlg' : v?.color_transfer === 'smpte2084' ? 'pq' : undefined,
+    fps, srcBitrate: v?.bit_rate ? Number(v.bit_rate) : undefined,
+    tenBit: /10|12/.test(String(v?.pix_fmt ?? '')),
   }
   probes.set(key, p)
   return p
@@ -67,8 +75,10 @@ const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
 
 /** One job (and folder) per file and chosen audio track, so switching language doesn't disturb anyone else watching. */
-export function jobDir(torrentId: number, fileIndex: number, audio = 0) { return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}`) }
-const jobKey = (t: number, f: number, a = 0) => `${t}:${f}:${a}`
+export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = false) {
+  return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}${hdr ? '-hdr' : ''}`)
+}
+const jobKey = (t: number, f: number, a = 0, hdr = false) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}`
 
 function stopJob(key: string) {
   const j = jobs.get(key)
@@ -91,28 +101,64 @@ export async function canToneMap(): Promise<boolean> {
   if (zscale === null) zscale = await execFileP('ffmpeg', ['-hide_banner', '-filters']).then((r) => /\bzscale\b/.test(r.stdout) && /\btonemap\b/.test(r.stdout)).catch(() => false)
   return zscale
 }
-export const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
+/**
+ * HDR (PQ or HLG) to SDR. mobius keeps highlights from flattening the way hable does -- sky and lamps stay bright
+ * instead of going grey -- with desat=2 so the very brightest parts lose saturation rather than turning neon.
+ */
+export const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
+
+/**
+ * x264 settings sized to the picture: 1080p gets room for grain and fine detail, 720p less, everything capped so a
+ * phone on a home connection is not pulling 15 Mbit/s for a show it plays on a 6-inch screen. CRF does the work and
+ * maxrate only stops the expensive frames (confetti, rain, a pan across a forest) from spiking.
+ */
+function x264(height?: number, fps?: number) {
+  const h = (height ?? 720) >= 1080 ? 1080 : (height ?? 720) >= 720 ? 720 : 480
+  const crf = h === 1080 ? 20 : h === 720 ? 21 : 22
+  const rate = h === 1080 ? (fps && fps > 40 ? '9000k' : '6500k') : h === 720 ? '3500k' : '1800k'
+  const buf = h === 1080 ? (fps && fps > 40 ? '18000k' : '13000k') : h === 720 ? '7000k' : '3600k'
+  return ['-c:v', 'libx264', '-preset', 'fast', '-crf', String(crf), '-maxrate', rate, '-bufsize', buf,
+    '-profile:v', 'high', '-level', h === 1080 ? '4.1' : '4.0', '-pix_fmt', 'yuv420p', '-sc_threshold', '0',
+    '-force_key_frames', 'expr:gte(t,n_forced*6)']
+}
+
+/**
+ * Whether this file can go to the player as HDR rather than being tonemapped down to SDR. The client says it can
+ * show HDR; HEVC 10-bit is copied untouched (PQ or HLG tags kept), because re-encoding 10-bit would cost CPU for a
+ * worse picture. Anything else, or a file above 1080p, still gets the SDR path.
+ */
+export function hdrCopyOk(p: Probe, clientSaysHdr: boolean) {
+  return !!clientSaysHdr && p.hdr && p.tenBit !== false && p.videoCodec === 'hevc' && (p.height ?? 0) <= 1080
+}
 
 /** Start (or touch) the HLS job; resolves when the playlist exists with its first segment. */
-export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0): Promise<string> {
-  const key = jobKey(torrentId, fileIndex, audio)
+export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false): Promise<string> {
+  const key = jobKey(torrentId, fileIndex, audio, hdr)
   let j = jobs.get(key)
   if (!j) {
-    const dir = jobDir(torrentId, fileIndex, audio)
+    const dir = jobDir(torrentId, fileIndex, audio, hdr)
     const tonemap = p.hdr && (await canToneMap())
     const filters = [...((p.height ?? 0) > 1080 ? ['scale=-2:1080'] : []), ...(tonemap ? [TONEMAP] : [])]
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
     const args = ['-hide_banner', '-loglevel', 'error', '-i', rawUrl(torrentId, fileIndex),
       '-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn',
-      ...(p.copyVideo ? ['-c:v', 'copy'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...(filters.length ? ['-vf', filters.join(',')] : []), '-force_key_frames', 'expr:gte(t,n_forced*6)']),
+      ...(hdr
+        ? ['-c:v', 'copy', '-tag:v', 'hvc1',
+          '-color_primaries', 'bt2020', '-color_trc', p.hdrKind === 'hlg' ? 'arib-std-b67' : 'smpte2084', '-colorspace', 'bt2020nc']
+        : p.copyVideo ? ['-c:v', 'copy'] : [...x264(p.height, p.fps), ...(filters.length ? ['-vf', filters.join(',')] : [])]),
       '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
-      '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
-      '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')]
+      // HDR is copied into fragmented MP4 segments, which is what the player's HEVC support expects; SDR stays in TS.
+      ...(hdr
+        ? ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
+          '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
+          '-hls_segment_filename', join(dir, 'seg%05d.m4s'), join(dir, 'index.m3u8')]
+        : ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
+          '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')])]
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] })
     const ready = (async () => {
       for (let i = 0; i < 600; i++) {
-        if (existsSync(join(dir, 'seg00000.ts')) && existsSync(join(dir, 'index.m3u8'))) return
+        if (existsSync(join(dir, hdr ? 'seg00000.m4s' : 'seg00000.ts')) && existsSync(join(dir, 'index.m3u8'))) return
         if (proc.exitCode !== null && proc.exitCode !== 0) throw new Error('ffmpeg failed')
         await new Promise((r) => setTimeout(r, 250))
       }
@@ -141,8 +187,8 @@ export function releaseHls(torrentId: number, fileIndex: number) {
   }
 }
 
-export function touchHls(torrentId: number, fileIndex: number, audio = 0) {
-  const key = jobKey(torrentId, fileIndex, audio)
+export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false) {
+  const key = jobKey(torrentId, fileIndex, audio, hdr)
   const j = jobs.get(key)
   if (!j) return false
   clearTimeout(j.idle)
