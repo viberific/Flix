@@ -426,7 +426,7 @@ function authView(needsSetup) {
     app.innerHTML = `<div class="auth-wrap"><form class="auth"><div class="brand">${I.logo}<span>Flix</span></div>
       <h1 style="text-align:center">${needsSetup ? 'Create the admin account' : 'Welcome back'}</h1>
       <input class="field" name="name" placeholder="Username" autocomplete="username" value="${esc(signinHint)}" required>
-      <input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required>
+      <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password (8+ characters)' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required' : ''}>
       <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
     $('form').onsubmit = async (e) => {
       e.preventDefault()
@@ -1300,9 +1300,9 @@ function familyPanel(data, root) {
       ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → Ratings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
         <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
-        <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}</div></div></div>
+        <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}${u.hasPassword ? '' : ' · No password'}</div></div></div>
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
-        <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">Reset password</button>
+        <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
         <button class="btn" data-act="invite" style="padding:8px 14px">Sign-in link</button>
         <button class="btn" data-act="pin" style="padding:8px 14px">${u.hasPin ? 'Change PIN' : 'Set PIN'}</button>
         ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
@@ -1312,7 +1312,8 @@ function familyPanel(data, root) {
         <div class="pwrow invrow" hidden><input class="field" readonly aria-label="Sign-in link"><button class="btn primary" data-act="copy" style="padding:10px 16px">Copy</button><button class="btn" data-act="share" style="padding:10px 16px" hidden>Share</button>
         <span class="dim" style="flex-basis:100%;font-size:13px">Send this to ${esc(u.name)}. Opening it on their phone, tablet or TV signs that device in with no password. It works once and expires in 7 days.</span></div></div>`).join('')}</div>
       <h2 class="sec">Add a family member</h2>
-      <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password" required></div>
+      <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password"></div>
+        <p class="dim" style="font-size:13px;margin:0">Kids (not an admin, and not allowed TV-MA) don’t need a password: leave it empty and they sign in with just their name.</p>
         <div><div class="dim" style="font-size:13px;margin-bottom:8px">Can watch:</div>${ratingPills(all, all, 'id="newr"')}
         <div class="row-form" style="margin-top:10px">${Object.keys(PRESETS).map((k) => `<button type="button" class="btn" data-preset="${k}" style="padding:7px 14px">${k}</button>`).join('')}</div></div>
         <div class="row-form"><label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add person</button><span id="um" class="dim" role="status"></span></div></form>`
@@ -1331,7 +1332,7 @@ function familyPanel(data, root) {
       card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
         const act = b.dataset.act
         if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
-        else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = '' } catch (e) { msg.textContent = e.message } }
+        else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = ''; $('[data-act=pw]', card).textContent = 'Reset password' } catch (e) { msg.textContent = e.message } }
         else if (act === 'pin') { const row = $('.pinrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pinsave' || act === 'pinclear') {
           try { await patch(id, { pin: act === 'pinclear' ? null : $('.pinrow input', card).value }); paint() } catch (e) { alert(e.message) }
@@ -1360,7 +1361,7 @@ function familyPanel(data, root) {
       const picked = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r)
       try {
         const u = await api('/api/admin/users', { name: f.get('name'), password: f.get('password'), isAdmin: !!f.get('isAdmin'), allowedRatings: picked })
-        users = [...users, { id: u.id, name: u.name, is_admin: !!u.is_admin, allowed: u.allowed }]; paint(); $('#um').textContent = `Added ${u.name}`
+        users = [...users, { id: u.id, name: u.name, is_admin: !!u.is_admin, allowed: u.allowed, hasPassword: !!f.get('password') }]; paint(); $('#um').textContent = `Added ${u.name}`
       } catch (err) { $('#um').textContent = err.message }
     }
   }
@@ -1476,7 +1477,7 @@ function profileView() {
       <h2 class="sec">Name</h2>
       <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
       <h2 class="sec">Password</h2>
-      <form id="pform" class="pform"><input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required><input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
+      <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
 
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
@@ -1508,7 +1509,7 @@ function profileView() {
       const f = new FormData(e.target)
       try {
         await api('/api/me', { currentPassword: f.get('current'), newPassword: f.get('next') }, 'PATCH')
-        e.target.reset()
+        e.target.reset(); me.hasPassword = true
         err.textContent = 'Password changed. Stay signed in here.'; err.classList.add('ok')
       } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
     }

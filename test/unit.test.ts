@@ -228,7 +228,26 @@ test('torrentFiles reads single- and multi-file torrents', () => {
   assert.throws(() => torrentFiles(Buffer.from('d4:spam')))
 })
 
-const { createUser, createInvite, redeemInvite, newSession, sessionUser, tvToken, userForTvToken } = await import('../src/auth.ts')
+const { createUser, createInvite, redeemInvite, newSession, sessionUser, tvToken, userForTvToken, login, hasPassword, setOwnPassword } = await import('../src/auth.ts')
+
+test('a child account (not admin, no TV-MA) signs in by name alone; everyone else needs a password', () => {
+  assert.throws(() => createUser('pwless', '', false), /8 characters/)
+  assert.throws(() => createUser('pwless', '', false, ['TV-14', 'TV-MA']), /8 characters/)
+  assert.throws(() => createUser('pwless', '', true, ['TV-Y']), /8 characters/)
+  const kid = createUser('pwless', '', false, ['TV-Y', 'Unrated'])
+  assert.equal(hasPassword(kid.id), false)
+  assert.ok(login('pwless', ''))
+  assert.ok(login('pwless', 'anything'), 'a child is never asked for one')
+  setOwnPassword(kid.id, '', 'kidpassword1') // no current password to prove
+  assert.equal(hasPassword(kid.id), true)
+  const teen = createUser('teenpw', 'password123', false, ['TV-14'])
+  assert.ok(login('teenpw', ''), 'a child with a password still signs in without it')
+  assert.equal(login('nobody-here', ''), null)
+  createUser('grownpw', 'password123', false, ['TV-MA'])
+  assert.equal(login('grownpw', ''), null)
+  assert.ok(login('grownpw', 'password123'))
+  assert.ok(teen)
+})
 
 test('sign-in links work once; sessions and TV links are checked', () => {
   const u = createUser('ann', 'password123', false)
