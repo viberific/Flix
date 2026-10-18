@@ -21,6 +21,7 @@ const adding = new Map<number, Promise<void>>()
 async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix') {
   const hash = rel.info_hash
   let from: 'flix' | 'auto' | 'adopted' = origin
+  let heldBack = false // a season pack added stopped: playback turns on only the wanted file(s) and then resumes it
   if (await qb.info(hash)) {
     await qb.resume(hash).catch(() => {})
     // Already in the engine but not ours (downloaded by hand in the Downloads folder): take it over rather than fetch a second copy.
@@ -29,14 +30,15 @@ async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix') {
     assertSpace(Number(rel.size ?? 0))
     const file = await fetchTorrentFile(rel.torrent_link)
     try {
-      await qb.add(file, config.downloadDir) // straight into the Downloads folder: qBittorrent puts each torrent in its own named folder there
+      heldBack = !!rel.is_pack
+      await qb.add(file, config.downloadDir, { paused: heldBack }) // straight into the Downloads folder: qBittorrent puts each torrent in its own named folder there
     } catch (e) {
       // The reply is not the proof: qBittorrent can take the torrent and still answer oddly. If it is in the engine now, it was added.
       if (!(await qb.info(hash).catch(() => undefined))) throw e
     }
   }
   // Somebody is waiting on this one (not a quiet ahead-of-time fetch): skip the engine's queue and find peers now.
-  if (origin === 'flix') {
+  if (origin === 'flix' && !heldBack) {
     const cur = await qb.info(hash).catch(() => undefined)
     if (!cur || cur.progress < 1) { void qb.reannounce(hash); void qb.prioritize(hash) } // one already on disk needs neither
   }
@@ -100,6 +102,10 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
   await qb.filePrio(rel.info_hash, toSkip, 0)
   await qb.filePrio(rel.info_hash, toEnable, 1)
   await qb.filePrio(rel.info_hash, [file.index], 7)
+  if (rel.is_pack) { // a pack is added stopped so that not one byte of the rest of the season is fetched before its files are chosen
+    await qb.resume(rel.info_hash)
+    if (!opts.auto) { void qb.reannounce(rel.info_hash); void qb.prioritize(rel.info_hash) }
+  }
 
   const t = now()
   if (opts.auto) { // started ahead of time: never bring back something this person finished or let go of

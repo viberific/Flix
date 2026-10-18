@@ -48,6 +48,7 @@ export async function autoFetch(userId: number, ep: Pick<Episode, 'torrentId' | 
     if ((recent.get(key) ?? 0) > Date.now() - 600_000) return true
     const rel = getRelease(ep.torrentId)
     if (!rel) return false
+    if (rel.is_pack && ep.episode === null) return false // never a whole season: only a single, named episode is fetched ahead of time
     const onServer = !!db.prepare(`SELECT 1 FROM downloads WHERE torrent_id = ? AND state = 'active'`).get(ep.torrentId)
     if (!onServer) {
       const no = autoBlocked(userId, episodeBytes(rel, ep))
