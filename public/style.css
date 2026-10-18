@@ -525,6 +525,16 @@ html.tv * { cursor: none; }
   background: linear-gradient(100deg, transparent, rgba(255,255,255,.08) 30%, rgba(255,255,255,.38) 50%, rgba(255,255,255,.08) 70%, transparent);
   animation: sweep 1.3s cubic-bezier(.45,0,.2,1) .95s forwards; }
 .p-wait.gone .mark { transform: scale(1.7); opacity: 0; filter: blur(8px); transition: transform 1.4s cubic-bezier(.4,0,.2,1), opacity 1.2s cubic-bezier(.4,0,.2,1), filter 1.4s ease; }
+/* A light running around the tile while the episode is still being fetched: without it a slow start reads as a freeze.
+   It comes in after the intro has played, and goes with the overlay when playback starts. */
+.mark .tracer { position: absolute; inset: -5px; border-radius: 32px; pointer-events: none; opacity: 0; padding: 2px;
+  background: conic-gradient(from 0deg, transparent 0deg 248deg, rgba(255,255,255,.06) 292deg, rgba(255,255,255,.6) 340deg, #fff 355deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude;
+  animation: tracerSpin 1.9s linear infinite, tracerIn .6s ease 1.5s forwards; }
+.p-wait.gone .tracer { opacity: 0; animation: none; }
+@keyframes tracerSpin { to { rotate: 360deg; } }
+@keyframes tracerIn { to { opacity: 1; } }
 @keyframes markIn { 0% { opacity: 0; transform: translateY(18px) scale(.8) rotateX(22deg); filter: blur(14px); } 55% { opacity: 1; filter: blur(0); } 100% { opacity: 1; transform: none; filter: none; } }
 @keyframes markFloat { 0%, 100% { transform: none; } 50% { transform: translateY(-5px); } }
 @keyframes glyphIn { 0% { opacity: 0; transform: scale(.72) translateY(4%); } 100% { opacity: 1; transform: none; } }

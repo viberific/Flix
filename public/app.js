@@ -709,13 +709,17 @@ function playView(seriesId, season, label) {
               <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><i class="tracer"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
-    $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
+    // Black behind the mark until the picture is actually there. The blurred backdrop used to be set right here, so a
+    // show whose artwork Flix has none of filled the screen with a grey placeholder behind the loading logo.
+    const artUrl = `/api/art/${seriesId}/poster`
+    const withArt = (el) => { if (!el) return; const im = new Image(); im.onload = () => { el.style.backgroundImage = `url("${artUrl}")` }; im.src = artUrl }
+    withArt($('#pposter'))
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
@@ -879,7 +883,7 @@ function playView(seriesId, season, label) {
       const rate = s.rating && s.rating !== 'Unrated' ? s.rating : ''
       for (const id of ['#prate', '#pirate']) { const el = $(id); if (!el) continue; el.hidden = !rate; el.textContent = rate }
       $('#pis').textContent = [s.name, s.year].filter(Boolean).join(' · ')
-      $('#pposter').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
+      withArt($('#pposter'))
       $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
     }
     addEventListener('keydown', key)
@@ -966,6 +970,9 @@ function playView(seriesId, season, label) {
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
         v.addEventListener('playing', () => {
           started = true
+          // Only now does the blurred backdrop come in: until the first frames arrive the screen is black, so the
+          // loading mark is the only thing on it.
+          withArt($('#pbg'))
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
           const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }

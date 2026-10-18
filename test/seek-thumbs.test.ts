@@ -15,6 +15,7 @@ process.env.LOG_LEVEL = 'silent'
 
 const { frame } = await import('../src/thumbs.ts')
 const { isPlainMp4, offlineReadyPath } = await import('../src/offline.ts')
+type Probe = import('../src/transcode.ts').Probe
 
 test('a frame is refused past the point the download has reached, instead of hanging on it', async () => {
   // 25% of a 40 minute episode is about 600 s: a cut at 1800 s would wait for bytes that are not there.
@@ -41,7 +42,7 @@ test('a single-file copy is only offered once it is actually on disk', () => {
 // The case the person hit: a Matroska file holding H.264 plays as a growing HLS playlist, which cannot be seeked ahead
 // of. It is not `direct` (so no byte ranges), but its picture can be copied, so one MP4 is made from it and seeked in.
 test('an MKV holding H.264 needs the remux; a plain MP4 does not', () => {
-  const base = { duration: 2400, copyVideo: true, videoCodec: 'h264', audioCodec: 'aac', height: 1080, container: 'matroska,webm', direct: false }
+  const base: Probe = { duration: 2400, copyVideo: true, videoCodec: 'h264', audioCodec: 'aac', height: 1080, container: 'matroska,webm', direct: false, hdr: false, audio: [], subs: [], chapters: [] }
   assert.equal(isPlainMp4(base), false)
   assert.equal(isPlainMp4({ ...base, container: 'mov,mp4,m4a,3gp,3g2,mj2', direct: true }), true)
   // A file whose picture must be re-encoded is never direct, so it is never sent as it is without a remux either.
