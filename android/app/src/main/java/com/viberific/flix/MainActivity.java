@@ -82,6 +82,30 @@ public class MainActivity extends Activity {
             s.setMediaPlaybackRequiresUserGesture(false); // the intro chime and autoplay of the next episode
             s.setLoadWithOverviewMode(true);
             s.setUseWideViewPort(true);
+            // The page is drawn edge to edge (see the immersive flags further down), so on a phone it ran under the
+            // status bar and the camera cutout and the search bar sat behind them. Pad the page by whatever the
+            // system calls unusable; a television has neither, so this is zero there and the picture keeps the whole
+            // screen. The native video view is a sibling, not this view, so a fullscreen film is never letterboxed.
+            web.setOnApplyWindowInsetsListener((view, insets) -> {
+                int top, bottom;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                    top = bars.top;
+                    bottom = bars.bottom;
+                } else {
+                    // Before Android 11 the cutout is asked for separately, and in fullscreen the system-bar inset is
+                    // often zero where the cutout's is not.
+                    top = insets.getSystemWindowInsetTop();
+                    bottom = insets.getSystemWindowInsetBottom();
+                    if (Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
+                        top = Math.max(top, insets.getDisplayCutout().getSafeInsetTop());
+                    }
+                }
+                if (view.getPaddingTop() != top || view.getPaddingBottom() != bottom) {
+                    view.setPadding(0, top, 0, bottom);
+                }
+                return insets;
+            });
             if (isTv()) s.setUserAgentString(s.getUserAgentString() + " Android TV FlixApp");
             else s.setUserAgentString(s.getUserAgentString() + " FlixApp");
             CookieManager.getInstance().setAcceptCookie(true);
@@ -112,6 +136,7 @@ public class MainActivity extends Activity {
                 public void onHideCustomView() { leaveFullscreen(); }
             });
             root.addView(web, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            web.requestApplyInsets(); // the padding above is set the moment the window reports its insets
             web.requestFocus();
         }
         if (state == null || web.restoreState(state) == null) web.loadUrl(url);

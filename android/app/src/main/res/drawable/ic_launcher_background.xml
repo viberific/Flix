@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Flix tile's own gradient, filling the whole adaptive-icon canvas; the launcher masks its own shape out of it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <path android:pathData="M0,0h512v512h-512z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="512"
+                android:endY="512"
+                android:startColor="#ff8a4c"
+                android:centerColor="#ff3d6e"
+                android:endColor="#b8155a" />
+        </aapt:attr>
+    </path>
+    <!-- The soft sheen across the top, as public/icon.svg has it. -->
+    <path android:pathData="M0,0h512v300h-512z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="128"
+                android:startY="0"
+                android:endX="128"
+                android:endY="300"
+                android:startColor="#55ffffff"
+                android:endColor="#00ffffff" />
+        </aapt:attr>
+    </path>
+</vector>

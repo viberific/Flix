@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What a phone's launcher draws. Without this the launcher had only the legacy bitmap, so it put the Flix square
+     inside a white circle of its own; an adaptive icon gives it the tile and the mark as separate layers to mask.
+     A television never asks for this: it shows the banner instead, which is why the icon only looked wrong on a phone. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
