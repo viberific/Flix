@@ -1891,13 +1891,18 @@ addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
   const el = document.activeElement
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
+  // Back on a remote, while the search field has the keyboard: put the keyboard away first, leave the page alone.
+  if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && typing) { el.blur(); e.preventDefault(); return }
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && !typing && location.hash.length > 2) { history.back(); return }
   const dir = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]
   if (!dir || typing) return
   const onThing = el && el !== document.body
   if (!onThing && !isTv) return // on a computer with nothing focused, arrows keep scrolling the page
   const vis = (n) => { const r = n.getBoundingClientRect(); return r.width > 8 && r.height > 8 && r.bottom > 0 && r.top < innerHeight + 400 && getComputedStyle(n).visibility !== 'hidden' }
-  const all = [...document.querySelectorAll('a[href], button:not([disabled]), [tabindex="0"], .tile')].filter((n) => !n.closest('[hidden]') && !n.classList.contains('arrow') && vis(n))
+  // A text field is a stop like any other: without it here a remote can never reach the search bar, which is what made
+  // the search field impossible to select on a Google TV.
+  const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input:not([disabled]), textarea:not([disabled]), select:not([disabled])'
+  const all = [...document.querySelectorAll(FOCUSABLE)].filter((n) => !n.closest('[hidden]') && !n.classList.contains('arrow') && vis(n))
   const from = onThing ? el.getBoundingClientRect() : { left: innerWidth / 2, right: innerWidth / 2, top: 0, bottom: 0, width: 0, height: 0 }
   const cx = from.left + from.width / 2, cy = from.top + from.height / 2
   let best = null, bestScore = Infinity
@@ -1913,6 +1918,9 @@ addEventListener('keydown', (e) => {
   e.preventDefault()
   best.focus({ preventScroll: true })
   best.scrollIntoView({ block: 'center', inline: 'center', behavior: smooth() })
+  // A remote's OK on a text field has to raise the on-screen keyboard: the focus above happens inside a key event, which
+  // is what lets a WebView show it, but a field that already had focus never raises it again.
+  if (/^(INPUT|TEXTAREA)$/.test(best.tagName)) { try { best.setSelectionRange?.(best.value.length, best.value.length) } catch {} }
 })
 
 /* ---------- router ---------- */

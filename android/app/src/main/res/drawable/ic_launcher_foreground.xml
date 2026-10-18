@@ -1,11 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The white mark from public/icon.svg: the F's two stadium bars and the play triangle, centred in the safe zone.
-     As a vector it stays sharp at every density, which is what a legacy bitmap in a launcher's white circle never was. -->
+     As a vector it stays sharp at every density, which is what a legacy bitmap in a launcher's white circle never was.
+
+     The mark is drawn at the proportions of the web tile, then scaled down as a whole (the group below). In icon.svg the
+     mark is 45% wide and 55% tall of a 512 tile, which reads correctly on a rounded tile with its own padding. A
+     launcher does not show that tile: it crops the 108dp canvas to the inner 72dp and masks a shape of its own out of
+     it, so drawn at tile scale the F came out 82% of the visible height -- edge to edge in a circle, its corners on the
+     mask -- which is what looked wrong. 0.74 puts the mark at about 60% of what a launcher actually shows, the
+     proportion a launcher icon is meant to have, with room for a round or squircle mask around it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="512"
     android:viewportHeight="512">
+  <group
+      android:scaleX="0.74"
+      android:scaleY="0.74"
+      android:pivotX="256"
+      android:pivotY="256">
     <!-- the upright of the F -->
     <path
         android:fillColor="#ffffff"
@@ -24,4 +36,5 @@
             android:fillColor="#ffffff"
             android:pathData="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z" />
     </group>
+  </group>
 </vector>

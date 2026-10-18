@@ -428,7 +428,8 @@ a.pill { display: inline-block; }
 /* ---------- big screens and TVs ---------- */
 @media (min-width: 1700px) { html { zoom: 1.25; } }
 @media (min-width: 2400px) { html { zoom: 1.75; } }
-html.tv { zoom: 1.3; }
+/* No zoom on a television: the page is laid out at 1280 CSS pixels (see index.html) and the panel fits that to its own
+   width, so a further zoom here only made every control a third bigger again on top of an already scaled layout. */
 html.tv :focus-visible { outline: 4px solid var(--accent); outline-offset: 4px; box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent); }
 html.tv .tile:focus-visible .poster { transform: translateY(-6px) scale(1.07); }
 html.tv * { cursor: none; }

@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- A television reports a very narrow CSS viewport, which turns every control into an enormous slab (a 4K 65-inch TV
-     is the worst case). Lay the page out at a desktop width instead and let the panel scale that to its own size: the
-     app's own breakpoints then pick the big-screen layout, and the same page still adapts on a phone. -->
+<!-- A television reports its viewport in density-independent pixels, which says nothing about its real size: a 1080p
+     set reports about 960x540 and a 4K one about 1920x1080, so the app's own breakpoints pick the phone layout and
+     stretch it across a 65-inch panel, making every control an enormous slab. Laying the page out at a fixed 1280 CSS
+     pixels instead, and letting the panel fit that to its own width, keeps the desktop proportions at any screen size;
+     a phone is a browser and never gets this meta, so it is untouched.
+     Deliberately no initial-scale: with one, a WebView draws 1280 CSS pixels at their own size instead of fitting them
+     to the screen, which is what left a television's UI huge with half of it off-screen. -->
 <script>
 (function () {
   if (!/Android TV FlixApp/.test(navigator.userAgent)) return
   var m = document.querySelector('meta[name="viewport"]')
-  if (!m) return
-  var w = Math.round((window.screen && screen.width) || 1920)
-  if (!(w > 0)) w = 1920
-  m.setAttribute('content', 'width=' + (w < 1600 ? 1920 : w) + ', initial-scale=1')
+  if (m) m.setAttribute('content', 'width=1280')
 })()
 </script>
 <title>Flix</title>
