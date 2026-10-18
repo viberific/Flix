@@ -1610,7 +1610,8 @@ async function healthBanner() {
   document.getElementById('hb')?.remove()
   const h = await api('/api/admin/health').catch(() => null)
   const seen = hbDismissed()
-  const bad = (h?.issues ?? []).filter((i) => i.level !== 'info' && !seen.has(hbKey(i)))
+  // banner === false: Settings-only issues (reported problems) never get a strip over the page.
+  const bad = (h?.issues ?? []).filter((i) => i.level !== 'info' && i.banner !== false && !seen.has(hbKey(i)))
   if (!bad.length || $('.player')) return
   const first = bad[0]
   const el = document.createElement('div')
