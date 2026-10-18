@@ -733,10 +733,11 @@ function playView(seriesId, season, label) {
     const goLandscape = async () => {
       if (!touchy || landscape) return
       try { if (!document.fullscreenElement) await pl.requestFullscreen?.({ navigationUI: 'hide' }) } catch { /* not allowed without a tap */ }
-      try { await screen.orientation?.lock?.('landscape'); landscape = true } catch { /* unsupported (iOS) or refused */ }
+      try { await screen.orientation?.lock?.('landscape') } catch { /* unsupported (iOS) or refused */ }
+      landscape = !!document.fullscreenElement // done once truly fullscreen; until then every tap tries again
     }
     goLandscape()
-    pl.addEventListener('pointerup', goLandscape, { once: true })
+    pl.addEventListener('pointerup', goLandscape)
 
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
