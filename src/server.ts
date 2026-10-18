@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
-import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar } from './auth.ts'
+import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar, isChild, hasPassword } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
@@ -78,7 +78,7 @@ await app.register(fastifyStatic, { root: join(root, 'node_modules/hls.js/dist')
 // button only appears where casting can actually work.
 app.get('/api/me', async (req) => {
   const u = userFor(req)
-  return { user: u ? { ...u, cast: !!config.lanUrl } : u, needsSetup: userCount() === 0 }
+  return { user: u ? { ...u, cast: !!config.lanUrl, hasPassword: hasPassword(u.id) } : u, needsSetup: userCount() === 0 }
 })
 
 /** A person changing their own account: the name shown, their picture, their password. */
@@ -646,11 +646,11 @@ app.delete('/api/admin/downloads/:id', admin, async (req) => {
   await removeDownload(id, d.info_hash, 'removed by admin')
   return { ok: true }
 })
-const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash })
+const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number
 
 app.get('/api/admin/users', admin, async () => ({
-  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash FROM users ORDER BY id').all() as any[]).map(userRow),
+  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash, pass_hash FROM users ORDER BY id').all() as any[]).map(userRow),
   ratings: RATINGS, ratingLookup: !!(config.omdb.apiKey || config.tmdb.apiKey),
 }))
 app.post('/api/admin/users', admin, async (req) => {
@@ -662,6 +662,12 @@ app.patch('/api/admin/users/:id', admin, async (req) => {
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any
   if (!u) throw notFound('No such user')
   const b = req.body as any
+  // An account that can no longer be called a child (made admin, or allowed TV-MA) needs a password from now on.
+  const nextAllowed = 'allowedRatings' in b ? cleanAllowed(b.allowedRatings) : parseAllowed(u.allowed_ratings)
+  const nextAdmin = 'isAdmin' in b ? !!b.isAdmin : !!u.is_admin
+  if (b.password !== undefined && String(b.password).length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
+  if (!u.pass_hash && b.password === undefined && !isChild(nextAdmin, nextAllowed))
+    throw Object.assign(new Error(`Set a password for ${u.name} first: admins and anyone allowed TV-MA need one`), { statusCode: 400 })
   if ('allowedRatings' in b) db.prepare('UPDATE users SET allowed_ratings = ? WHERE id = ?').run((a => (a ? JSON.stringify(a) : null))(cleanAllowed(b.allowedRatings)), id)
   if ('isAdmin' in b) {
     if (!b.isAdmin && u.is_admin && adminCount() <= 1) throw Object.assign(new Error('There must always be at least one admin'), { statusCode: 400 })
@@ -669,7 +675,6 @@ app.patch('/api/admin/users/:id', admin, async (req) => {
   }
   if ('pin' in b) setPin(id, b.pin === null || b.pin === '' ? null : String(b.pin))
   if (b.password !== undefined) {
-    if (String(b.password).length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
     db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(String(b.password)), id)
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id) // sign them out everywhere
   }

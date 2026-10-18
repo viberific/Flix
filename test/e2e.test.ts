@@ -370,6 +370,23 @@ test('accounts: only the admin can create users; public signup is closed', async
   assert.equal((await as(kid, () => jpost('/api/admin/users', { name: 'x1', password: 'password123' }))).status, 403)
 })
 
+test('accounts: a child (not admin, no TV-MA) needs no password; anyone else does', async () => {
+  assert.equal((await jpost('/api/admin/users', { name: 'grown', password: '' })).status, 400) // unrestricted needs one
+  assert.equal((await jpost('/api/admin/users', { name: 'grown', password: '', allowedRatings: ['TV-14', 'TV-MA'] })).status, 400)
+  assert.equal((await jpost('/api/admin/users', { name: 'tot', password: '', allowedRatings: ['TV-Y', 'TV-G'] })).status, 200)
+  const tot = (await loginAs('tot', ''))!
+  assert.ok(tot, 'a child signs in by name alone')
+  assert.equal((await as(tot, () => jget('/api/me'))).user.hasPassword, false)
+  const totId = (await jget('/api/admin/users')).users.find((u: any) => u.name === 'tot').id
+  const patch = (body: any) => api(`/api/admin/users/${totId}`, { method: 'PATCH', body: JSON.stringify(body) })
+  assert.equal((await patch({ allowedRatings: ['TV-Y', 'TV-MA'] })).status, 400, 'TV-MA needs a password first')
+  assert.equal((await patch({ isAdmin: true })).status, 400, 'so does admin')
+  assert.equal((await patch({ allowedRatings: ['TV-Y', 'TV-MA'], password: 'grownupnow1' })).status, 200)
+  assert.equal(await loginAs('tot', ''), null, 'no longer a child, so the password is needed')
+  assert.ok(await loginAs('tot', 'grownupnow1'))
+  assert.equal((await api(`/api/admin/users/${totId}`, { method: 'DELETE' })).status, 200)
+})
+
 test('ratings: a restricted user cannot see or reach a show above their level', async () => {
   const kid = (await loginAs('kid', 'password123'))!
   await as(kid, async () => {

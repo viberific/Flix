@@ -14,6 +14,7 @@ export function hashPassword(pw: string): string {
   return `${salt.toString('hex')}:${scryptSync(pw, salt, 64).toString('hex')}`
 }
 function verifyPassword(pw: string, stored: string): boolean {
+  if (!stored) return false // no password set (a child account)
   const [salt, hash] = stored.split(':')
   const a = Buffer.from(hash, 'hex')
   const b = scryptSync(pw, Buffer.from(salt, 'hex'), 64)
@@ -21,12 +22,16 @@ function verifyPassword(pw: string, stored: string): boolean {
 }
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 
+/** A child account: not an admin and not allowed TV-MA. It signs in by name alone, no password. */
+export const isChild = (isAdmin: boolean | number, allowed: Allowed) => !isAdmin && allowed !== null && !allowed.includes('TV-MA')
+
 export function createUser(name: string, pw: string, isAdmin: boolean, allowed: Allowed = null): User {
-  if (!/^[\w.-]{2,32}$/.test(name)) throw new Error('Username must be 2-32 chars (letters, digits, _ . -)')
-  if (pw.length < 8) throw new Error('Password must be at least 8 characters')
+  if (!/^[\w.-]{2,32}$/.test(name)) throw Object.assign(new Error('Username must be 2-32 chars (letters, digits, _ . -)'), { statusCode: 400 })
+  const noPw = !pw && isChild(isAdmin, allowed)
+  if (!noPw && pw.length < 8) throw Object.assign(new Error('Password must be at least 8 characters (only kids can go without one)'), { statusCode: 400 })
   if (db.prepare('SELECT 1 FROM users WHERE name = ?').get(name)) throw Object.assign(new Error('That username is taken'), { statusCode: 409 })
   const r = db.prepare('INSERT INTO users (name, pass_hash, is_admin, created_at, allowed_ratings) VALUES (?,?,?,?,?)')
-    .run(name, hashPassword(pw), isAdmin ? 1 : 0, now(), allowed ? JSON.stringify(allowed) : null)
+    .run(name, noPw ? '' : hashPassword(pw), isAdmin ? 1 : 0, now(), allowed ? JSON.stringify(allowed) : null)
   return { id: Number(r.lastInsertRowid), name, is_admin: isAdmin ? 1 : 0, allowed }
 }
 
@@ -41,7 +46,8 @@ export function newSession(userId: number): string {
 
 export function login(name: string, pw: string): string | null {
   const row = db.prepare('SELECT * FROM users WHERE name = ?').get(name) as any
-  if (!row || !verifyPassword(pw, row.pass_hash)) return null
+  if (!row) return null
+  if (!isChild(row.is_admin, parseAllowed(row.allowed_ratings)) && !verifyPassword(pw, row.pass_hash)) return null
   return newSession(row.id)
 }
 
@@ -146,6 +152,9 @@ export async function requireAdmin(req: FastifyRequest, reply: FastifyReply) {
   if (!reply.sent && !req.user?.is_admin) reply.code(403).send({ error: 'Admin only' })
 }
 
+/** False for an account made without one (a child). */
+export const hasPassword = (id: number) => !!(db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(id) as any)?.pass_hash
+
 /** Is this the right password for this account? */
 export function checkPassword(id: number, password: string): boolean {
   const r = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(id) as any
@@ -175,7 +184,7 @@ export function setAvatar(id: number, avatar: string | null): User {
 
 /** Change this account's own password, having proved the current one. Other devices are signed out. */
 export function setOwnPassword(id: number, current: string, next: string): void {
-  if (!checkPassword(id, current)) throw Object.assign(new Error('That is not your current password'), { statusCode: 400 })
+  if (hasPassword(id) && !checkPassword(id, current)) throw Object.assign(new Error('That is not your current password'), { statusCode: 400 })
   if (String(next).length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
   db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(String(next)), id)
   db.prepare('UPDATE sessions SET expires_at = 0 WHERE user_id = ?').run(id)
