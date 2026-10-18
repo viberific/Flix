@@ -12,7 +12,7 @@ import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, jobDir, probe, releaseHls, subtitleVtt, touchHls } from './transcode.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, jobDir, probe, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { offlineCopy, startOfflineSweeper } from './offline.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
@@ -508,9 +508,17 @@ async function hlsHandler(req: any, reply: any, hdr = false) {
     if (hdr && !hdrCopyOk(p, true)) return reply.code(409).send({ error: 'this file is not HDR' })
     try { await ensureHls(+t, +f, p, a, hdr) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   }
-  const path = join(jobDir(+t, +f, a, hdr), file)
-  if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
   const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
+  // A re-encoded picture has a complete playlist from the start, and each piece is made when it is asked for.
+  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, hdr) : null
+  if (list) return reply.type(type).header('cache-control', 'no-store').send(list)
+  const ac = new AbortController()
+  req.raw.on('close', () => ac.abort())
+  let path: string | null | undefined
+  try { path = await vodSegment(+t, +f, file, ac.signal, a, hdr) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+  if (path === null) return reply.code(404).send({ error: 'no such segment' })
+  path ??= join(jobDir(+t, +f, a, hdr), file)
+  if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
   return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
 }
 

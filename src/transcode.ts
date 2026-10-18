@@ -70,7 +70,11 @@ export async function probe(torrentId: number, fileIndex: number): Promise<Probe
   return p
 }
 
-interface Job { proc: ChildProcess; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void> }
+/** One ffmpeg started at segment `from`; `stopAt` is the first segment that was already on disk then (it ends there on its own). */
+interface Run { proc: ChildProcess; from: number; stopAt: number; exited: boolean }
+/** A converted copy that is served as a complete playlist from the first request, with ffmpeg started wherever the viewer actually is. */
+interface Vod { count: number; duration: number; start: (from: number, stopAt: number) => string[]; run: Run | null; done: Set<number> }
+interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
 
@@ -84,7 +88,8 @@ function stopJob(key: string) {
   const j = jobs.get(key)
   if (!j) return
   clearTimeout(j.idle)
-  j.proc.kill('SIGKILL')
+  j.proc?.kill('SIGKILL')
+  j.vod?.run?.proc.kill('SIGKILL')
   rmSync(j.dir, { recursive: true, force: true })
   jobs.delete(key)
 }
@@ -117,10 +122,14 @@ function x264(height?: number, fps?: number) {
   const crf = h === 1080 ? 20 : h === 720 ? 21 : 22
   const rate = h === 1080 ? (fps && fps > 40 ? '9000k' : '6500k') : h === 720 ? '3500k' : '1800k'
   const buf = h === 1080 ? (fps && fps > 40 ? '18000k' : '13000k') : h === 720 ? '7000k' : '3600k'
-  return ['-c:v', 'libx264', '-preset', 'fast', '-crf', String(crf), '-maxrate', rate, '-bufsize', buf,
+  // veryfast: on a small box the encoder has to stay well ahead of the player (and of a seek), which matters more than the last few percent of file size.
+  return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-maxrate', rate, '-bufsize', buf,
     '-profile:v', 'high', '-level', h === 1080 ? '4.1' : '4.0', '-pix_fmt', 'yuv420p', '-sc_threshold', '0',
-    '-force_key_frames', 'expr:gte(t,n_forced*6)']
+    '-force_key_frames', `expr:gte(t,n_forced*${SEG})`]
 }
+
+/** Length of one piece of the converted video. Short, so a seek only has to fetch a small piece before it plays. */
+export const SEG = 4
 
 /**
  * Whether this file can go to the player as HDR rather than being tonemapped down to SDR. The client says it can
@@ -131,43 +140,127 @@ export function hdrCopyOk(p: Probe, clientSaysHdr: boolean) {
   return !!clientSaysHdr && p.hdr && p.tenBit !== false && p.videoCodec === 'hevc' && (p.height ?? 0) <= 1080
 }
 
-/** Start (or touch) the HLS job; resolves when the playlist exists with its first segment. */
+const AHEAD = 2 // a request this many segments past where ffmpeg is working waits for it; further away, ffmpeg is started there instead
+const segPath = (j: Job, n: number) => join(j.dir, `seg${String(n).padStart(5, '0')}.ts`)
+
+/** Segments are written under a temporary name and renamed when whole, so a name that exists is a segment that can be served. */
+function scanDone(j: Job) {
+  const v = j.vod!
+  for (const f of readdirSync(j.dir)) { const m = /^seg(\d{5})\.ts$/.exec(f); if (m) v.done.add(Number(m[1])) }
+}
+
+function vodNext(v: Vod, r: Run) { let n = r.from; while (v.done.has(n)) n++; return n }
+
+function startRun(j: Job, n: number) {
+  const v = j.vod!
+  v.run?.proc.kill('SIGKILL')
+  scanDone(j)
+  let stopAt = n + 1
+  while (stopAt < v.count && !v.done.has(stopAt)) stopAt++ // stop where the next piece already exists instead of encoding it again
+  const proc = spawn('ffmpeg', v.start(n, stopAt >= v.count ? Infinity : stopAt), { stdio: ['ignore', 'ignore', 'inherit'] })
+  const run: Run = { proc, from: n, stopAt: stopAt >= v.count ? Infinity : stopAt, exited: false }
+  proc.on('exit', () => { run.exited = true; try { scanDone(j) } catch { /* folder already removed */ } })
+  v.run = run
+}
+
+/**
+ * The path of segment `file`, encoding it first if it is not there yet. ffmpeg runs from the segment the viewer asked for
+ * (a seek, a resume, a TV jumping ahead), not always from the start, so jumping anywhere costs about a second.
+ * undefined: this job has no on-demand playlist (the caller serves the file from disk); null: no such segment.
+ */
+export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false): Promise<string | null | undefined> {
+  const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr))
+  const v = j?.vod
+  if (!j || !v) return undefined
+  const m = /^seg(\d{5})\.ts$/.exec(file)
+  const n = m ? Number(m[1]) : -1
+  if (n < 0 || n >= v.count) return null
+  const deadline = Date.now() + 120_000
+  let startedFor = -1
+  for (;;) {
+    if (signal.aborted) throw new Error('aborted')
+    scanDone(j)
+    if (v.done.has(n)) return segPath(j, n)
+    const r = v.run
+    if (!(r && !r.exited && n >= r.from && n < r.stopAt && n <= vodNext(v, r) + AHEAD)) {
+      if (startedFor === n && r?.exited) throw new Error('ffmpeg failed')
+      startRun(j, n); startedFor = n
+    }
+    if (Date.now() > deadline) throw new Error('Timed out starting transcode')
+    await sleep(60)
+  }
+}
+
+/** The complete playlist of a job made by ensureHls, or null when that job plays from disk as it is written. */
+export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false): string | null {
+  const v = jobs.get(jobKey(torrentId, fileIndex, audio, hdr))?.vod
+  if (!v) return null
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${SEG}`, '#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-PLAYLIST-TYPE:VOD', '#EXT-X-INDEPENDENT-SEGMENTS']
+  for (let n = 0; n < v.count; n++) lines.push(`#EXTINF:${(n === v.count - 1 ? v.duration - n * SEG : SEG).toFixed(3)},`, `seg${String(n).padStart(5, '0')}.ts`)
+  lines.push('#EXT-X-ENDLIST')
+  return lines.join('\n') + '\n'
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Start (or touch) the HLS job. A picture that has to be re-encoded gets a complete playlist straight away and ffmpeg only
+ * works where the viewer is (see vodSegment); a picture that is passed through is remuxed from the start, which is
+ * quick, and resolves when the first segment exists.
+ */
 export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false): Promise<string> {
   const key = jobKey(torrentId, fileIndex, audio, hdr)
   let j = jobs.get(key)
   if (!j) {
     const dir = jobDir(torrentId, fileIndex, audio, hdr)
     const tonemap = p.hdr && (await canToneMap())
-    const filters = [...((p.height ?? 0) > 1080 ? ['scale=-2:1080'] : []), ...(tonemap ? [TONEMAP] : [])]
+    const copy = !hdr && p.copyVideo
+    const outH = Math.min(p.height ?? 720, 1080)
+    const filters = [...((p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []), ...(tonemap ? [TONEMAP] : [])]
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
-    const args = ['-hide_banner', '-loglevel', 'error', '-i', rawUrl(torrentId, fileIndex),
-      '-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn',
-      ...(hdr
-        ? ['-c:v', 'copy', '-tag:v', 'hvc1',
-          '-color_primaries', 'bt2020', '-color_trc', p.hdrKind === 'hlg' ? 'arib-std-b67' : 'smpte2084', '-colorspace', 'bt2020nc']
-        : p.copyVideo ? ['-c:v', 'copy'] : [...x264(p.height, p.fps), ...(filters.length ? ['-vf', filters.join(',')] : [])]),
-      '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
-      // HDR is copied into fragmented MP4 segments, which is what the player's HEVC support expects; SDR stays in TS.
-      ...(hdr
-        ? ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
-          '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
-          '-hls_segment_filename', join(dir, 'seg%05d.m4s'), join(dir, 'index.m3u8')]
-        : ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
-          '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')])]
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] })
-    const ready = (async () => {
-      for (let i = 0; i < 600; i++) {
-        if (existsSync(join(dir, hdr ? 'seg00000.m4s' : 'seg00000.ts')) && existsSync(join(dir, 'index.m3u8'))) return
-        if (proc.exitCode !== null && proc.exitCode !== 0) throw new Error('ffmpeg failed')
-        await new Promise((r) => setTimeout(r, 250))
-      }
-      throw new Error('Timed out starting transcode')
-    })()
-    ready.catch(() => stopJob(key))
-    j = { proc, dir, idle: setTimeout(() => {}, 0), torrentId, ready }
-    jobs.set(key, j)
-    proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
+    const input = ['-i', rawUrl(torrentId, fileIndex)]
+    const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
+    const audioOut = ['-c:a', 'aac', '-ac', '2', '-b:a', '160k']
+    if (!hdr && !copy && p.duration && p.duration > 0) {
+      const count = Math.max(1, Math.ceil(p.duration / SEG))
+      const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...input, ...maps,
+        ...x264(outH, p.fps), ...(filters.length ? ['-vf', filters.join(',')] : []), ...audioOut,
+        ...(Number.isFinite(stopAt) ? ['-t', String((stopAt - from) * SEG)] : []),
+        // The same clock whichever piece ffmpeg began at, so pieces made by different runs join without a jump.
+        '-muxdelay', '0', '-muxpreload', '0', '-output_ts_offset', String(from * SEG),
+        '-f', 'hls', '-hls_time', String(SEG), '-hls_list_size', '0', '-start_number', String(from),
+        '-hls_flags', 'independent_segments+temp_file', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, `enc${from}.m3u8`)]
+      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), vod: { count, duration: p.duration, start, run: null, done: new Set() } }
+      jobs.set(key, j)
+    } else {
+      const args = ['-hide_banner', '-loglevel', 'error', ...input, ...maps,
+        ...(hdr
+          ? ['-c:v', 'copy', '-tag:v', 'hvc1',
+            '-color_primaries', 'bt2020', '-color_trc', p.hdrKind === 'hlg' ? 'arib-std-b67' : 'smpte2084', '-colorspace', 'bt2020nc']
+          : copy ? ['-c:v', 'copy'] : [...x264(outH, p.fps), ...(filters.length ? ['-vf', filters.join(',')] : [])]),
+        ...audioOut,
+        // HDR is copied into fragmented MP4 segments, which is what the player's HEVC support expects; SDR stays in TS.
+        ...(hdr
+          ? ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
+            '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
+            '-hls_segment_filename', join(dir, 'seg%05d.m4s'), join(dir, 'index.m3u8')]
+          : ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
+            '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')])]
+      const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] })
+      const ready = (async () => {
+        for (let i = 0; i < 600; i++) {
+          if (existsSync(join(dir, hdr ? 'seg00000.m4s' : 'seg00000.ts')) && existsSync(join(dir, 'index.m3u8'))) return
+          if (proc.exitCode !== null && proc.exitCode !== 0) throw new Error('ffmpeg failed')
+          await new Promise((r) => setTimeout(r, 250))
+        }
+        throw new Error('Timed out starting transcode')
+      })()
+      ready.catch(() => stopJob(key))
+      j = { proc, dir, idle: setTimeout(() => {}, 0), torrentId, ready }
+      jobs.set(key, j)
+      proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
+    }
   }
   clearTimeout(j.idle)
   j.idle = setTimeout(() => stopJob(key), 10 * 60_000)
