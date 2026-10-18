@@ -268,6 +268,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (web != null) web.onResume();
+        Updater.check(this);
     }
 
     @Override
