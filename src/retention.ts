@@ -24,11 +24,7 @@ export function pendingViewers(torrentId: number): string[] {
   const started = (db.prepare(`SELECT DISTINCT u.name FROM interests i JOIN users u ON u.id = i.user_id
     WHERE i.torrent_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.updated_at > CASE WHEN i.auto = 1 THEN ? ELSE ? END`).all(torrentId, autoCutoff, cutoff) as { name: string }[])
     .map((r) => r.name)
-  // Someone who tapped Keep on "Leaving soon" holds the pack until they have watched it or the usual lapse.
-  const kept = (db.prepare(`SELECT u.name FROM leaving_choice c JOIN users u ON u.id = c.user_id WHERE c.torrent_id = ? AND c.choice = 'keep' AND c.at > ?
-    AND NOT EXISTS (SELECT 1 FROM interests i WHERE i.user_id = c.user_id AND i.torrent_id = c.torrent_id AND (i.watched_at IS NOT NULL OR i.released_at IS NOT NULL))`).all(torrentId, cutoff) as { name: string }[])
-    .map((r) => r.name)
-  return [...new Set([...started, ...kept])]
+  return started
 }
 
 /**
@@ -48,18 +44,17 @@ function untouchedEligible(torrentId: number): string[] {
   const rel = db.prepare('SELECT series_id FROM releases WHERE torrent_id = ?').get(torrentId) as { series_id: number | null } | undefined
   const rating = rel?.series_id != null ? getRating(rel.series_id).rating : 'Unrated'
   const users = db.prepare('SELECT id, name, is_admin, allowed_ratings FROM users').all() as { id: number; name: string; is_admin: number; allowed_ratings: string | null }[]
-  const done = db.prepare(`SELECT 1 FROM interests WHERE user_id = ? AND torrent_id = ? AND (watched_at IS NOT NULL OR released_at IS NOT NULL)
-    UNION ALL SELECT 1 FROM leaving_choice WHERE user_id = ? AND torrent_id = ? AND choice = 'release'`)
+  const done = db.prepare('SELECT 1 FROM interests WHERE user_id = ? AND torrent_id = ? AND (watched_at IS NOT NULL OR released_at IS NOT NULL)')
   return users
     .filter((u) => canView({ is_admin: u.is_admin, allowed: parseAllowed(u.allowed_ratings) }, rating))
-    .filter((u) => !done.get(u.id, torrentId, u.id, torrentId))
+    .filter((u) => !done.get(u.id, torrentId))
     .map((u) => u.name)
     .sort((a, b) => a.localeCompare(b))
 }
 
 /**
  * Start (or stop) the "Leaving soon" clock for a season pack. It runs only while the pack is fully downloaded and seeded, someone
- * has watched it, nobody is partway through or holding it, and some allowed viewers never opened it. Returns when it leaves, or null.
+ * has watched it, nobody is partway through or holding it (pressing play on it counts, and restarts the window once they finish or drop it), and some allowed viewers never opened it. Returns when it leaves, or null.
  */
 export function updateLeaving(torrentId: number, t: Pick<QbTorrent, 'amount_left' | 'uploaded' | 'total_size' | 'seeding_time'>): number | null {
   const d = db.prepare('SELECT d.leaving_at, r.is_pack FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id WHERE d.torrent_id = ?').get(torrentId) as { leaving_at: number | null; is_pack: number } | undefined
@@ -83,8 +78,7 @@ export function leavingSoonFor(user: { id: number; name: string }) {
   const rows = db.prepare(`SELECT d.torrent_id AS torrentId, d.leaving_at AS leavesAt, r.series_id AS seriesId, r.series, r.season, r.label,
       '/api/art/' || r.series_id || '/poster' AS poster
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id WHERE d.state = 'active' AND d.leaving_at IS NOT NULL AND d.leaving_at > ?
-    AND NOT EXISTS (SELECT 1 FROM leaving_choice c WHERE c.user_id = ? AND c.torrent_id = d.torrent_id)
-    ORDER BY d.leaving_at`).all(now(), user.id) as any[]
+    ORDER BY d.leaving_at`).all(now()) as any[]
   return rows.filter((r) => untouchedEligible(r.torrentId).includes(user.name))
 }
 

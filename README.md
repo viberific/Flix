@@ -114,7 +114,7 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 - Trailers are found automatically (BTN, then TMDB, then a YouTube search). The still image on the show page is fetched by the server; the viewer's browser only contacts YouTube once someone taps play.
 - If a viewer starts something and never finishes it, the file stays until they finish/release it. Set
   `ABANDON_DAYS` to auto-release inactive viewers.
-  A finished, fully seeded season pack that some allowed viewers never opened shows on their Home as "Leaving soon" (Keep / Not interested) for `LEAVING_DAYS` (7); after that they no longer hold it and the normal sweep removes it. The seeding rule is never bypassed.
+  A finished, fully seeded season pack that some allowed viewers never opened shows on their Home as "Leaving soon" (pressing play on it keeps it) for `LEAVING_DAYS` (7); after that they no longer hold it and the normal sweep removes it. The seeding rule is never bypassed.
 - Installing the app needs HTTPS **with a certificate the browser trusts** (Chrome says "this app cannot be installed" otherwise, and on a certificate warning page it never gets that far).
   On Tailscale: enable HTTPS certificates in the admin console and run `tailscale serve --bg --https=443 http://127.0.0.1:8096`, then open `https://<machine>.<tailnet>.ts.net` (no port).
   If the app sits behind Umbrel's sign-in, the manifest has to be fetched with cookies (`crossorigin="use-credentials"`, already set).

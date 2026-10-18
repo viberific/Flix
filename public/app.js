@@ -447,14 +447,7 @@ const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 1
 /** A season pack others have finished that will be removed in a few days unless someone keeps it. */
 const leavingTile = (l, i) => {
   const days = Math.max(1, Math.ceil((l.leavesAt - Date.now() / 1000) / 86400))
-  return `<div class="tile rise" style="--i:${Math.min(i, 12)}" data-leave="${l.torrentId}"><a href="#/series/${l.seriesId}">${art(l.poster, l.series)}</a>
-    <div class="tt">${esc(l.series)}</div><div class="ts">${esc(l.label)} · leaves in ${days} day${days === 1 ? '' : 's'}</div>
-    <div class="actions"><button class="btn" data-choice="keep">Keep</button><button class="btn" data-choice="release">Not interested</button></div></div>`
-}
-function wireLeaving(root) {
-  root.querySelectorAll('[data-leave]').forEach((el) => el.querySelectorAll('[data-choice]').forEach((b) => b.onclick = async () => {
-    try { await api('/api/leaving', { torrentId: Number(el.dataset.leave), choice: b.dataset.choice }); el.remove() } catch (e) { alert(e.message) }
-  }))
+  return `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${l.seriesId}">${art(l.poster, l.series)}<div class="tt">${esc(l.series)}</div><div class="ts">${esc(l.label)} · leaves in ${days} day${days === 1 ? '' : 's'}</div></a>`
 }
 function rowOf(items, html) {
   return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
@@ -510,7 +503,6 @@ async function homeView(q, local = false) {
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
-    wireLeaving(app)
     const hs = !q && (items[0] ? { id: items[0].seriesId } : featured)
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hml = $('#hml'); if (hml) hml.onclick = async () => {

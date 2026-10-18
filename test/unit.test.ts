@@ -629,7 +629,7 @@ test('taste: thumbs steer genres and hide downvoted shows, but the newest still 
   assert.equal(tasteSort([row(4), row(2)], undefined).map((r) => r.id).join(), '4,2', 'no taste, no change')
 })
 
-test('leaving soon: a seeded, finished pack nobody else opened leaves after the window; keep stops the clock', async () => {
+test('leaving soon: a seeded, finished pack nobody else opened leaves after the window; playing it stops the clock', async () => {
   const { updateLeaving, unwatchedEligible, leavingSoonFor, pendingViewers } = await import('../src/retention.ts')
   const { db, now } = await import('../src/db.ts')
   const watcher = createUser('lv_watcher', 'password123', false).id
@@ -648,8 +648,8 @@ test('leaving soon: a seeded, finished pack nobody else opened leaves after the 
   db.prepare('UPDATE downloads SET leaving_at = ? WHERE torrent_id = ?').run(now() - 1, tid)
   assert.ok(!unwatchedEligible(tid).includes('lv_sleeper'), 'window over: the sleeper no longer holds it')
   assert.ok(updateLeaving(tid, seeded)! <= now(), 'expired clock is left in place, not restarted')
-  db.prepare(`INSERT INTO leaving_choice (user_id, torrent_id, choice, at) VALUES (?,?,'keep',?)`).run(sleeper.id, tid, now())
+  // The sleeper presses play: that holds the pack and stops the clock; finishing it restarts nothing because nobody is left untouched.
+  db.prepare('INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at) VALUES (?,?,0,?,?)').run(sleeper.id, tid, now(), now())
   assert.deepEqual(pendingViewers(tid), ['lv_sleeper'])
-  assert.equal(updateLeaving(tid, seeded), null, 'someone kept it: the clock stops')
-  assert.ok(unwatchedEligible(tid).includes('lv_sleeper'))
+  assert.equal(updateLeaving(tid, seeded), null, 'someone is playing it: the clock stops')
 })
