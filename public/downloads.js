@@ -50,7 +50,15 @@ export async function usage() { try { const e = await navigator.storage?.estimat
 
 /** Downloads in progress, by id: { text, pct, error }. Views listen for `flix-dl` on window. */
 export const active = new Map()
-const tick = (id, st, name) => { if (st) active.set(id, { name: name ?? active.get(id)?.name, ...st }); else active.delete(id); window.dispatchEvent(new Event('flix-dl')) }
+// Anything queued up wanting to know when one download has finished: the season button uses this to start the next episode
+const waiters = new Map()
+const settle = (id, ok) => { const w = waiters.get(id); if (w) { waiters.delete(id); w(ok) } }
+export const whenDone = (id) => new Promise((res) => { if (!active.has(id)) return res(false); waiters.set(id, res) })
+const tick = (id, st, name) => {
+  if (st) { active.set(id, { name: name ?? active.get(id)?.name, ...st }); if (st.error) settle(id, false) }
+  else { active.delete(id); settle(id, true) }
+  window.dispatchEvent(new Event('flix-dl'))
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const json = async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || `Flix answered ${r.status}`); return d }
 

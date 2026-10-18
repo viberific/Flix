@@ -528,6 +528,7 @@ async function seriesView(id) {
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
   const saved = new Set((await dl.list()).map((m) => m.id))
   return () => {
+    let gone = false, seasonRun = 0
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
       <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}
@@ -540,13 +541,46 @@ async function seriesView(id) {
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
-      <h2 class="sec">Episodes</h2><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+      <div class="eps-head"><h2 class="sec">Episodes</h2><span id="sdls"></span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const dlButton = (e) => {
       if (!dl.supported() || !e.available || (e.isPack && e.episode === null)) return ''
       const did = dl.idOf(id, e.season, e.label), a = dl.active.get(did)
       if (a) return `<span class="dlb busy${a.error ? ' err' : ''}" role="button" tabindex="0" title="${esc(a.text)}">${a.error ? esc(a.text) : esc(a.text)}</span>`
       return saved.has(did) ? `<span class="dlb done" role="button" tabindex="0" title="Saved on this device. Open Downloads">${I.check} Saved</span>` : `<span class="dlb" role="button" tabindex="0" title="Save a 1080p copy on this device to watch offline" aria-label="Download for offline">${I.dl}</span>`
+    }
+    // The whole season saved to this device, one episode at a time: the server is never asked for several at once,
+    // so the one-episode-at-a-time rule still holds and nothing extra ends up on disk unasked.
+    const seasonList = () => (seasons.get(cur) ?? []).filter((e) => e.available && !(e.isPack && e.episode === null))
+    const saveEp = (e) => dl.start({ seriesId: +id, season: e.season, label: e.label, title: e.title, seriesName: series.name },
+      () => api('/api/watch', { seriesId: +id, season: e.season ?? null, label: e.label }))
+    const paintSeason = () => {
+      const box = $('#sdls'); if (!box) return
+      const list = seasonList()
+      if (!dl.supported() || !list.length) { box.innerHTML = ''; return }
+      const left = list.filter((e) => !saved.has(dl.idOf(id, e.season, e.label)))
+      const done = list.length - left.length
+      const label = seasonRun ? `Stop · ${done} of ${list.length} saved`
+        : !left.length ? `${I.check} Season saved`
+        : done ? `${I.dl} Save the rest · ${left.length} left`
+        : `${I.dl} Download season`
+      box.innerHTML = `<button class="btn dls${!left.length && !seasonRun ? ' done' : ''}${seasonRun ? ' run' : ''}" id="sdl" aria-label="${!left.length ? 'This season is saved on this device' : seasonRun ? 'Stop saving this season' : 'Save every episode of this season on this device'}">${label}</button>`
+      $('#sdl').onclick = () => {
+        if (seasonRun) { seasonRun++; paintSeason(); return } // a second tap stops it after the episode in flight
+        if (!left.length) return go('#/downloads')
+        const job = ++seasonRun
+        paintSeason()
+        ;(async () => {
+          for (const e of left) {
+            if (gone || job !== seasonRun) break
+            saveEp(e)
+            // stop the run on a failure: if one episode will not save, the rest will not either
+            if (!(await dl.whenDone(dl.idOf(id, e.season, e.label)))) break
+          }
+          if (job === seasonRun) seasonRun = 0
+          if (!gone) paint()
+        })()
+      }
     }
     const paint = () => {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
@@ -566,12 +600,13 @@ async function seriesView(id) {
         }
         b.onclick = act; b.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') act(ev) }
       })
+      paintSeason()
     }
     paint()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paint() }
     let alive = true
     addEventListener('flix-dl', onDl)
-    cleanup = () => { alive = false; removeEventListener('flix-dl', onDl) }
+    cleanup = () => { alive = false; gone = true; seasonRun++; removeEventListener('flix-dl', onDl) }
     app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
       cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
       app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))
@@ -655,12 +690,14 @@ function playView(seriesId, season, label) {
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
+    // While the TV has the show the phone must stay silent: no local player, no local play keys.
+    let castingOnly = false
     const avoid = []
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused) pl.classList.add('idle') }, 3000) }
     pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
 
     const key = (e) => {
-      if (!v || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
+      if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
@@ -761,6 +798,7 @@ function playView(seriesId, season, label) {
     }
 
     function attach(startAt) {
+      if (castingOnly) return // the TV has it; nothing plays here
       hls?.destroy(); hls = null
       if (!v) {
         $('#vw').innerHTML = '<video controls autoplay playsinline></video>'
@@ -902,7 +940,8 @@ function playView(seriesId, season, label) {
         try {
           if (!casting.connected) await castConnect()
           await castHere(v?.currentTime || 0)
-          v?.pause?.() // the TV has it now
+          castingOnly = true // the TV has it now; keep the phone quiet
+          v?.pause?.(); if (v) v.muted = true
           castNote(`Playing on ${casting.device}`)
         } catch (err) {
           if (err?.code === 'cancel') return // they closed the device picker
@@ -913,12 +952,18 @@ function playView(seriesId, season, label) {
     /** A connected TV gets the episode instead of the phone; if that fails it plays here as usual. */
     async function castInstead(at) {
       try {
-        await castHere(at)
-        clearInterval(timer); clearInterval(subT); clearInterval(cdT); hls?.destroy(); hls = null
+        castingOnly = true // from here the phone shows the hand-over, never the episode
+        clearInterval(timer) // no local progress polling, the TV reports its own
         $('#wait').classList.remove('gone'); $('.mark')?.remove()
-        $('#msg').innerHTML = `Playing on ${esc(casting.device)}<div style="display:flex;gap:10px;justify-content:center;margin-top:16px"><button class="btn" id="cstop">Play on this phone</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
+        // The Flix mark, then the show starts on the TV.
+        $('#msg').innerHTML = `<div class="cast-splash"><span class="cs-mark"></span><span class="cs-where">Casting to ${esc(casting.device)}</span></div>`
+        await castHere(at)
+        clearInterval(subT); clearInterval(cdT); hls?.destroy(); hls = null
+        await new Promise((r) => setTimeout(r, 1600))
+        if (!alive) return
+        $('#msg').innerHTML = `<div class="cast-splash done"><span class="cs-mark"></span><span class="cs-where">Playing on ${esc(casting.device)}</span><div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn" id="cstop">Play on this phone</button><a class="btn" href="#/series/${seriesId}">Back</a></div></div>`
         $('#cstop').onclick = () => { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* gone */ } ; setTimeout(route, 500) }
-      } catch { attach(at) }
+      } catch { castingOnly = false; attach(at) }
     }
 
     begin()
