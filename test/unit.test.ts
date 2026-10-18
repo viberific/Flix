@@ -651,3 +651,30 @@ test('leaving soon: a seeded, finished pack nobody else opened leaves after the 
   assert.deepEqual(pendingViewers(tid), ['lv_sleeper'])
   assert.equal(updateLeaving(tid, seeded), null, 'someone is playing it: the clock stops')
 })
+
+test('leaving soon also covers single episodes; a pack counts as done only once every episode is', async () => {
+  const { updateLeaving, unwatchedEligible } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  const a = createUser('lv2_a', 'password123', false).id
+  createUser('lv2_b', 'password123', false)
+  const seeded = { amount_left: 0, uploaded: 2, total_size: 1, seeding_time: 0 }
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (9200, 9200, 'Ep Show', 'S01E01', 0, 'ep1', ?)`).run(now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (9200, 'ep1', ?)`).run(now() - 1e6)
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9200, 0, ?, ?, ?)`).run(a, now(), now(), now())
+  assert.ok(updateLeaving(9200, seeded), 'a single episode gets the window too')
+
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (9201, 9201, 'Pack Show', 'Season 1', 1, 'pk1', ?)`).run(now())
+  db.prepare(`INSERT INTO pack_files (torrent_id, idx, path, size, season, episode) VALUES (9201, 0, 'e1.mkv', 1, 1, 1), (9201, 1, 'e2.mkv', 1, 1, 2)`).run()
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9201, 0, ?, ?, ?)`).run(a, now(), now(), now())
+  assert.ok(unwatchedEligible(9201).includes('lv2_a'), 'one episode of two watched: not done with the pack')
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9201, 1, ?, ?, ?)`).run(a, now(), now(), now())
+  assert.ok(!unwatchedEligible(9201).includes('lv2_a'), 'both watched: done')
+})
+
+test('storage forecast: days left at the recent pace, none when flat', async () => {
+  const { fullInDays } = await import('../src/storage.ts')
+  const D = 86400
+  assert.equal(fullInDays([[0, 0], [14 * D, 14e9]], 10e9), 10, '1 GB a day, 10 GB of room')
+  assert.equal(fullInDays([[0, 5e9], [14 * D, 5e9]], 10e9), null)
+  assert.equal(fullInDays([[0, 0], [2 * D, 2e9]], 10e9), null, 'too little history')
+})

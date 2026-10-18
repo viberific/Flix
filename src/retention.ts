@@ -39,27 +39,32 @@ export function unwatchedEligible(torrentId: number): string[] {
   return untouchedEligible(torrentId)
 }
 
-/** unwatchedEligible without the "Leaving soon" expiry: allowed viewers who have neither watched nor released it. */
+/**
+ * unwatchedEligible without the "Leaving soon" expiry: allowed viewers who are not done with it. In a season pack that means every
+ * episode in it (one watched episode is not the whole season); elsewhere, the file. Released ("I don't need this") counts as done.
+ */
 function untouchedEligible(torrentId: number): string[] {
-  const rel = db.prepare('SELECT series_id FROM releases WHERE torrent_id = ?').get(torrentId) as { series_id: number | null } | undefined
+  const rel = db.prepare('SELECT series_id, is_pack FROM releases WHERE torrent_id = ?').get(torrentId) as { series_id: number | null; is_pack: number } | undefined
   const rating = rel?.series_id != null ? getRating(rel.series_id).rating : 'Unrated'
   const users = db.prepare('SELECT id, name, is_admin, allowed_ratings FROM users').all() as { id: number; name: string; is_admin: number; allowed_ratings: string | null }[]
-  const done = db.prepare('SELECT 1 FROM interests WHERE user_id = ? AND torrent_id = ? AND (watched_at IS NOT NULL OR released_at IS NOT NULL)')
+  // How many files someone has to be done with: every episode of a pack (when its file list is known), else just one.
+  const need = rel?.is_pack ? Math.max(1, (db.prepare('SELECT COUNT(*) AS n FROM pack_files WHERE torrent_id = ?').get(torrentId) as { n: number }).n) : 1
+  const done = db.prepare('SELECT COUNT(DISTINCT file_index) AS n FROM interests WHERE user_id = ? AND torrent_id = ? AND (watched_at IS NOT NULL OR released_at IS NOT NULL)')
   return users
     .filter((u) => canView({ is_admin: u.is_admin, allowed: parseAllowed(u.allowed_ratings) }, rating))
-    .filter((u) => !done.get(u.id, torrentId))
+    .filter((u) => (done.get(u.id, torrentId) as { n: number }).n < need)
     .map((u) => u.name)
     .sort((a, b) => a.localeCompare(b))
 }
 
 /**
- * Start (or stop) the "Leaving soon" clock for a season pack. It runs only while the pack is fully downloaded and seeded, someone
+ * Start (or stop) the "Leaving soon" clock for a download (an episode, or a season pack). It runs only while it is fully downloaded and seeded, someone
  * has watched it, nobody is partway through or holding it (pressing play on it counts, and restarts the window once they finish or drop it), and some allowed viewers never opened it. Returns when it leaves, or null.
  */
 export function updateLeaving(torrentId: number, t: Pick<QbTorrent, 'amount_left' | 'uploaded' | 'total_size' | 'seeding_time'>): number | null {
-  const d = db.prepare('SELECT d.leaving_at, r.is_pack FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id WHERE d.torrent_id = ?').get(torrentId) as { leaving_at: number | null; is_pack: number } | undefined
+  const d = db.prepare('SELECT leaving_at FROM downloads WHERE torrent_id = ?').get(torrentId) as { leaving_at: number | null } | undefined
   if (!d) return null
-  const applies = config.leavingDays > 0 && d.is_pack === 1 && t.amount_left === 0 && seedStatus(t).met
+  const applies = config.leavingDays > 0 && t.amount_left === 0 && seedStatus(t).met
     && pendingViewers(torrentId).length === 0
     && !!db.prepare('SELECT 1 FROM interests WHERE torrent_id = ? AND watched_at IS NOT NULL').get(torrentId)
     && untouchedEligible(torrentId).length > 0
@@ -73,7 +78,7 @@ export function updateLeaving(torrentId: number, t: Pick<QbTorrent, 'amount_left
   return at
 }
 
-/** Packs on their way out that this person is allowed to watch and never opened, for the "Leaving soon" row. */
+/** Downloads on their way out that this person is allowed to watch and never opened, for the "Leaving soon" row. */
 export function leavingSoonFor(user: { id: number; name: string }) {
   const rows = db.prepare(`SELECT d.torrent_id AS torrentId, d.leaving_at AS leavesAt, r.series_id AS seriesId, r.series, r.season, r.label,
       '/api/art/' || r.series_id || '/poster' AS poster
@@ -121,7 +126,9 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
   const reasons: string[] = []
   if (t.amount_left > 0) reasons.push('still downloading')
   if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
-  const unwatched = unwatchedEligible(torrentId).filter((n) => !pending.includes(n))
+  const asked = (db.prepare('SELECT remove_when_seeded FROM downloads WHERE torrent_id = ?').get(torrentId) as { remove_when_seeded: number } | undefined)?.remove_when_seeded === 1
+  // The admin asked for it to go once seeded: only someone partway through (or with it lined up) still keeps it.
+  const unwatched = asked ? [] : unwatchedEligible(torrentId).filter((n) => !pending.includes(n))
   if (unwatched.length) {
     const leavingAt = (db.prepare('SELECT leaving_at FROM downloads WHERE torrent_id = ?').get(torrentId) as { leaving_at: number | null } | undefined)?.leaving_at
     const leaving = leavingAt != null ? `; leaving in ${Math.max(0, Math.ceil((leavingAt - now()) / 86400))} day(s) unless they keep it` : ''

@@ -108,6 +108,8 @@ try { db.exec('ALTER TABLE interests ADD COLUMN auto INTEGER NOT NULL DEFAULT 0'
 
 // When a finished, fully seeded season pack nobody else has touched is removed (see retention.ts); null = not leaving.
 try { db.exec('ALTER TABLE downloads ADD COLUMN leaving_at INTEGER') } catch { /* already present */ }
+// 1 = the admin asked for this one to go as soon as BTN's seeding rule is met, whoever has not watched it yet.
+try { db.exec('ALTER TABLE downloads ADD COLUMN remove_when_seeded INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
 
 // Thumbs up (1) / thumbs down (-1) a person gave a show; it steers what the home screen offers them.
 db.exec('CREATE TABLE IF NOT EXISTS votes (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, series_id INTEGER NOT NULL, vote INTEGER NOT NULL, voted_at INTEGER NOT NULL, PRIMARY KEY (user_id, series_id))')

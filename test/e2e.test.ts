@@ -1,5 +1,13 @@
 // End-to-end: mock BTN API + local tracker + WebTorrent seeder + real qbittorrent-nox + real ffmpeg.
-import { test, after, before } from 'node:test'
+import * as nodeTest from 'node:test'
+import { execFileSync as probe } from 'node:child_process'
+
+// These need the real tools. Without them every test would fail the same way and hide a real breakage, so they are skipped instead.
+const lacking = ['qbittorrent-nox', 'ffmpeg'].filter((bin) => { try { probe(bin, ['--version'], { stdio: 'ignore' }); return false } catch { return true } })
+const skip = lacking.length ? `needs ${lacking.join(' and ')} installed` : false
+const test = (name: string, fn: (...a: any[]) => any) => nodeTest.test(name, { skip }, fn)
+const before = (fn: () => any) => { if (!skip) nodeTest.before(fn) }
+const after = (fn: () => any) => { if (!skip) nodeTest.after(fn) }
 import assert from 'node:assert/strict'
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
