@@ -498,9 +498,7 @@ test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads
     db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (8001, 'x1', 'active', 0)`).run()
     const t = Math.floor(Date.now() / 1000)
     ins.run(u, 8001, 0, t, t)
-    config.auto.maxGb = 0.05 // a 50 MB budget keeps the test independent of how much disk the machine has
-    assert.match(autoBlocked(u, 25e6)!, /budget/, '30 MB already held + 25 MB is over the 50 MB budget')
-    assert.equal(autoBlocked(u, 5e6), null)
+    assert.equal(autoBlocked(u, 25e6), null, 'no size budget: only whole episodes per person are counted')
     for (let i = 1; i < config.auto.perUser; i++) ins.run(u, 8001, i, t, t)
     assert.match(autoBlocked(u, 1)!, /enough lined up/)
     db.prepare('UPDATE interests SET updated_at = ? WHERE user_id = ?').run(t - (config.auto.expireDays + 1) * 86400, u)

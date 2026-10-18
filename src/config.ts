@@ -76,10 +76,6 @@ export const config = {
     /** No automatic downloads below this share of free disk. */
     pausePct: num('AUTO_PAUSE_FREE_PCT', 25),
     perUser: num('AUTO_PER_USER', 3),
-    /** Total size of torrents held only by automatic downloads. */
-    maxGb: num('AUTO_MAX_GB', 50),
-    /** A season pack bigger than this is never fetched automatically (a pack downloads whole). */
-    packMaxGb: num('AUTO_PACK_MAX_GB', 15),
     /** An automatic download nobody opens is let go after this many days. */
     expireDays: num('AUTO_EXPIRE_DAYS', 7),
   },

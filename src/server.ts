@@ -23,7 +23,7 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { storageHistory } from './storage.ts'
-import { autoForListed, autoNext, autoWarm, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
@@ -194,7 +194,6 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   const episodes = buildEpisodes(id, req.user!.id)
-  void autoWarm(req.user!.id, episodes) // quietly starts what they would resume, so Play is near-instant
   return {
     series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), vote: (db.prepare('SELECT vote FROM votes WHERE user_id = ? AND series_id = ?').get(req.user!.id, id) as any)?.vote ?? 0, year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
     episodes: withInfo(id, episodes),
@@ -295,7 +294,6 @@ app.post('/api/mylist', auth, async (req) => {
   if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
   if (on) db.prepare('INSERT OR IGNORE INTO my_list (user_id, series_id, added_at, seen_at) VALUES (?,?,?,(SELECT MAX(time) FROM releases WHERE series_id = ?))').run(req.user!.id, id, now(), id)
   else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
-  if (on) void autoForListed(req.user!.id, id) // its first unwatched episode starts downloading, within the pre-download limits
   return { inList: !!on }
 })
 
