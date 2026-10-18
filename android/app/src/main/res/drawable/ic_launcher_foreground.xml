@@ -5,8 +5,8 @@
      The mark is drawn at the proportions of the web tile, then scaled down as a whole (the group below). In icon.svg the
      mark is 45% wide and 55% tall of a 512 tile, which reads correctly on a rounded tile with its own padding. A
      launcher does not show that tile: it crops the 108dp canvas to the inner 72dp and masks a shape of its own out of
-     it, so drawn at tile scale the F came out 82% of the visible height -- edge to edge in a circle, its corners on the
-     mask -- which is what looked wrong. 0.74 puts the mark at about 60% of what a launcher actually shows, the
+     it, so drawn at tile scale the F came out 82% of the visible height, edge to edge in a circle with its corners on the
+     mask, which is what looked wrong. 0.74 puts the mark at about 60% of what a launcher actually shows, the
      proportion a launcher icon is meant to have, with room for a round or squircle mask around it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
