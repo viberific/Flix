@@ -231,6 +231,7 @@ img.fade.in { opacity: 1; }
 .p-btn.cc { width: auto; min-width: 44px; padding: 0 10px; border-radius: 10px; font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
 .p-btn.cc.on { color: var(--accent); }
 .p-btn[hidden] { display: none; }
+.player.casting #pfull, .player.casting #pcc, .player.casting #pq, .player.casting #aud, .player.casting #cast, .player.casting #rep, .player.casting .p-skip { display: none; } /* those act on the phone's own picture; the TV is driven from the bar */
 .p-ctl .p-menu .menu { top: auto; bottom: 54px; right: 0; background: rgba(20,22,30,.97); color: #fff; max-height: 46vh; overflow: auto; }
 
 /* ---------- paused: what you are watching, left-aligned, with its art fading in from the right ---------- */

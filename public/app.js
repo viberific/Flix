@@ -160,6 +160,8 @@ function loadCastSdk() {
   })
   return castSdk
 }
+// Chrome (the only browser that casts) rejoins a TV it was casting to as soon as the SDK is up, so load it at the start, not when the cast button is first tapped.
+if (/Chrome\//.test(navigator.userAgent)) loadCastSdk().catch(() => {})
 
 /** Connect to a TV (asking which one when none is picked yet). Rejects with code 'cancel' if they close the picker. */
 async function castConnect() {
@@ -723,7 +725,7 @@ function playView(seriesId, season, label) {
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
     let castingOnly = false
     const avoid = []
-    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused) pl.classList.add('idle') }, 3000) }
+    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused && !castingOnly) pl.classList.add('idle') }, 3000) }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
     pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
     // Touching the bar itself only restarts the hide timer.
@@ -779,50 +781,60 @@ function playView(seriesId, season, label) {
       const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60
       return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(sec).padStart(2, '0')
     }
-    const totalT = () => (v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
+    // While the TV has the show, the phone is only its remote: the bar shows and drives the TV's player (see enterCastMode).
+    let rem = null
+    const remoteOn = () => castingOnly && !!rem
+    const totalT = () => (remoteOn() && rem.p.duration > 0 ? rem.p.duration : v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
+    const nowT = () => (remoteOn() ? rem.p.currentTime || 0 : v?.currentTime || 0)
+    const setT = (t) => {
+      t = Math.max(0, Math.min(totalT() || 1e9, t))
+      if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) v.currentTime = t
+    }
     function syncBar() {
-      const d = totalT(), t = v?.currentTime || 0, pct = d ? Math.min(100, (t / d) * 100) : 0
+      const d = totalT(), t = nowT(), pct = d ? Math.min(100, (t / d) * 100) : 0
       if (!$('#pprog')) return
       $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
       $('#ptime').textContent = fmtT(t); $('#pdur').textContent = fmtT(d)
       $('#pseek').setAttribute('aria-valuenow', String(Math.round(pct)))
-      try { const b = v?.buffered; if (b?.length && d) $('#pbuf').style.width = Math.min(100, (b.end(b.length - 1) / d) * 100) + '%' } catch { /* nothing buffered yet */ }
+      try { const b = remoteOn() ? null : v?.buffered; if (b?.length && d) $('#pbuf').style.width = Math.min(100, (b.end(b.length - 1) / d) * 100) + '%' } catch { /* nothing buffered yet */ }
     }
     /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
     function paint() {
-      const paused = (!v || v.paused) && !holding
-      pl.classList.toggle('paused', paused)
+      const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
+      pl.classList.toggle('paused', paused && !castingOnly) // the paused art would sit under the "playing on the TV" card
+      pl.classList.toggle('casting', castingOnly)
       $('#pinfo').setAttribute('aria-hidden', String(!paused))
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
-      $('#pvol').innerHTML = v?.muted ? ICON.volOff : ICON.vol
-      $('#pvol').setAttribute('aria-label', v?.muted ? 'Unmute' : 'Mute')
+      const muted = remoteOn() ? rem.p.isMuted : v?.muted
+      $('#pvol').innerHTML = muted ? ICON.volOff : ICON.vol
+      $('#pvol').setAttribute('aria-label', muted ? 'Unmute' : 'Mute')
       $('#pfull').setAttribute('aria-pressed', String(fill))
-      if (paused) wake()
+      if (paused || castingOnly) wake()
       syncBar()
     }
     function wirePlayer() {
       const bar = $('#pseek')
       const seekTo = (e) => {
-        const d = totalT(); if (!d || !v) return
+        const d = totalT(); if (!d || !(v || remoteOn())) return
         const r = bar.getBoundingClientRect()
-        v.currentTime = Math.min(d - 0.4, Math.max(0, ((e.clientX - r.left) / r.width) * d))
+        setT(Math.min(d - 0.4, ((e.clientX - r.left) / r.width) * d))
         syncBar()
       }
-      bar.addEventListener('pointerdown', (e) => { if (!v || castingOnly) return; e.preventDefault(); bar.classList.add('on'); try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ } seekTo(e) })
+      bar.addEventListener('pointerdown', (e) => { if (!v && !remoteOn()) return; e.preventDefault(); bar.classList.add('on'); try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ } seekTo(e) })
       bar.addEventListener('pointermove', (e) => { if (bar.classList.contains('on')) seekTo(e) })
       bar.addEventListener('pointerup', () => bar.classList.remove('on'))
       bar.addEventListener('pointercancel', () => bar.classList.remove('on'))
       bar.addEventListener('keydown', (e) => {
-        if (!v || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+        if ((!v && !remoteOn()) || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
         e.preventDefault(); e.stopPropagation() // the window handler would move the same 10 s twice
-        v.currentTime = Math.max(0, Math.min(totalT() || 1e9, v.currentTime + (e.key === 'ArrowRight' ? 15 : -15)))
+        setT(nowT() + (e.key === 'ArrowRight' ? 15 : -15))
         syncBar()
       })
-      $('#ppp').onclick = () => { if (!v || castingOnly) return; if (v.paused) v.play().catch(() => {}); else v.pause(); wake() }
-      $('#pbw').onclick = () => { if (v) { v.currentTime = Math.max(0, v.currentTime - 10); wake() } }
-      $('#pfw').onclick = () => { if (v) { v.currentTime = Math.min(totalT() || 1e9, v.currentTime + 10); wake() } }
-      $('#pvol').onclick = () => { if (v) { v.muted = !v.muted; paint() } }
+      $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) v.play().catch(() => {}); else v.pause() }; wake() }
+      $('#pbw').onclick = () => { if (v || remoteOn()) { setT(nowT() - 10); wake() } }
+      $('#pfw').onclick = () => { if (v || remoteOn()) { setT(nowT() + 10); wake() } }
+      $('#pvol').onclick = () => { if (remoteOn()) rem.c.muteOrUnmute(); else if (v) { v.muted = !v.muted; paint() } }
       $('#pfull').onclick = () => { setFill(!fill); paint() }
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
       $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('idle')) wake(); else { clearTimeout(idleT); pl.classList.add('idle') } })
@@ -839,7 +851,7 @@ function playView(seriesId, season, label) {
       $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
@@ -904,6 +916,8 @@ function playView(seriesId, season, label) {
       }
       // A TV that is already connected gets the episode: casting stays on until it is stopped, so every
       // show tapped from now on follows it there.
+      if (!casting.connected && info.castUrl) await Promise.race([loadCastSdk().catch(() => {}), new Promise((r) => setTimeout(r, 2500))]) // a TV from earlier is only known once the SDK has rejoined it
+      if (!alive) return
       if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
       wireSubs(); wireSubMenu(); wireAudio(); wireExtras()
@@ -922,7 +936,7 @@ function playView(seriesId, season, label) {
           started = true
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
@@ -949,7 +963,8 @@ function playView(seriesId, season, label) {
       const src = canHdr ? info.hdrUrl : info.url
       const url = !viaHls && 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       if (viaHls) {
-        hls = new Hls({ maxBufferLength: 60 })
+        // startPosition: open straight at the resume point instead of loading the first piece and jumping.
+        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, ...(startAt > 5 ? { startPosition: startAt } : {}) })
         hls.loadSource(url); hls.attachMedia(v)
         hls.on(Hls.Events.ERROR, (_, d) => {
           if (!d.fatal) return
@@ -958,7 +973,7 @@ function playView(seriesId, season, label) {
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(v.currentTime || startAt) } else fail('Something went wrong playing this. Go back and try again.')
         })
       } else v.src = url
-      if (startAt > 5) v.addEventListener('loadedmetadata', () => { v.currentTime = startAt }, { once: true })
+      if (startAt > 5 && !(viaHls)) v.addEventListener('loadedmetadata', () => { v.currentTime = startAt }, { once: true })
       v.play?.().catch(() => {})
     }
 
@@ -1098,13 +1113,55 @@ function playView(seriesId, season, label) {
         try {
           if (!casting.connected) await castConnect()
           await castHere(v?.currentTime || 0)
-          castingOnly = true // the TV has it now; keep the phone quiet
-          v?.pause?.(); if (v) v.muted = true
-          castNote(`Playing on ${casting.device}`)
+          enterCastMode()
         } catch (err) {
           if (err?.code === 'cancel') return // they closed the device picker
           castNote('Could not start on the TV. Check the TV is on the same network as this box.')
         }
+      }
+    }
+    /**
+     * The TV has the show. The phone stops loading and playing it and becomes the TV's remote: the same bar, driving the TV's player,
+     * until the cast is stopped (from here or from the TV), when "Play on this phone" carries on from where the TV got to.
+     */
+    function enterCastMode() {
+      castingOnly = true
+      clearTimeout(holdT); clearInterval(timer); clearInterval(subT); clearInterval(cdT)
+      holding = false
+      hls?.destroy(); hls = null
+      if (v) { v.onpause = null; v.pause(); v.removeAttribute('src'); v.load() }
+      $('#wait').classList.remove('gone'); $('.mark')?.remove()
+      pl.classList.remove('idle')
+      try {
+        const p = new cast.framework.RemotePlayer(), c = new cast.framework.RemotePlayerController(p)
+        rem = { p, c }
+        let finished = false
+        c.addEventListener(cast.framework.RemotePlayerEventType.ANY_CHANGE, () => {
+          if (!castingOnly) return
+          paint()
+          const ms = castCtx()?.getCurrentSession()?.getMediaSession?.()
+          if (!finished && ms?.playerState === 'IDLE' && ms.idleReason === 'FINISHED') { finished = true; onEnded() }
+        })
+      } catch { rem = null }
+      paint()
+      showCastCard('Playing on ' + casting.device, true)
+      castNote(`Playing on ${casting.device}`)
+      stopOff = onCast(() => { if (castingOnly && !casting.connected) { saveRemote(); rem = null; showCastCard('Casting stopped', true, true); paint() } })
+    }
+    let stopOff = null
+    const saveRemote = () => {
+      const t = rem?.p.currentTime
+      if (t > 0 && play) api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: t, duration: totalT(), ended: false }).catch(() => {})
+    }
+    function showCastCard(where, withButtons, stopped) {
+      $('#msg').innerHTML = `<div class="cast-splash done"><span class="cs-mark"></span><span class="cs-where">${esc(where)}</span><div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn" id="cstop">${stopped ? 'Play on this phone' : 'Stop casting'}</button><a class="btn" href="#/series/${seriesId}">Back</a></div></div>`
+      // Stopping the cast brings the show back on the phone, from where the TV was.
+      $('#cstop').onclick = () => {
+        saveRemote()
+        if (!stopped) { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* already gone */ } }
+        stopOff?.()
+        casting.connected = false; casting.device = ''
+        setTimeout(route, 350)
       }
     }
     /** A connected TV gets the episode instead of the phone; if that fails it plays here as usual. */
@@ -1116,11 +1173,9 @@ function playView(seriesId, season, label) {
         // The Flix mark, then the show starts on the TV.
         $('#msg').innerHTML = `<div class="cast-splash"><span class="cs-mark"></span><span class="cs-where">Casting to ${esc(casting.device)}</span></div>`
         await castHere(at)
-        clearInterval(subT); clearInterval(cdT); hls?.destroy(); hls = null
         await new Promise((r) => setTimeout(r, 1600))
         if (!alive) return
-        $('#msg').innerHTML = `<div class="cast-splash done"><span class="cs-mark"></span><span class="cs-where">Playing on ${esc(casting.device)}</span><div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn" id="cstop">Play on this phone</button><a class="btn" href="#/series/${seriesId}">Back</a></div></div>`
-        $('#cstop').onclick = () => { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* gone */ } ; setTimeout(route, 500) }
+        enterCastMode()
       } catch { castingOnly = false; attach(at) }
     }
 
