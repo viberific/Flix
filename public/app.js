@@ -712,7 +712,7 @@ function playView(seriesId, season, label) {
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i></div><div id="msg" role="status"></div></div></div>`
     flixSting()
     const INTRO_MS = 5000, introAt = Date.now()
-    let holdT = null
+    let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
     $('#pbg').style.backgroundImage = `url("/api/art/${seriesId}/poster")`
@@ -790,7 +790,7 @@ function playView(seriesId, season, label) {
     }
     /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
     function paint() {
-      const paused = !v || v.paused
+      const paused = (!v || v.paused) && !holding
       pl.classList.toggle('paused', paused)
       $('#pinfo').setAttribute('aria-hidden', String(!paused))
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
@@ -920,10 +920,10 @@ function playView(seriesId, season, label) {
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
         v.addEventListener('playing', () => {
           started = true
-          // The show plays behind the logo from the moment it is ready; the logo keeps its full 5 seconds, then fades away over the picture.
+          // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (5 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          if (left > 0 && !castingOnly) holdT = setTimeout(() => { $('#wait').classList.add('gone'); wake() }, left)
-          else { $('#wait').classList.add('gone'); wake() }
+          const reveal = () => { holding = false; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
