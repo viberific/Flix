@@ -62,6 +62,8 @@ export const config = {
   watchedThreshold: num('WATCHED_THRESHOLD', 1),
   // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
   abandonDays: num('ABANDON_DAYS', 30),
+  // A finished, fully seeded season pack that some allowed viewers never opened is shown to them as "Leaving soon" for this many days, then removed (0 = off).
+  leavingDays: num('LEAVING_DAYS', 7),
   // Refuse new downloads when less than this much disk would be left (GB).
   minFreeGb: num('MIN_FREE_GB', 10),
   /** ...and when less than this share of the disk is free (the larger of the two limits applies). */

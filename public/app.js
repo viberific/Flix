@@ -444,6 +444,18 @@ const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
+/** A season pack others have finished that will be removed in a few days unless someone keeps it. */
+const leavingTile = (l, i) => {
+  const days = Math.max(1, Math.ceil((l.leavesAt - Date.now() / 1000) / 86400))
+  return `<div class="tile rise" style="--i:${Math.min(i, 12)}" data-leave="${l.torrentId}"><a href="#/series/${l.seriesId}">${art(l.poster, l.series)}</a>
+    <div class="tt">${esc(l.series)}</div><div class="ts">${esc(l.label)} · leaves in ${days} day${days === 1 ? '' : 's'}</div>
+    <div class="actions"><button class="btn" data-choice="keep">Keep</button><button class="btn" data-choice="release">Not interested</button></div></div>`
+}
+function wireLeaving(root) {
+  root.querySelectorAll('[data-leave]').forEach((el) => el.querySelectorAll('[data-choice]').forEach((b) => b.onclick = async () => {
+    try { await api('/api/leaving', { torrentId: Number(el.dataset.leave), choice: b.dataset.choice }); el.remove() } catch (e) { alert(e.message) }
+  }))
+}
 function rowOf(items, html) {
   return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
 }
@@ -462,10 +474,11 @@ function wireRows(root) {
 }
 
 async function homeView(q, local = false) {
-  const [list, cont, home] = await Promise.all([
+  const [list, cont, home, leaving] = await Promise.all([
     q ? api('/api/series?q=' + encodeURIComponent(q) + (local ? '&local=1' : '')) : { series: [] },
     q ? { items: [] } : api('/api/continue'),
     q ? { hero: null, sections: [] } : api('/api/home'),
+    q ? { items: [] } : api('/api/leaving').catch(() => ({ items: [] })),
   ])
   const series = q ? list.series : []
   const featured = q ? null : home.hero // the billboard: top trending show, else the newest streaming original
@@ -485,6 +498,7 @@ async function homeView(q, local = false) {
     // The billboard already shows the first thing to resume, so the row holds only the rest.
     const more = !q && items[0] ? items.slice(1) : items
     if (more.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(more, contTile)}`
+    if (!q && leaving.items.length) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items, leavingTile)}`
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
     if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
     if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
@@ -496,6 +510,7 @@ async function homeView(q, local = false) {
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
+    wireLeaving(app)
     const hs = !q && (items[0] ? { id: items[0].seriesId } : featured)
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hml = $('#hml'); if (hml) hml.onclick = async () => {

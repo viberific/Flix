@@ -628,3 +628,28 @@ test('taste: thumbs steer genres and hide downvoted shows, but the newest still 
   assert.equal(tasteSort(many, t, 30).at(-1)!.id, 2, 'beyond the freshest window nothing is promoted')
   assert.equal(tasteSort([row(4), row(2)], undefined).map((r) => r.id).join(), '4,2', 'no taste, no change')
 })
+
+test('leaving soon: a seeded, finished pack nobody else opened leaves after the window; keep stops the clock', async () => {
+  const { updateLeaving, unwatchedEligible, leavingSoonFor, pendingViewers } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  const watcher = createUser('lv_watcher', 'password123', false).id
+  const sleeper = createUser('lv_sleeper', 'password123', false)
+  const tid = 9100
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (?,?,?,?,1,?,?)`).run(tid, 9100, 'Leaving Show', 'S01', 'abc', now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (?,?,?)`).run(tid, 'abc', now() - 1e6)
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,?,0,?,?,?)`).run(watcher, tid, now(), now(), now())
+  const seeded = { amount_left: 0, uploaded: 2, total_size: 1, seeding_time: 0 }
+  assert.equal(updateLeaving(tid, { ...seeded, uploaded: 0 }), null, 'seed rule not met: no clock')
+  assert.equal(updateLeaving(tid, { ...seeded, amount_left: 5 }), null, 'still downloading: no clock')
+  const at = updateLeaving(tid, seeded)
+  assert.ok(at && at > now(), 'clock starts')
+  assert.ok(unwatchedEligible(tid).includes('lv_sleeper'), 'still held during the window')
+  assert.ok(leavingSoonFor(sleeper).some((r) => r.torrentId === tid), 'shown on the sleeper\'s Home')
+  db.prepare('UPDATE downloads SET leaving_at = ? WHERE torrent_id = ?').run(now() - 1, tid)
+  assert.ok(!unwatchedEligible(tid).includes('lv_sleeper'), 'window over: the sleeper no longer holds it')
+  assert.ok(updateLeaving(tid, seeded)! <= now(), 'expired clock is left in place, not restarted')
+  db.prepare(`INSERT INTO leaving_choice (user_id, torrent_id, choice, at) VALUES (?,?,'keep',?)`).run(sleeper.id, tid, now())
+  assert.deepEqual(pendingViewers(tid), ['lv_sleeper'])
+  assert.equal(updateLeaving(tid, seeded), null, 'someone kept it: the clock stops')
+  assert.ok(unwatchedEligible(tid).includes('lv_sleeper'))
+})

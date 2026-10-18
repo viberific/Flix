@@ -26,7 +26,7 @@ import { storageHistory } from './storage.ts'
 import { autoForListed, autoNext, autoWarm, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
-import { holdersOf, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -300,6 +300,18 @@ app.post('/api/mylist', auth, async (req) => {
 })
 
 app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!) }))
+
+/** Season packs already watched by others and about to be removed, which this person never opened (see updateLeaving in retention.ts). */
+app.get('/api/leaving', auth, async (req) => ({ items: leavingSoonFor(req.user!) }))
+app.post('/api/leaving', auth, async (req) => {
+  const { torrentId, choice } = (req.body ?? {}) as any
+  const t = Number(torrentId)
+  if (!Number.isInteger(t) || !['keep', 'release'].includes(choice)) throw notFound()
+  // Only a pack that is actually leaving, and only for someone who may see it.
+  if (!leavingSoonFor(req.user!).some((r) => r.torrentId === t)) throw notFound()
+  db.prepare('INSERT INTO leaving_choice (user_id, torrent_id, choice, at) VALUES (?,?,?,?) ON CONFLICT(user_id, torrent_id) DO UPDATE SET choice = excluded.choice, at = excluded.at').run(req.user!.id, t, choice, now())
+  return { choice }
+})
 
 /** Rating guard for every route that names a torrent: a restricted user cannot reach a blocked show's streams. */
 const torrentGuard = async (req: any, reply: any) => {
