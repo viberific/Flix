@@ -113,7 +113,7 @@ img.fade.in { opacity: 1; }
   .tile:hover .poster { transform: translateY(-6px) scale(1.035); box-shadow: 0 20px 40px rgba(0,0,0,.55); }
   .tile:hover img.fade.in { transform: scale(1.06); }
 }
-.tile:focus-visible .poster { transform: translateY(-4px) scale(1.03); box-shadow: 0 0 0 2px var(--accent), 0 16px 34px rgba(0,0,0,.5); }
+.tile:focus-visible .poster { transform: translateY(-4px) scale(1.03); box-shadow: 0 16px 34px rgba(0,0,0,.5); }
 .tile:active .poster { transform: scale(.97); transition-duration: .12s; }
 .tile .tt { transition: color .25s; }
 .tile .tt { margin-top: 10px; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -198,7 +198,11 @@ img.fade.in { opacity: 1; }
   padding: max(16px, env(safe-area-inset-top, 0px)) var(--gutter-r) 40px var(--gutter); background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .player.idle .p-top { opacity: 0; transform: translateY(-14px); pointer-events: none; } .player.idle { cursor: none; }
 .p-title b { display: block; font-size: 17px; } .p-title span { color: rgba(255,255,255,.7); font-size: 13px; }
-.p-wait { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
+/* Black, not see-through. The overlay used to have no background of its own, so whatever sat behind it showed through
+   while an episode was being found -- and a poster Flix had to invent is a flat card, which is what read as a grey play
+   button behind the logo. The black belongs to this layer, so it fades out with the mark and the picture is revealed
+   underneath in the same moment, rather than the black vanishing first. */
+.p-wait { position: absolute; inset: 0; z-index: 4; background: #000; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
 .p-wait.gone { opacity: 0; pointer-events: none; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
 /* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
@@ -445,13 +449,16 @@ a.pill { display: inline-block; }
 @media (min-width: 2400px) { html { zoom: 1.75; } }
 /* No zoom on a television: the page is laid out at 1280 CSS pixels (see index.html) and the panel fits that to its own
    width, so a further zoom here only made every control a third bigger again on top of an already scaled layout. */
-html.tv :focus-visible { outline: 4px solid var(--accent); outline-offset: 4px; box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent); }
-html.tv .tile:focus-visible .poster { transform: translateY(-6px) scale(1.07); }
+html.tv :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: none; box-shadow: none; }
 /* A remote moves the highlight by calling focus() from script, and :focus-visible never matches that, so the ring has to
    come from :focus as well -- otherwise the arrow keys moved something the eye could not find. Desktop keeps the
    :focus-visible rule on its own, so a mouse click still rings nothing. */
-html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus, html.tv .tile:focus { outline: 4px solid var(--accent); outline-offset: 4px; box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent); }
-html.tv .tile:focus .poster { transform: translateY(-6px) scale(1.07); }
+/* A thin, bright stroke, with no glow: the glow was 8px of accent behind a 4px outline, which on a 65-inch panel read as a
+   smudge rather than a selection. The stroke sits on the tile itself rather than on the poster inside it, so it encloses the
+   picture and its title as one unit with no line between them, and the tile -- not the poster -- is what lifts. */
+html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus, html.tv .tile:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+html.tv .tile:focus { transform: translateY(-2px); }
 html.tv * { cursor: none; }
 
 
@@ -532,7 +539,7 @@ html.tv * { cursor: none; }
 .mark { position: relative; width: 112px; height: 112px; margin-bottom: 20px; perspective: 700px; transition: transform .9s cubic-bezier(.7,0,.2,1), opacity .7s var(--ease), filter .7s var(--ease); }
 .mark svg { position: relative; width: 100%; height: 100%; border-radius: 26px; display: block; opacity: 0; transform-origin: 50% 70%;
   box-shadow: 0 26px 60px -14px color-mix(in srgb, var(--accent-2) 70%, transparent), 0 8px 24px -10px rgba(0,0,0,.5);
-  animation: markIn 1.4s cubic-bezier(.16,1,.3,1) .1s forwards, markFloat 5s ease-in-out 1.5s infinite; }
+  animation: markIn 1.4s cubic-bezier(.16,1,.3,1) .1s forwards; }
 .mark svg g { transform-box: fill-box; transform-origin: 50% 50%; opacity: 0; animation: glyphIn 1.1s cubic-bezier(.16,1,.3,1) .5s forwards; }
 .mark .aura { position: absolute; inset: -75%; border-radius: 50%; pointer-events: none; opacity: 0;
   background: conic-gradient(from 0deg, #ff8a4c, #ff3d6e, #b8155a, #7a2cff, #ff8a4c); filter: blur(46px);
@@ -551,11 +558,14 @@ html.tv * { cursor: none; }
    orbited the middle of the box, so it swept across the corners instead of running along the edge. The rect sits 1px
    outside the 112px tile whose radius is 26, and pathLength=100 makes the dash travel exactly one lap and turn each
    corner with it. It comes in after the intro has played and goes with the overlay when playback starts. */
+/* One float for the whole mark. The tile, the sheen and the stroke share this one wrapper, so the stroke cannot drift off
+   the tile the way two copies of the same keyframes can: the earlier attempt gave the tracer its own markFloat, and two
+   independent animations of the same property on two elements is exactly what comes apart on a television's WebView. The
+   aura and the ripples stay behind it -- they are light in the room rather than part of the mark. */
+.mark-lift { position: absolute; inset: 0; animation: markFloat 5s ease-in-out 1.5s infinite; }
 .mark .tracer { position: absolute; inset: 0; width: 112px; height: 112px; overflow: visible; border-radius: 0; box-shadow: none;
   pointer-events: none; opacity: 0;
-  /* The tile floats up and down while it waits, so the stroke around it has to float with it: the same keyframes on the
-     same clock. It used to be a layer that never got the float, so the light sat still while the logo bobbed away from it. */
-  animation: tracerIn .6s ease 1.5s forwards, markFloat 5s ease-in-out 1.5s infinite; }
+  animation: tracerIn .6s ease 1.5s forwards; }
 .mark .tracer rect { animation: tracerRun 1.9s linear infinite; }
 .p-wait.gone .tracer, .p-wait.gone .tracer rect { opacity: 0; animation: none; }
 @keyframes tracerRun { to { stroke-dashoffset: -100; } }

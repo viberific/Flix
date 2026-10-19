@@ -893,20 +893,30 @@ function artUsable(url) {
       im.onerror = () => resolve(false)
       im.onload = () => {
         try {
+          const N = 16
           const c = document.createElement('canvas')
-          c.width = c.height = 16
+          c.width = c.height = N
           const x = c.getContext('2d', { willReadFrequently: true })
-          x.drawImage(im, 0, 0, 16, 16)
-          const d = x.getImageData(0, 0, 16, 16).data
-          let sat = 0, lo = 1, hi = 0
-          for (let i = 0; i < d.length; i += 4) {
+          x.drawImage(im, 0, 0, N, N)
+          const d = x.getImageData(0, 0, N, N).data
+          const lum = new Float32Array(N * N)
+          let sat = 0
+          for (let i = 0, px = 0; i < d.length; i += 4, px++) {
             const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255
-            const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2
+            const max = Math.max(r, g, b), min = Math.min(r, g, b)
             sat += max ? (max - min) / max : 0
-            if (l < lo) lo = l
-            if (l > hi) hi = l
+            lum[px] = (max + min) / 2
           }
-          resolve(sat / (d.length / 4) >= 0.06 || hi - lo >= 0.12)
+          sat /= N * N
+          // Flatness alone is not the test: a grey card with a white play triangle on it has a wide lightness range and
+          // used to pass, which is how the placeholder got behind the loading mark. So the image is also cut into 2x2
+          // cells and the busy ones counted -- a glyph lights up a handful, a photograph nearly all of them.
+          let busy = 0
+          for (let cy = 0; cy < N; cy += 2) for (let cx = 0; cx < N; cx += 2) {
+            const a = lum[cy * N + cx], b = lum[cy * N + cx + 1], c2 = lum[(cy + 1) * N + cx], d2 = lum[(cy + 1) * N + cx + 1]
+            if (Math.max(a, b, c2, d2) - Math.min(a, b, c2, d2) > 0.1) busy++
+          }
+          resolve(sat >= 0.06 || busy >= (N / 2) * (N / 2) * 0.3)
         } catch { resolve(true) }
       }
       im.src = url
@@ -957,7 +967,7 @@ function playView(seriesId, season, label) {
               <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></div><div id="msg" role="status"></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div></div></div>`
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
