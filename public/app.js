@@ -902,6 +902,8 @@ function playView(seriesId, season, label) {
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
+    // The viewer's one-off yes to converting this episode, when Settings says never to convert the picture.
+    let allowConvert = false
     // An element whose source is taken away on purpose reports an error for it: that one is ours, not playback's.
     let ignoreError = false
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
@@ -1138,8 +1140,21 @@ function playView(seriesId, season, label) {
 
     async function loadInfo(a, startAt) {
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      info = await api(`${base}/info${a ? '?a=' + a : ''}`)
+      const q = [a ? 'a=' + a : '', allowConvert ? 'convert=1' : ''].filter(Boolean).join('&')
+      info = await api(`${base}/info${q ? '?' + q : ''}`)
       if (!alive) return
+      // Flix is set never to re-encode the picture, and this file needs it. Ask once, in the player, rather than
+      // leaving a dead screen: the viewer decides whether this episode is worth the CPU.
+      if (info.mode === 'convert') {
+        allowConvert = false
+        const el = $('#msg')
+        if (el) {
+          el.textContent = `${info.message} Tap here to allow it for this episode.`
+          el.style.cursor = 'pointer'
+          el.onclick = () => { el.onclick = null; el.style.cursor = ''; allowConvert = true; loadInfo(a, startAt).catch((e) => fail(e.message)) }
+        }
+        return
+      }
       // A saved audio-language choice (on this device) wins over the file's default track.
       if (!a) {
         const want = store.get('audio', null)
@@ -1829,6 +1844,7 @@ function playbackSection(tc) {
       <form id="tf" class="person"><label class="dim" for="tprofile">Quality</label>
         <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
         <label class="dim"><input type="checkbox" id="thw"${tc.hardwareAllowed ? ' checked' : ''}> Use the GPU's encoder when one is available</label>
+        <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Never convert the picture (no CPU: play it as it is, or repack it)</label>
         <div class="row-form"><button type="button" class="btn" id="ttest">Test encoder</button></div>
         <div class="dim" id="tm2" role="status"></div></form></div>`
 }
@@ -1871,6 +1887,15 @@ function settingsPanel(data, root) {
     if (ps) ps.onchange = async () => {
       pmsg('Saving…')
       try { tc = (await api('/api/admin/settings/transcode', { profile: ps.value }, 'PUT')).transcode; paint(); $('#tm2').textContent = 'Saved. Takes effect from the next thing you play.' } catch (err) { pmsg(err.message) }
+    }
+    const nv = $('#tnever')
+    if (nv) nv.onchange = async () => {
+      const off = nv.checked
+      pmsg('Saving…')
+      try {
+        tc = (await api('/api/admin/settings/transcode', { mode: off ? 'off' : 'auto' }, 'PUT')).transcode; paint()
+        $('#tm2').textContent = off ? 'Saved. The picture is never re-encoded from now on: a file is played as it is or repacked, and one that needs converting says so.' : 'Saved. A file that needs converting is converted again.'
+      } catch (err) { pmsg(err.message) }
     }
     const hw = $('#thw')
     if (hw) hw.onchange = async () => {

@@ -11,10 +11,10 @@ import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowe
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
+import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
 import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
+import { MP4_CARRY, SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, mayEncode, needsEncode, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { frame as frameAt, startThumbSweeper } from './thumbs.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
@@ -484,6 +484,16 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // one MP4 and served with byte ranges. That is what makes the whole episode seekable: the HLS fallback for a passed
   // through picture is built forwards from the start, so a seek ahead of it cannot work until it catches up.
   const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
+  // Setting the picture may never be re-encoded ('off') has to mean it: say plainly that this copy needs a
+  // conversion instead of quietly spending the CPU that setting exists to save. 'convert=1' is the viewer's own
+  // one-off yes, from the button the player shows for this answer.
+  const allowConvert = (req.query as any).convert === '1'
+  if (!direct && !remux && !allowConvert && !mayEncode() && needsEncode(p)) {
+    return {
+      mode: 'convert', needsConvert: true, duration: p.duration, audioIndex: a, chapters: p.chapters, audio: p.audio,
+      message: 'This copy has to be converted before it will play, and Flix is set never to convert the picture. Allowing one conversion plays it now.',
+    }
+  }
   const path = direct ? 'raw' : a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
@@ -562,7 +572,7 @@ const CAST_WAIT_MS = Number(process.env.CAST_WAIT_MS ?? 60_000)
  */
 /** The codecs an MP4 can hold with the picture copied. MP4 cannot carry VP8, and a browser will not play VP9 inside one,
  *  so those stay on HLS however well the file is downloaded. */
-const REMUX_VIDEO = new Set(['h264', 'hevc', 'av1'])
+const REMUX_VIDEO = MP4_CARRY
 
 async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boolean, waitMs = REMUX_WAIT_MS): Promise<boolean> {
   // The same picture rule probe() uses (4K is re-encoded down to 1080p), minus the codecs MP4 cannot hold.
@@ -929,6 +939,7 @@ app.put('/api/admin/settings/transcode', admin, async (req) => {
   const b = (req.body as any) ?? {}
   if (typeof b.profile === 'string') setTranscodeProfile(b.profile)
   if (typeof b.hardware === 'boolean') setTranscodeHardware(b.hardware)
+  if (typeof b.mode === 'string') setTranscodeMode(b.mode)
   return { transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }
 })
 // Measure the encoder again: the answer changes when compose gains /dev/dri, and that is worth being able to see.

@@ -23,6 +23,12 @@ const probes = new Map<string, Probe>()
 
 const DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1'])
 const DIRECT_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis'])
+/** Codecs an MP4 can hold with the picture copied. server.ts remuxes to MP4, so it uses this same set. */
+export const MP4_CARRY = new Set(['h264', 'hevc', 'av1'])
+/** Playing this file needs a libx264 encode: not playable as it is, not HDR (which is copied), and its picture cannot be copied. */
+export const needsEncode = (p: Probe) => !p.direct && !p.hdr && !p.copyVideo
+/** Whether the picture may be re-encoded at all. In 'off' mode it never is: copy or refuse. */
+export const mayEncode = () => config.transcode.mode !== 'off'
 /** Subtitle formats that are text and can become WebVTT. Picture subtitles (PGS, VobSub) can't be shown in a browser. */
 const TEXT_SUBS = new Set(['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'])
 
@@ -252,6 +258,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     const dir = jobDir(torrentId, fileIndex, audio, hdr)
     const tonemap = p.hdr && (await canToneMap())
     const copy = !hdr && p.copyVideo
+    if (!copy && !hdr && !mayEncode()) throw new Error('needs-convert: this file would have to be converted, and Flix is set never to convert the picture')
     const outH = Math.min(p.height ?? 720, 1080)
     const filters = [...((p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []), ...(tonemap ? [TONEMAP] : [])]
     rmSync(dir, { recursive: true, force: true })

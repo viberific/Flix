@@ -92,6 +92,12 @@ export function setTranscodeProfile(profile: string) {
   loadSettings()
 }
 
+/** Never re-encode the picture ('off'), or convert when a file needs it ('auto'). */
+export function setTranscodeMode(mode: string) {
+  put('transcode_mode', String(mode).toLowerCase() === 'off' ? 'off' : 'auto')
+  loadSettings()
+}
+
 /** Whether the GPU's encoder may be used when the container can see one. */
 export function setTranscodeHardware(on: boolean) {
   put('transcode_hardware', on ? 'on' : 'off')
@@ -106,5 +112,7 @@ export function transcodeStatus() {
     hardwareAllowed: config.transcode.hardware,
     hardwareSource: get('transcode_hardware') ? 'settings' : 'environment',
     maxJobs: config.transcode.maxJobs,
+    mode: config.transcode.mode,
+    modeSource: get('transcode_mode') ? 'settings' : 'environment',
   }
 }

@@ -92,6 +92,12 @@ export const config = {
    */
   transcode: {
     profile: (env.TRANSCODE_PROFILE ?? 'balanced') as 'economy' | 'balanced' | 'best',
+    /**
+     * auto: convert a file the player cannot take, which is a full libx264 encode when the picture is not one the
+     * box can copy (HEVC mostly). off: never re-encode the picture -- copy it into MP4, or refuse and say so. That
+     * is what makes playback cost no CPU at all, at the price of the few releases no copy can serve.
+     */
+    mode: (env.TRANSCODE_MODE === 'off' ? 'off' : 'auto') as 'auto' | 'off',
     /** Use the GPU's encoder (Quick Sync / VAAPI) when the container can see /dev/dri. Falls back to libx264 on its own. */
     hardware: env.TRANSCODE_HARDWARE !== 'false',
     /**

@@ -742,3 +742,30 @@ test('nothing above 1080p is ever served or saved', async () => {
   const o = readFileSync(new URL('../src/offline.ts', import.meta.url), 'utf8')
   assert.match(o, /scale=-2:1080/, 'the saved MP4 is scaled to 1080p')
 })
+
+test('a file is only converted when it has to be, and never in no-encode mode', async () => {
+  const { needsEncode, mayEncode, MP4_CARRY } = await import('../src/transcode.ts')
+  const base = { copyVideo: false, direct: false, hdr: false } as any
+  assert.equal(needsEncode({ ...base, videoCodec: 'hevc' }), true, 'HEVC that cannot be copied needs an encode')
+  assert.equal(needsEncode({ ...base, videoCodec: 'h264', copyVideo: true }), false, 'H.264 is copied, not encoded')
+  assert.equal(needsEncode({ ...base, direct: true, videoCodec: 'h264' }), false, 'direct play needs nothing')
+  assert.equal(needsEncode({ ...base, hdr: true, videoCodec: 'hevc' }), false, 'HDR is passed through, not encoded')
+  assert.equal(MP4_CARRY.has('hevc'), true, 'HEVC can be carried in MP4 by a copy')
+  // The setting is what decides, and 'off' means the picture is never re-encoded.
+  assert.equal(mayEncode(), config.transcode.mode !== 'off')
+  const off = await import('../src/offline.ts')
+  const src = (await import('node:fs')).readFileSync(new URL('../src/offline.ts', import.meta.url), 'utf8')
+  assert.match(src, /config\.transcode\.mode === 'off'/, 'the saved copy refuses to encode in this mode')
+  assert.ok(off, 'offline module loads')
+})
+
+test('nothing above 1080p is chosen: 4K is never picked while anything else is alive', async () => {
+  const { pickRelease, convertCost } = await import('../src/pick.ts')
+  const uhd = { torrent_id: 1, resolution: '2160p', codec: 'H.265', seeders: 50, size: 20e9, on_server: false }
+  const hd = { torrent_id: 2, resolution: '1080p', codec: 'H.264', seeders: 3, size: 3e9, on_server: false }
+  assert.equal(pickRelease([uhd, hd])?.torrent_id, 2, 'the 1080p H.264 wins over a well-seeded 4K')
+  assert.equal(convertCost(uhd), 2)
+  assert.equal(convertCost(hd), 0)
+  // A 4K H.264 release is still 4K: the box streams 1080p, so it is not worth the extra download.
+  assert.equal(convertCost({ resolution: '2160p', codec: 'H.264' }), 2)
+})

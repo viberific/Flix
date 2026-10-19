@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
-import { canToneMap, TONEMAP, type Probe } from './transcode.ts'
+import { canToneMap, MP4_CARRY, TONEMAP, type Probe } from './transcode.ts'
 
 /**
  * A single MP4 of an episode, no bigger than 1080p, for saving on a device to watch without a connection.
@@ -38,12 +38,18 @@ export async function offlineCopy(t: number, f: number, p: Probe, source: string
   }
   if (existsSync(out)) { touch(out); return { state: 'ready', path: out, size: statSync(out).size, type: 'video/mp4' } }
   mkdirSync(root(), { recursive: true })
+  // In 'off' mode the picture is never re-encoded: a codec MP4 can carry is copied, and anything else is refused
+  // rather than quietly spending the CPU this mode exists to save.
+  const copies = p.copyVideo || (config.transcode.mode === 'off' && MP4_CARRY.has(String(p.videoCodec ?? '')))
+  if (!copies && config.transcode.mode === 'off') {
+    return { state: 'error', message: 'This copy would have to be converted, and Flix is set never to convert the picture. Allow one conversion to play it.' }
+  }
   const tone = p.hdr && (await canToneMap())
   const filters = [...((p.height ?? 0) > 1080 ? ['scale=-2:1080'] : []), ...(tone ? [TONEMAP] : [])]
   const part = out + '.part.mp4'
   rmSync(part, { force: true })
   const args = ['-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1', '-i', source, '-map', '0:v:0', '-map', '0:a:0?', '-sn',
-    ...(p.copyVideo ? ['-c:v', 'copy', ...(/hevc|h265/i.test(String(p.videoCodec ?? '')) ? ['-tag:v', 'hvc1'] : [])] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...(filters.length ? ['-vf', filters.join(',')] : [])]),
+    ...(copies ? ['-c:v', 'copy', ...(/hevc|h265/i.test(String(p.videoCodec ?? '')) ? ['-tag:v', 'hvc1'] : [])] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...(filters.length ? ['-vf', filters.join(',')] : [])]),
     '-c:a', 'aac', '-ac', '2', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', part]
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
   const job: Job = { proc, progress: 0, out, last: Date.now() }
