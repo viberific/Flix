@@ -36,11 +36,15 @@ export const isAlive = (c: Cand) => c.on_server || (c.seeders ?? 0) > 0
  * then what we already have on disk (instant start); then H.264 (plays without heavy transcoding); then most seeders.
  */
 export function pickRelease<T extends Cand>(cands: T[]): T | undefined {
+  // In copy-only mode a release that would need the picture re-encoded is not a candidate at all: it is never
+  // downloaded, so the box never spends the CPU this mode exists to save. An episode with no such release simply
+  // has no source, which is honest -- the alternative was downloading gigabytes to convert them.
+  const off = config.transcode.mode === 'off'
+  const usable = off ? cands.filter((c) => convertCost(c) === 0) : cands
   // 4K is only ever a fallback for an episode with nothing else alive: it is a much larger download for a picture
   // the box caps at 1080p anyway, so it is never worth choosing over a 1080p release.
-  const not4k = cands.filter((c) => convertCost(c) < 2)
-  const pool = not4k.some(isAlive) ? not4k : cands
-  const off = config.transcode.mode === 'off'
+  const not4k = usable.filter((c) => convertCost(c) < 2)
+  const pool = off ? usable : not4k.some(isAlive) ? not4k : usable
   return [...pool].sort((a, b) =>
     Number(!isAlive(a)) - Number(!isAlive(b)) ||
     // With the picture never re-encoded, the cheapest thing to play wins before the sharpest: a 720p H.264 is

@@ -94,9 +94,14 @@ export function setTranscodeProfile(profile: string) {
 
 /** Never re-encode the picture ('off'), or convert when a file needs it ('auto'). */
 export function setTranscodeMode(mode: string) {
-  put('transcode_mode', String(mode).toLowerCase() === 'off' ? 'off' : 'auto')
+  const want = String(mode).toLowerCase() === 'off' ? 'off' : 'auto'
+  put('transcode_mode', want)
+  config.transcode.mode = want
   loadSettings()
 }
+
+/** Whether the picture may never be re-encoded: then a release that needs it is never downloaded either. */
+export const copyOnly = () => config.transcode.mode === 'off'
 
 /** Whether the GPU's encoder may be used when the container can see one. */
 export function setTranscodeHardware(on: boolean) {

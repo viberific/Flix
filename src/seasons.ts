@@ -51,6 +51,8 @@ let version = 0
 let cache: { v: number; map: Map<number, Map<number, SeasonSource>> } | null = null
 /** Call whenever releases, sync state or what we know about a show change, so the next listing recomputes. */
 export const catalogChanged = () => { version++ }
+/** The catalog's revision: anything caching an answer about releases keys on this and recomputes when it moves. */
+export const catalogVersion = () => version
 
 /** True when a show is in English: TMDB's original language, or TVmaze's. A show whose language nobody could tell is let through. */
 export const isEnglish = (lang: string | null | undefined) => !lang || /^(en|english)$/i.test(lang.trim())

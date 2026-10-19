@@ -47,7 +47,11 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
       const groups = new Map<string, Row[]>()
       for (const r of rows) if (!r.is_pack && r.season === season && r.episode !== null) (groups.get(r.label) ?? groups.set(r.label, []).get(r.label)!).push(r)
       for (const g of groups.values()) {
-        const pick = pickRelease(g)!
+        // No pick means every release of this episode would have to be re-encoded, and Flix is set never to
+        // convert the picture: it is left out rather than offered as a tile that cannot play. The show is hidden
+        // entirely by unplayableSeries() when it has nothing playable at all.
+        const pick = pickRelease(g)
+        if (!pick) continue
         add({ season, episode: pick.episode, label: pick.label, isPack: false, torrentId: pick.torrent_id, quality: qualityLabel(pick.resolution), available: isAlive(pick), onServer: pick.on_server })
       }
       continue

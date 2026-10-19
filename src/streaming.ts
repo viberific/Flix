@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { db, now } from './db.ts'
 import { config } from './config.ts'
+import { convertCost } from './pick.ts'
+import { copyOnly } from './settings.ts'
 import { qb, type QbFile } from './qb.ts'
 import { fetchTorrentFile } from './btn/client.ts'
 import { isVideo, parseEpisodeTag } from './btn/parse.ts'
@@ -89,6 +91,11 @@ function bytesToFetch(rel: Release, fileIndex?: number, label?: string): number 
 export async function startPlayback(userId: number, torrentId: number, fileIndex?: number, opts: { episodeLabel?: string; auto?: boolean } = {}) {
   const rel = getRelease(torrentId)
   if (!rel) throw new Error('Unknown release')
+  // The last gate before any byte is fetched: in copy-only mode a release whose picture would have to be re-encoded
+  // is refused here too, so a stale link, a pack or a warm-ahead fetch cannot slip one past the picker.
+  if (copyOnly() && convertCost(rel as any) !== 0) {
+    throw new Error('This copy would have to be converted, and Flix is set never to convert the picture, so it is not downloaded.')
+  }
   let p = adding.get(torrentId)
   if (!p) { p = ensureAdded(rel, opts.auto ? 'auto' : 'flix', bytesToFetch(rel, fileIndex, opts.episodeLabel)).finally(() => adding.delete(torrentId)); adding.set(torrentId, p) }
   await p

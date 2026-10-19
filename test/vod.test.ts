@@ -27,6 +27,11 @@ process.env.PORT = String((raw.address() as any).port)
 process.env.DB_PATH = ':memory:'
 process.env.DATA_DIR = dir
 const tc = await import('../src/transcode.ts')
+// Everything here is about the encode path, which copy-only mode (Flix's default) refuses on purpose: a picture that
+// has to be converted is not played until someone allows it. These tests drive the encoder itself, so allow it.
+// Imported after PORT is set above, because config.ts reads it once on load.
+const { config } = await import('../src/config.ts')
+config.transcode.mode = 'auto'
 
 after(() => { raw.close(); tc.stopJobsFor(7) })
 

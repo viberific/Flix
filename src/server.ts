@@ -22,6 +22,7 @@ import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
+import { unplayableSeries } from './candidates.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
@@ -172,7 +173,10 @@ const seriesCols = `series_id AS id, series AS name, ${artPathSql('series_poster
 const notFound = (m = 'Series not found') => Object.assign(new Error(m), { statusCode: 404 })
 
 /** Only shows whose first season is complete are listed; see seasons.ts. */
-const isListed = (r: { id: number }) => listable().has(r.id)
+const hidden = () => unplayableSeries()
+// A show with nothing that plays without converting is not listed while Flix is set never to convert the picture:
+// a poster leading to a dead end is worse than no poster. See unplayableSeries().
+const isListed = (r: { id: number }) => listable().has(r.id) && !hidden().has(r.id)
 
 /** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
 const ensureSynced = (id: number) => syncSeries(id).then(() => ensureNet(id)).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })

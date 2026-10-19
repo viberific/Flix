@@ -41,15 +41,24 @@ const { pickRelease, qualityLabel } = await import('../src/pick.ts')
 const { youtubeUrl } = await import('../src/catalog.ts')
 const c = (id: number, resolution: string, o: any = {}) => ({ torrent_id: id, resolution, codec: 'H.264', seeders: 10, size: 1, on_server: false, ...o })
 
-test('source pick: 1080p first, then 720p, then the rest; 4K only as a last resort', () => {
-  assert.equal(pickRelease([c(1, '2160p'), c(2, '1080p'), c(3, '720p')])!.torrent_id, 2)
-  assert.equal(pickRelease([c(1, '2160p'), c(3, '720p')])!.torrent_id, 3) // no 1080p -> 720p, not 4K
-  assert.equal(pickRelease([c(1, '2160p'), c(4, 'SD')])!.torrent_id, 4) // even SD beats 4K
-  assert.equal(pickRelease([c(1, '2160p'), c(3, '720p', { seeders: 0 })])!.torrent_id, 1) // nothing else alive -> 4K
-  assert.equal(pickRelease([c(1, '2160p'), c(2, '1080p', { seeders: 0 })])!.torrent_id, 1) // dead 1080p is not "found"
-  assert.equal(pickRelease([c(2, '1080p', { seeders: 0, on_server: true }), c(1, '2160p')])!.torrent_id, 2) // already on disk counts as alive
-  assert.equal(pickRelease([c(3, '720p'), c(4, 'SD')])!.torrent_id, 3) // last resort
-  assert.equal(pickRelease([]), undefined)
+test('source pick: 1080p first, then 720p, then the rest; 4K only as a last resort', async () => {
+  const { config } = await import('../src/config.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'auto' // 4K is only ever a fallback when conversions are allowed at all
+  try {
+    assert.equal(pickRelease([c(1, '2160p'), c(2, '1080p'), c(3, '720p')])!.torrent_id, 2)
+    assert.equal(pickRelease([c(1, '2160p'), c(3, '720p')])!.torrent_id, 3) // no 1080p -> 720p, not 4K
+    assert.equal(pickRelease([c(1, '2160p'), c(4, 'SD')])!.torrent_id, 4) // even SD beats 4K
+    assert.equal(pickRelease([c(1, '2160p'), c(3, '720p', { seeders: 0 })])!.torrent_id, 1) // nothing else alive -> 4K
+    assert.equal(pickRelease([c(1, '2160p'), c(2, '1080p', { seeders: 0 })])!.torrent_id, 1) // dead 1080p is not "found"
+    assert.equal(pickRelease([c(2, '1080p', { seeders: 0, on_server: true }), c(1, '2160p')])!.torrent_id, 2) // already on disk counts as alive
+    assert.equal(pickRelease([c(3, '720p'), c(4, 'SD')])!.torrent_id, 3) // last resort
+    assert.equal(pickRelease([]), undefined)
+  } finally { config.transcode.mode = was }
+  // Copy-only (the default) never takes 4K, not even when it is the only living release: that download is a
+  // picture the box caps at 1080p anyway, and downloading it is exactly what this mode exists to prevent.
+  assert.equal(pickRelease([c(1, '2160p'), c(3, '720p', { seeders: 0 })])!.torrent_id, 3)
+  assert.equal(pickRelease([c(1, '2160p')]), undefined)
 })
 
 test('source pick tie-breaks: on-server, then H.264, then seeders', () => {
@@ -768,4 +777,43 @@ test('nothing above 1080p is chosen: 4K is never picked while anything else is a
   assert.equal(convertCost(hd), 0)
   // A 4K H.264 release is still 4K: the box streams 1080p, so it is not worth the extra download.
   assert.equal(convertCost({ resolution: '2160p', codec: 'H.264' }), 2)
+})
+
+test('copy-only: nothing that needs an encode is picked, so nothing is downloaded', async () => {
+  const { pickRelease } = await import('../src/pick.ts')
+  const { config } = await import('../src/config.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'off'
+  try {
+    const hevc = { torrent_id: 1, resolution: '1080p', codec: 'H.265', seeders: 90, size: 8e9, on_server: false }
+    const h264 = { torrent_id: 2, resolution: '720p', codec: 'H.264', seeders: 2, size: 2e9, on_server: false }
+    assert.equal(pickRelease([hevc])?.torrent_id, undefined, 'an episode with only HEVC has no source at all')
+    assert.equal(pickRelease([hevc, h264])?.torrent_id, 2, 'the H.264 copy is chosen over the better-seeded HEVC')
+    const xvid = { torrent_id: 3, resolution: 'SD', codec: 'XViD', seeders: 99, size: 1e9, on_server: false }
+    assert.equal(pickRelease([xvid, hevc]), undefined, 'XViD and HEVC both need an encode, so neither is downloaded')
+  } finally { config.transcode.mode = was }
+  // With conversions allowed, the old preference returns: the sharpest release wins again.
+  config.transcode.mode = 'auto'
+  try {
+    const hevc = { torrent_id: 1, resolution: '1080p', codec: 'H.265', seeders: 90, size: 8e9, on_server: false }
+    const h264 = { torrent_id: 2, resolution: '720p', codec: 'H.264', seeders: 2, size: 2e9, on_server: false }
+    assert.equal(pickRelease([hevc, h264])?.torrent_id, 1, 'auto mode still takes the 1080p')
+  } finally { config.transcode.mode = was }
+})
+
+test('copy-only is the default, so a fresh install never downloads something it must convert', async () => {
+  const { config } = await import('../src/config.ts')
+  assert.equal(config.transcode.mode, 'off')
+})
+
+test('an episode with no copy-playable release is left out, not crashed on', async () => {
+  const { config } = await import('../src/config.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'off'
+  try {
+    const { pickRelease } = await import('../src/pick.ts')
+    // episodes.ts relies on this being undefined rather than throwing, which it guards for.
+    assert.equal(pickRelease([{ torrent_id: 9, resolution: '1080p', codec: 'H.265', seeders: 5, size: 1, on_server: false }]), undefined)
+    assert.ok(pickRelease([{ torrent_id: 10, resolution: '1080p', codec: 'H.264', seeders: 1, size: 1, on_server: false }]))
+  } finally { config.transcode.mode = was }
 })

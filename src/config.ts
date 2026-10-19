@@ -97,7 +97,9 @@ export const config = {
      * box can copy (HEVC mostly). off: never re-encode the picture -- copy it into MP4, or refuse and say so. That
      * is what makes playback cost no CPU at all, at the price of the few releases no copy can serve.
      */
-    mode: (env.TRANSCODE_MODE === 'off' ? 'off' : 'auto') as 'auto' | 'off',
+    // Copy-only by default: a release whose picture would have to be re-encoded is never downloaded in the first
+    // place (pick.ts), and what is downloaded plays as it is or is repacked. TRANSCODE_MODE=auto allows conversions.
+    mode: (env.TRANSCODE_MODE === 'auto' ? 'auto' : 'off') as 'auto' | 'off',
     /** Use the GPU's encoder (Quick Sync / VAAPI) when the container can see /dev/dri. Falls back to libx264 on its own. */
     hardware: env.TRANSCODE_HARDWARE !== 'false',
     /**
