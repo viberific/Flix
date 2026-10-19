@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { config } from './config.ts'
-import { hitch } from './diag.ts'
+import { hitch, diag } from './diag.ts'
+import { videoEncode, notePace } from './encode.ts'
 
 const execFileP = promisify(execFile)
 export const rawUrl = (t: number, f: number) => `http://127.0.0.1:${config.port}/api/stream/${t}/${f}/raw?k=${config.internalKey}`
@@ -75,7 +76,7 @@ export async function probe(torrentId: number, fileIndex: number): Promise<Probe
 interface Run { proc: ChildProcess; from: number; stopAt: number; exited: boolean }
 /** A converted copy that is served as a complete playlist from the first request, with ffmpeg started wherever the viewer actually is. */
 interface Vod { count: number; duration: number; start: (from: number, stopAt: number) => string[]; run: Run | null; done: Set<number> }
-interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod }
+interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
 
@@ -84,6 +85,23 @@ export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = fa
   return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}${hdr ? '-hdr' : ''}`)
 }
 const jobKey = (t: number, f: number, a = 0, hdr = false) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}`
+
+/**
+ * Make room for one more encode. On this box two at once is the point where each still keeps up; a third makes
+ * all of them late, which the viewer sees as a hitch in every stream rather than one. The job nobody has touched
+ * for longest goes first — its files are regenerated when it is asked for again, so nothing is lost.
+ */
+function enforceJobCap() {
+  const cap = Math.max(1, config.transcode.maxJobs)
+  while (jobs.size >= cap) {
+    let oldestKey: string | null = null
+    let oldest = Infinity
+    for (const [k, job] of jobs) if (job.touched < oldest) { oldest = job.touched; oldestKey = k }
+    if (!oldestKey) break
+    hitch('encode', 'closed a conversion to stay within the job cap', { cap, closed: oldestKey, reason: 'a third encode would make every stream late' })
+    stopJob(oldestKey)
+  }
+}
 
 function stopJob(key: string) {
   const j = jobs.get(key)
@@ -114,20 +132,9 @@ export async function canToneMap(): Promise<boolean> {
 export const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
 
 /**
- * x264 settings sized to the picture: 1080p gets room for grain and fine detail, 720p less, everything capped so a
- * phone on a home connection is not pulling 15 Mbit/s for a show it plays on a 6-inch screen. CRF does the work and
- * maxrate only stops the expensive frames (confetti, rain, a pan across a forest) from spiking.
+ * The encoder flags live in encode.ts now, which uses the GPU's encoder when the container can see one and
+ * otherwise x264 at the profile saved in settings (economy by default: measured to keep up with two jobs at once).
  */
-function x264(height?: number, fps?: number) {
-  const h = (height ?? 720) >= 1080 ? 1080 : (height ?? 720) >= 720 ? 720 : 480
-  const crf = h === 1080 ? 20 : h === 720 ? 21 : 22
-  const rate = h === 1080 ? (fps && fps > 40 ? '9000k' : '6500k') : h === 720 ? '3500k' : '1800k'
-  const buf = h === 1080 ? (fps && fps > 40 ? '18000k' : '13000k') : h === 720 ? '7000k' : '3600k'
-  // veryfast: on a small box the encoder has to stay well ahead of the player (and of a seek), which matters more than the last few percent of file size.
-  return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-maxrate', rate, '-bufsize', buf,
-    '-profile:v', 'high', '-level', h === 1080 ? '4.1' : '4.0', '-pix_fmt', 'yuv420p', '-sc_threshold', '0',
-    '-force_key_frames', `expr:gte(t,n_forced*${SEG})`]
-}
 
 /** Length of one piece of the converted video. Short, so a seek only has to fetch a small piece before it plays. */
 export const SEG = 4
@@ -158,9 +165,15 @@ function startRun(j: Job, n: number) {
   scanDone(j)
   let stopAt = n + 1
   while (stopAt < v.count && !v.done.has(stopAt)) stopAt++ // stop where the next piece already exists instead of encoding it again
+  const started = Date.now()
   const proc = spawn('ffmpeg', v.start(n, stopAt >= v.count ? Infinity : stopAt), { stdio: ['ignore', 'ignore', 'inherit'] })
   const run: Run = { proc, from: n, stopAt: stopAt >= v.count ? Infinity : stopAt, exited: false }
-  proc.on('exit', () => { run.exited = true; try { scanDone(j) } catch { /* folder already removed */ } })
+  proc.on('exit', () => {
+    run.exited = true
+    try { scanDone(j) } catch { /* folder already removed */ }
+    // Real timings, so a profile that cannot keep up shows up in the log instead of being felt as a hitch.
+    notePace('segment', Date.now() - started, ((stopAt >= v.count ? v.count : stopAt) - n) * SEG * 1000)
+  })
   v.run = run
 }
 
@@ -235,23 +248,27 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     const input = ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = ['-c:a', 'aac', '-ac', '2', '-b:a', '160k']
+    // Decided once per file: the encoder (GPU or CPU) and the profile do not change while it plays.
+    const enc = !hdr && !copy ? await videoEncode(outH, p.fps, filters, SEG) : null
+    if (enc) diag('encode', `converting with ${enc.encoder} at ${enc.profile}`, { torrentId, fileIndex, height: outH })
     if (!hdr && !copy && p.duration && p.duration > 0) {
       const count = Math.max(1, Math.ceil(p.duration / SEG))
-      const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...input, ...maps,
-        ...x264(outH, p.fps), ...(filters.length ? ['-vf', filters.join(',')] : []), ...audioOut,
+      const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...enc!.inputArgs, ...input, ...maps,
+        ...enc!.codecArgs, ...enc!.filterArgs, ...audioOut,
         ...(Number.isFinite(stopAt) ? ['-t', String((stopAt - from) * SEG)] : []),
         // The same clock whichever piece ffmpeg began at, so pieces made by different runs join without a jump.
         '-muxdelay', '0', '-muxpreload', '0', '-output_ts_offset', String(from * SEG),
         '-f', 'hls', '-hls_time', String(SEG), '-hls_list_size', '0', '-start_number', String(from),
         '-hls_flags', 'independent_segments+temp_file', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, `enc${from}.m3u8`)]
-      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), vod: { count, duration: p.duration, start, run: null, done: new Set() } }
+      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, duration: p.duration, start, run: null, done: new Set() } }
+      enforceJobCap()
       jobs.set(key, j)
     } else {
-      const args = ['-hide_banner', '-loglevel', 'error', ...input, ...maps,
+      const args = ['-hide_banner', '-loglevel', 'error', ...(enc?.inputArgs ?? []), ...input, ...maps,
         ...(hdr
           ? ['-c:v', 'copy', '-tag:v', 'hvc1',
             '-color_primaries', 'bt2020', '-color_trc', p.hdrKind === 'hlg' ? 'arib-std-b67' : 'smpte2084', '-colorspace', 'bt2020nc']
-          : copy ? ['-c:v', 'copy'] : [...x264(outH, p.fps), ...(filters.length ? ['-vf', filters.join(',')] : [])]),
+          : copy ? ['-c:v', 'copy'] : [...enc!.codecArgs, ...enc!.filterArgs]),
         ...audioOut,
         // HDR is copied into fragmented MP4 segments, which is what the player's HEVC support expects; SDR stays in TS.
         ...(hdr
@@ -270,7 +287,8 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
         throw new Error('Timed out starting transcode')
       })()
       ready.catch(() => stopJob(key))
-      j = { proc, dir, idle: setTimeout(() => {}, 0), torrentId, ready }
+      j = { proc, dir, idle: setTimeout(() => {}, 0), torrentId, ready, touched: Date.now() }
+      enforceJobCap()
       jobs.set(key, j)
       proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
     }

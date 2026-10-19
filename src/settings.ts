@@ -6,6 +6,8 @@ const envBtnKey = config.btn.apiKey
 const envQb = { ...config.qb }
 const envTmdbKey = config.tmdb.apiKey
 const envOmdbKey = config.omdb.apiKey
+const envTranscodeProfile = config.transcode.profile
+const envTranscodeHardware = config.transcode.hardware
 
 const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value
 const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v)
@@ -18,6 +20,8 @@ export function loadSettings() {
   config.qb.url = get('qb_url') ?? envQb.url
   config.qb.user = get('qb_user') ?? envQb.user
   config.qb.pass = get('qb_pass') ?? envQb.pass
+  config.transcode.profile = (get('transcode_profile') as Profile) || envTranscodeProfile
+  config.transcode.hardware = (get('transcode_hardware') ?? (envTranscodeHardware ? 'on' : 'off')) !== 'off'
 }
 
 export function setBtnApiKey(key: string) {
@@ -76,5 +80,31 @@ export function clearQb() {
 export function qbStatus() {
   return { url: config.qb.url, user: config.qb.user, passwordSet: !!config.qb.pass, source: get('qb_url') !== undefined ? 'settings' : 'environment' }
 }
-
 loadSettings()
+
+const PROFILES = ['economy', 'balanced', 'best'] as const
+export type Profile = (typeof PROFILES)[number]
+
+/** Save the encoder quality. Anything unrecognised falls back to economy rather than being stored. */
+export function setTranscodeProfile(profile: string) {
+  const p = String(profile).toLowerCase()
+  put('transcode_profile', (PROFILES as readonly string[]).includes(p) ? p : 'economy')
+  loadSettings()
+}
+
+/** Whether the GPU's encoder may be used when the container can see one. */
+export function setTranscodeHardware(on: boolean) {
+  put('transcode_hardware', on ? 'on' : 'off')
+  loadSettings()
+}
+
+/** What the Settings page shows: the saved profile, whether hardware is allowed, and both origins. */
+export function transcodeStatus() {
+  return {
+    profile: config.transcode.profile,
+    source: get('transcode_profile') ? 'settings' : 'environment',
+    hardwareAllowed: config.transcode.hardware,
+    hardwareSource: get('transcode_hardware') ? 'settings' : 'environment',
+    maxJobs: config.transcode.maxJobs,
+  }
+}

@@ -11,7 +11,8 @@ import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowe
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
+import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
+import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
@@ -923,7 +924,19 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus() }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus(), transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }))
+app.put('/api/admin/settings/transcode', admin, async (req) => {
+  const b = (req.body as any) ?? {}
+  if (typeof b.profile === 'string') setTranscodeProfile(b.profile)
+  if (typeof b.hardware === 'boolean') setTranscodeHardware(b.hardware)
+  return { transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }
+})
+// Measure the encoder again: the answer changes when compose gains /dev/dri, and that is worth being able to see.
+app.post('/api/admin/settings/transcode/test', admin, async () => {
+  const e = await encoderInfo()
+  const r = await e.retest()
+  return { encoder: r.encoder, hardware: r.encoder !== 'libx264', gpuDevice: e.gpuDevice }
+})
 app.put('/api/admin/settings/btn', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()
   if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })

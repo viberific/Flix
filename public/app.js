@@ -1548,7 +1548,7 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent']]
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent']]
 const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
 
 /** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
@@ -1814,8 +1814,27 @@ function familyPanel(data, root) {
   paint()
 }
 
+/** The encoder section: what the box is actually using, and the one choice that matters — how hard it works. */
+function playbackSection(tc) {
+  if (!tc) return ''
+  const enc = tc.encoder === 'libx264' ? 'this CPU (libx264)' : `${tc.encoder} on the GPU`
+  const rows = [
+    ['economy', 'Economy', 'holds two streams at once on this box (4.8x real time at 1080p)'],
+    ['balanced', 'Balanced', 'the best picture that still holds one stream (3.6x)'],
+    ['best', 'Best', 'needs a faster machine: falls behind real time here (2.2x)'],
+  ]
+  return `<div id="s-playback" class="ssec"><h2 class="stitle2">Playback</h2>
+      <p class="dim" style="max-width:66ch">How hard the box works to convert a file the player cannot take as it is. A file it can play directly is not converted at all, so this only applies to those that are.</p>
+      <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.gpuDevice ? '' : ' — no <code>/dev/dri</code> in this container, so the GPU cannot be used'}${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
+      <form id="tf" class="person"><label class="dim" for="tprofile">Quality</label>
+        <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
+        <label class="dim"><input type="checkbox" id="thw"${tc.hardwareAllowed ? ' checked' : ''}> Use the GPU's encoder when one is available</label>
+        <div class="row-form"><button type="button" class="btn" id="ttest">Test encoder</button></div>
+        <div class="dim" id="tm2" role="status"></div></form></div>`
+}
+
 function settingsPanel(data, root) {
-  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, tc = data.transcode
   const paint = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<div id="s-btn" class="ssec"><h2 class="stitle2">BroadcasTheNet</h2>
@@ -1836,7 +1855,7 @@ function settingsPanel(data, root) {
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="tm" role="status"></div></form>
-      </div><div id="s-qb" class="ssec"><h2 class="stitle2">qBittorrent</h2>
+      </div>${playbackSection(tc)}<div id="s-qb" class="ssec"><h2 class="stitle2">qBittorrent</h2>
       <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
       <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
         <div class="row-form"><input class="field" name="url" value="${esc(qbs.url)}" placeholder="http://127.0.0.1:8080" autocomplete="off" required>
@@ -1847,6 +1866,22 @@ function settingsPanel(data, root) {
     wire()
   }
   const wire = () => {
+    const pmsg = (t) => { const el = $('#tm2'); if (el) el.textContent = t }
+    const ps = $('#tprofile')
+    if (ps) ps.onchange = async () => {
+      pmsg('Saving…')
+      try { tc = (await api('/api/admin/settings/transcode', { profile: ps.value }, 'PUT')).transcode; paint(); $('#tm2').textContent = 'Saved. Takes effect from the next thing you play.' } catch (err) { pmsg(err.message) }
+    }
+    const hw = $('#thw')
+    if (hw) hw.onchange = async () => {
+      pmsg('Saving…')
+      try { tc = (await api('/api/admin/settings/transcode', { hardware: hw.checked }, 'PUT')).transcode; paint(); $('#tm2').textContent = 'Saved.' } catch (err) { pmsg(err.message) }
+    }
+    const tt = $('#ttest')
+    if (tt) tt.onclick = async () => {
+      pmsg('Testing…')
+      try { const r = await api('/api/admin/settings/transcode/test', {}); pmsg(r.hardware ? `Using ${r.encoder} on ${r.gpuDevice}.` : 'No usable GPU encoder: converting on the CPU.') } catch (err) { pmsg(err.message) }
+    }
     const msg = (t) => { $('#bm').textContent = t }
     $('#bf').onsubmit = async (e) => {
       e.preventDefault(); const key = new FormData(e.target).get('key').trim()

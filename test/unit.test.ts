@@ -320,14 +320,14 @@ test('a show has one primary genre: the most specific it has', () => {
 const row = (id: number, genres: string[], latest = id) => ({ id, name: `S${id}`, poster: `/p${id}`, banner: null, genres, latest })
 const info = (streamer: string | null, first_air: string, trending: number | null = null, popularity = 10) => ({ streamer, first_air, notable: true, popularity, trending })
 
-test('home: Disney+ and the other services, ten to a full row, a short row for a thin service, and Netflix nowhere', () => {
+test('home: the services, ten to a full row, a short row for a thin service, and Netflix and Disney+ nowhere', () => {
   const rows: any[] = [], net = new Map<number, any>()
   let id = 1
   const add = (n: number, streamer: string | null, genre: string, trending = false) => {
     for (let i = 0; i < n; i++, id++) { rows.push(row(id, [genre])); net.set(id, info(streamer, `20${String(10 + (id % 14))}-01-01`, trending ? id : null, id)) }
   }
   add(12, 'HBO', 'Crime', true)       // trending, on HBO
-  add(10, 'Disney+', 'Animation')
+  add(10, 'Disney+', 'Animation')      // kept in the library (searches, lists, plays) but not on the home screen
   add(4, 'Crave', 'Comedy')            // too few for a row of ten: it gets a short row of its own instead
   add(22, 'Netflix', 'Drama')          // where they watch anyway: never on the home screen
   add(15, null, 'Drama')               // on none of the services: never on the home screen
@@ -336,8 +336,9 @@ test('home: Disney+ and the other services, ten to a full row, a short row for a
   for (const s of sections.filter((x) => x.title !== 'New on Crave')) assert.equal(s.series.length, ROW_SIZE, `${s.title} has ${s.series.length}`)
   const titles = sections.map((s) => s.title)
   assert.equal(titles[0], 'Trending shows')
-  assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
+  assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Crave'), 'rows follow the services\' order')
   assert.ok(!titles.includes('New on Netflix'), 'Netflix is not on the home screen')
+  assert.ok(!titles.includes('New on Disney+'), 'Disney+ is not on the home screen either')
   assert.ok(!titles.includes('New on Showcase') && !titles.includes('New on Apple TV+'), 'a service with no shows has no row')
   const crave = sections.find((s) => s.title === 'New on Crave')
   assert.equal(crave?.series.length, 4, 'four Crave shows make a short row, not no row at all')
@@ -345,6 +346,8 @@ test('home: Disney+ and the other services, ten to a full row, a short row for a
   // A hidden service is off every row, the billboard included, but the rest of the library still fills the genre rows.
   const onHome = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
   assert.ok(onHome.every((i) => net.get(i)!.streamer !== 'Netflix'), 'no Netflix show on any row')
+  assert.ok(!sections.some((s) => s.title.startsWith('New on Disney+')), 'no Disney+ row')
+  assert.ok(onHome.every((i) => net.get(i)!.streamer !== 'Disney+'), 'no Disney+ show on a service row or the billboard')
   const onService = [hero!.id, ...sections.filter((s) => s.title === 'Trending shows' || s.title.startsWith('New on ')).flatMap((s) => s.series.map((r) => r.id))]
   assert.ok(onService.every((i) => net.get(i)!.streamer), 'the billboard, trending and service rows are only shows on a service')
 })

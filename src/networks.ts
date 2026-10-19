@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS trending_tv (tmdb_id INTEGER PRIMARY KEY, rank INTEGE
 `)
 
 /** The services the home screen is made of, in the order of its rows. A show on none of them is not on the home screen. */
-export const STREAMERS = ['HBO', 'Crave', 'Showcase', 'Disney+', 'Apple TV+', 'Paramount+'] as const
+export const STREAMERS = ['HBO', 'Crave', 'Showcase', 'Apple TV+', 'Paramount+'] as const
 const PATTERNS: [string, RegExp][] = [['HBO', /\bhbo\b|^max$/i], ['Crave', /\bcrave\b/i], ['Showcase', /\bshowcase\b/i], ['Netflix', /netflix/i],
   // Disney brands its shows across several channels, and TMDB files most Disney+ series under "Disney Channel"; Hulu and
   // National Geographic are Disney's too. Matching the family, not just the words "Disney+", is what puts them on the row.
@@ -21,9 +21,10 @@ const PATTERNS: [string, RegExp][] = [['HBO', /\bhbo\b|^max$/i], ['Crave', /\bcr
 
 /**
  * Services Flix recognises and keeps in the library, but never puts on the home screen: the person watches these in the
- * service's own app, and Flix is there to supplement them. Netflix is one. Its shows still search, list and play.
+ * service's own app, and Flix is there to supplement them. Netflix and Disney+ are those. Their shows still search,
+ * list and play; they just do not get a row or a billboard of their own.
  */
-export const HIDDEN_STREAMERS: readonly string[] = ['Netflix']
+export const HIDDEN_STREAMERS: readonly string[] = ['Netflix', 'Disney+']
 /** True for a show on a service the home screen leaves out (see HIDDEN_STREAMERS). */
 export function isHiddenService(streamer?: string | null): boolean {
   return !!streamer && HIDDEN_STREAMERS.includes(streamer)
