@@ -86,19 +86,30 @@ export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = fa
 }
 const jobKey = (t: number, f: number, a = 0, hdr = false) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}`
 
+/** A job touched this recently is being watched right now, and is never closed to make room for another. */
+const ACTIVE_MS = 90_000
+
 /**
- * Make room for one more encode. On this box two at once is the point where each still keeps up; a third makes
- * all of them late, which the viewer sees as a hitch in every stream rather than one. The job nobody has touched
- * for longest goes first — its files are regenerated when it is asked for again, so nothing is lost.
+ * Make room for one more encode. The cap exists because a second full-quality encode on four cores half the
+ * speed of both, which the viewer sees as a hitch. Room is made only by closing a job nobody is watching —
+ * untouched for ACTIVE_MS — so the cap can never take away the stream in front of someone. If every job is
+ * live, the new one starts anyway: a second screen slows the first rather than stopping it.
  */
 function enforceJobCap() {
   const cap = Math.max(1, config.transcode.maxJobs)
+  const now = Date.now()
   while (jobs.size >= cap) {
     let oldestKey: string | null = null
     let oldest = Infinity
-    for (const [k, job] of jobs) if (job.touched < oldest) { oldest = job.touched; oldestKey = k }
-    if (!oldestKey) break
-    hitch('encode', 'closed a conversion to stay within the job cap', { cap, closed: oldestKey, reason: 'a third encode would make every stream late' })
+    for (const [k, job] of jobs) {
+      if (now - job.touched < ACTIVE_MS) continue
+      if (job.touched < oldest) { oldest = job.touched; oldestKey = k }
+    }
+    if (!oldestKey) {
+      hitch('encode', 'starting a conversion over the job cap: every running job is in use', { cap, running: jobs.size })
+      return
+    }
+    hitch('encode', 'closed an idle conversion to stay within the job cap', { cap, closed: oldestKey, idleSec: Math.round((now - oldest) / 1000) })
     stopJob(oldestKey)
   }
 }

@@ -86,14 +86,20 @@ export const config = {
   /**
    * How hard the encoder is allowed to work. Measured on the box (Intel N95, 4 cores, 1080p24):
    * economy 4.8x real time, balanced 3.6x, best 2.2x — per job, so two at once roughly halve it.
-   * economy is the default because two streams at once is the case that used to fall behind.
+   * balanced is the default: one screen at a time, where 3.6x keeps the old picture quality and still
+   * finishes ahead of the player. Two streams at once was what fell behind, and that is the job cap's
+   * problem now, not the preset's. economy is for a box doing something else heavy at the same time.
    */
   transcode: {
-    profile: (env.TRANSCODE_PROFILE ?? 'economy') as 'economy' | 'balanced' | 'best',
+    profile: (env.TRANSCODE_PROFILE ?? 'balanced') as 'economy' | 'balanced' | 'best',
     /** Use the GPU's encoder (Quick Sync / VAAPI) when the container can see /dev/dri. Falls back to libx264 on its own. */
     hardware: env.TRANSCODE_HARDWARE !== 'false',
-    /** Encodes allowed at once. More than this on four cores and none of them keep up with real time. */
-    maxJobs: num('TRANSCODE_MAX_JOBS', 2),
+    /**
+     * Encodes allowed at once. One, because this box serves one screen: a second full-quality job
+     * halves the speed of both on four cores. A second client is never turned away -- enforceJobCap
+     * only closes an idle job, never the stream someone is watching.
+     */
+    maxJobs: num('TRANSCODE_MAX_JOBS', 1),
   },
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
   /** A torrent added less than this long ago is never swept (its first viewer is still being recorded). */

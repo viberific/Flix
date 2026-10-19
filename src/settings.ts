@@ -85,10 +85,10 @@ loadSettings()
 const PROFILES = ['economy', 'balanced', 'best'] as const
 export type Profile = (typeof PROFILES)[number]
 
-/** Save the encoder quality. Anything unrecognised falls back to economy rather than being stored. */
+/** Save the encoder quality. Anything unrecognised keeps the default (balanced) rather than being stored. */
 export function setTranscodeProfile(profile: string) {
   const p = String(profile).toLowerCase()
-  put('transcode_profile', (PROFILES as readonly string[]).includes(p) ? p : 'economy')
+  put('transcode_profile', (PROFILES as readonly string[]).includes(p) ? p : 'balanced')
   loadSettings()
 }
 

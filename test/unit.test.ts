@@ -723,3 +723,22 @@ test('storage forecast: days left at the recent pace, none when flat', async () 
   assert.equal(fullInDays([[0, 5e9], [14 * D, 5e9]], 10e9), null)
   assert.equal(fullInDays([[0, 0], [2 * D, 2e9]], 10e9), null, 'too little history')
 })
+
+test('one screen: the better preset is the default and only one encode runs at a time', async () => {
+  // Brian runs one television, so the box can afford balanced (veryfast, crf 20, 6500k) rather than economy.
+  assert.equal(config.transcode.profile, 'balanced', 'balanced is the default picture quality')
+  assert.equal(config.transcode.maxJobs, 1, 'one encode at a time on four cores')
+})
+
+test('nothing above 1080p is ever served or saved', async () => {
+  const { tierOf } = await import('../src/pick.ts')
+  assert.equal(tierOf('2160p'), 3, '4K is the last resort, never preferred')
+  assert.equal(tierOf('1080p'), 0)
+  // The gates themselves: direct play and HDR passthrough both require <= 1080, and the encode clamps to 1080.
+  const { readFileSync } = await import('node:fs')
+  const t = readFileSync(new URL('../src/transcode.ts', import.meta.url), 'utf8')
+  assert.match(t, /\(height \?\? 0\) <= 1080/, 'direct play refuses above 1080p')
+  assert.match(t, /Math\.min\(p\.height \?\? 720, 1080\)/, 'the HLS output is clamped to 1080p')
+  const o = readFileSync(new URL('../src/offline.ts', import.meta.url), 'utf8')
+  assert.match(o, /scale=-2:1080/, 'the saved MP4 is scaled to 1080p')
+})
