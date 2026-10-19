@@ -817,3 +817,24 @@ test('an episode with no copy-playable release is left out, not crashed on', asy
     assert.ok(pickRelease([{ torrent_id: 10, resolution: '1080p', codec: 'H.264', seeders: 1, size: 1, on_server: false }]))
   } finally { config.transcode.mode = was }
 })
+
+test('a tile that cannot play says why, instead of going dead', async () => {
+  const { config } = await import('../src/config.ts')
+  const { needsEncode } = await import('../src/transcode.ts')
+  const { readFileSync } = await import('node:fs')
+  const was = config.transcode.mode
+  config.transcode.mode = 'off'
+  try {
+    // A picture that would have to be re-encoded, in a mode whose whole point is not to.
+    assert.equal(needsEncode({ direct: false, hdr: false, copyVideo: false } as any), true)
+    // And one that only needs its container changed still plays: that is a copy, not a conversion.
+    assert.equal(needsEncode({ direct: false, hdr: false, copyVideo: true } as any), false)
+  } finally { config.transcode.mode = was }
+  // The server answers 'convert' rather than an error, and the player turns that into a line the viewer can tap.
+  // Both halves are asserted because either one alone leaves a dead screen: a reason nobody renders.
+  const server = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')
+  assert.match(server, /mode: 'convert', needsConvert: true/)
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  assert.match(app, /info\.mode === 'convert'/)
+  assert.match(app, /allow it for this episode/)
+})
