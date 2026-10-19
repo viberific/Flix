@@ -64,15 +64,22 @@ export function setPin(userId: number, pin: string | null) {
   if (pin !== null && !/^\d{4,8}$/.test(pin)) throw Object.assign(new Error('A PIN is 4 to 8 digits'), { statusCode: 400 })
   db.prepare('UPDATE users SET pin_hash = ? WHERE id = ?').run(pin === null ? null : hashPassword(pin), userId)
 }
-const pinFails = new Map<number, number[]>()
-/** True when there is no PIN, or this one is right. Five wrong tries in ten minutes locks the profile for the rest of that window. */
+const PIN_WINDOW_MS = 600_000
+const PIN_TRIES = 5
+/** True when there is no PIN, or this one is right. Five wrong tries in ten minutes locks the profile for the rest of that
+ *  window, and the record of them is on disk: a restart must not hand somebody a fresh five tries. */
 export function pinOk(userId: number, pin: string | undefined): boolean | 'locked' {
   const row = db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(userId) as any
   if (!row?.pin_hash) return true
-  const recent = (pinFails.get(userId) ?? []).filter((t) => t > Date.now() - 600_000)
-  if (recent.length >= 5) return 'locked'
-  if (typeof pin === 'string' && /^\d{4,8}$/.test(pin) && verifyPassword(pin, row.pin_hash)) { pinFails.delete(userId); return true }
-  pinFails.set(userId, [...recent, Date.now()])
+  const since = Date.now() - PIN_WINDOW_MS
+  db.prepare('DELETE FROM pin_fails WHERE at <= ?').run(since) // old tries go as they are read, so the table stays small
+  const recent = (db.prepare('SELECT COUNT(*) AS n FROM pin_fails WHERE user_id = ? AND at > ?').get(userId, since) as any).n as number
+  if (recent >= PIN_TRIES) return 'locked'
+  if (typeof pin === 'string' && /^\d{4,8}$/.test(pin) && verifyPassword(pin, row.pin_hash)) {
+    db.prepare('DELETE FROM pin_fails WHERE user_id = ?').run(userId)
+    return true
+  }
+  db.prepare('INSERT INTO pin_fails VALUES (?,?)').run(userId, Date.now())
   return false
 }
 

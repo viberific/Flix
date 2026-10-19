@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 `)
 try { db.exec('ALTER TABLE users ADD COLUMN pin_hash TEXT') } catch { /* already present */ }
+// Wrong guesses at a profile's PIN, pruned as they go out of date. On disk rather than in memory, so restarting the app
+// does not hand somebody a fresh five tries at a profile they were locked out of.
+db.exec('CREATE TABLE IF NOT EXISTS pin_fails (user_id INTEGER NOT NULL, at INTEGER NOT NULL)')
 // The little creature a person picks for themselves. Null means "no picture": the app shows their initial.
 try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT') } catch { /* already present */ }
 try { db.exec('ALTER TABLE my_list ADD COLUMN seen_at INTEGER') } catch { /* already present */ }
