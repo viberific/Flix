@@ -17,6 +17,7 @@ import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from 
 import { MP4_CARRY, SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, mayEncode, needsEncode, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { buildSprite, spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
+import { creditsAt as measuredCredits, creditsNeedsWork, measureCredits, saveCredits } from './credits.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -541,6 +542,9 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   return {
     mode: direct ? 'direct' : remux ? 'file' : 'hls', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, tvType, seekable: !!seekable,
     castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    // Where the credits begin, measured once in the background when the file finished downloading; null while there is no
+    // measurement, and the player then estimates from the runtime.
+    creditsAt: measuredCredits(+t, +f, p.duration ?? 0),
     hdrUrl, hdrTvUrl: tvHdr, hdrCastUrl: config.lanUrl && tvHdr ? config.lanUrl + tvHdr : null,
     audio: p.audio, chapters: p.chapters,
     subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
@@ -1037,28 +1041,44 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
 })
 
 /**
- * Sprite sheets are made here, on a slow timer, because nothing tells the server when qBittorrent finishes a file: every
- * file's progress is polled, so "the download has completed" is a question asked rather than an event received. A file
- * that has arrived is cut once, one at a time, in the background; one that is still arriving is left for the next pass.
- * Never on a seek -- the request path only ever reads what this has already written.
+ * Sprite sheets and credits markers are made here, on a slow timer, because nothing tells the server when qBittorrent
+ * finishes a file: every file's progress is polled, so "the download has completed" is a question asked rather than an
+ * event received. A file that has arrived is cut once and measured once, one at a time, in the background; one that is
+ * still arriving is left for the next pass. Never on a seek or a play -- the request path only ever reads what this has
+ * already written. Episodes that were on disk before any of this existed want one too, which is why the pass walks every
+ * interest rather than only the download that just finished.
  */
 const spriteTried = new Map<string, number>()
 let spriteBusy = false
+/** How many episodes are measured for credits in one pass. The pass runs every five minutes, so a whole library fills in
+ *  over a few hours and the box never spends its evening decoding one file after another. */
+const CREDITS_PER_PASS = 4
 async function planSprites() {
   if (spriteBusy) return
   spriteBusy = true
   try {
     const rows = db.prepare('SELECT DISTINCT torrent_id, file_index FROM interests').all() as { torrent_id: number; file_index: number }[]
+    let creditsDone = 0
     for (const r of rows) {
-      const key = `${r.torrent_id}:${r.file_index}`
-      if (spriteMeta(r.torrent_id, r.file_index)) continue
-      if ((spriteTried.get(key) ?? 0) >= 2) continue // an episode ffmpeg cannot read is not worth a third go
-      const fi = await fileInfo(r.torrent_id, r.file_index).catch(() => null)
+      const t = r.torrent_id, f = r.file_index, key = `${t}:${f}`
+      const wantSprite = !spriteMeta(t, f) && (spriteTried.get(key) ?? 0) < 2
+      const wantCredits = creditsDone < CREDITS_PER_PASS && creditsNeedsWork(t, f)
+      if (!wantSprite && !wantCredits) continue
+      const fi = await fileInfo(t, f).catch(() => null)
       if (!fi || fi.file.progress < 1) continue // still arriving: next pass
-      spriteTried.set(key, (spriteTried.get(key) ?? 0) + 1)
-      const p = await probe(r.torrent_id, r.file_index).catch(() => null)
-      const source = offlineReadyPath(r.torrent_id, r.file_index) ?? join(fi.layout.savePath, fi.file.name)
-      if (!(await buildSprite(r.torrent_id, r.file_index, source, p?.duration ?? 0))) app.log.warn(`[sprite] no sheet for ${r.torrent_id}/${r.file_index}`)
+      const p = await probe(t, f).catch(() => null) // one probe answers both jobs
+      const source = offlineReadyPath(t, f) ?? join(fi.layout.savePath, fi.file.name)
+      if (wantSprite) {
+        spriteTried.set(key, (spriteTried.get(key) ?? 0) + 1) // an episode ffmpeg cannot read is not worth a third go
+        if (!(await buildSprite(t, f, source, p?.duration ?? 0))) app.log.warn(`[sprite] no sheet for ${t}/${f}`)
+      }
+      // No runtime means no honest answer, so a file that never reported one is left for the pass after this one.
+      if (wantCredits && p?.duration) {
+        creditsDone++
+        const at = await measureCredits(source, p.duration)
+        saveCredits(t, f, at, p.duration)
+        if (at == null) app.log.info(`[credits] no marker for ${t}/${f}; the player estimates from the runtime`)
+      }
     }
   } finally { spriteBusy = false }
 }

@@ -865,10 +865,6 @@ let pendingSeriesNote = null
 
 /** "S01E03" reads as "E03" in a short note, the way it is said out loud; anything else is left alone. */
 const shortEp = (label) => { const m = /^S\d+\s*E(\d+)/i.exec(String(label ?? '')); return m ? `E${m[1]}` : String(label ?? '') }
-// A chapter named for the end of the episode. Whoever made the file names it "Credits", "End Credits" or "Outro"; the
-// extra words cover the closing ones the most common muxers write, and nothing here matches "Closing Time", a chapter
-// title a file may carry for other reasons, because the whole word has to be there.
-const CREDITS_RE = /\b(credits|end credits|outro|closing|closing credits)\b/i
 const ICON = {
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
@@ -1333,10 +1329,15 @@ function playView(seriesId, season, label) {
           const now = Date.now()
           if (now - creditChecked > 1000) {
             creditChecked = now
-            if (creditAt == null && (info?.duration || info?.chapters?.length)) creditAt = creditStart()
+            const m = creditMoment(info, v)
+            // Again whenever the answer could have changed: a runtime that has only just become known, one that moved, or a
+            // better source (a measured marker arriving where the estimate stood in). Otherwise it is kept.
+            if (m.at != null && (creditAt == null || Math.abs(m.dur - creditDur) > 1 || CREDIT_RANK[m.from] > CREDIT_RANK[creditFrom])) {
+              creditAt = m.at; creditDur = m.dur; creditFrom = m.from
+            }
             if (creditAt != null && v.currentTime >= creditAt) showUpNext()
           }
-          const dur = info?.duration || v.duration
+          const dur = knownDuration(info, v)
           if (!prefetched && dur && v.currentTime / dur >= 0.6) {
             prefetched = true // watched past 60%: line up the next episode, so "Up next" is instant
             api('/api/prefetch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label }).catch(() => {})
@@ -1405,19 +1406,43 @@ function playView(seriesId, season, label) {
        like a streaming service's rather than a wait on a black screen. One function draws the box for every trigger: the
        credits check on timeupdate, the video's own `ended`, and the cast finishing on the TV. */
 
-    /** When the credits begin, in seconds, or null while the runtime is still unknown.
-        A chapter named for them is exact. Without one it is the closing stretch of the episode -- 6% of the runtime, held
-        between 45s and 2min -- so a half-hour sitcom gets its last 108 seconds and a film gets two minutes. */
-    function creditStart() {
-      const dur = info?.duration || v?.duration || 0
-      const ch = info?.chapters?.find((c) => CREDITS_RE.test(c.title) && c.start > 0 && (!dur || c.start < dur - 5))
-      if (ch) return ch.start
-      return dur > 0 ? Math.max(0, dur - Math.min(120, Math.max(45, dur * 0.06))) : null
+    /** When the credits begin, in seconds, or null while nothing at all is known about the runtime.
+        Three answers, in order of trust: a chapter named for the credits is exact; then the moment Flix measured with
+        ffmpeg when the file finished downloading; with neither, the closing stretch of the episode. The whole of it is
+        kept to its own arguments, and between the two markers below, so a test can lift this code out of the file and run
+        the real thing (test/credits.test.ts) rather than a copy of it. */
+    /* credits-begin */
+    // A chapter named for the end of the episode. Whoever made the file names it "Credits", "End Credits" or "Outro"; the
+    // extra words cover the closing ones the most common muxers write, and nothing here matches "Closing Time", a chapter
+    // title a file may carry for other reasons, because the whole word has to be there.
+    const CREDITS_RE = /\b(credits|end credits|outro|closing|closing credits)\b/i
+    /** The runtime to work from: what the server probed, else what the player itself knows. 0 while neither does. */
+    function knownDuration(info, el) {
+      const d = info?.duration || el?.duration || 0
+      return Number.isFinite(d) && d > 0 ? d : 0
     }
+    /** Where the credits begin, and which of the three answers it came from. `at` is null only while nothing is known at
+        all: no runtime and no chapter list. That is the case this used to give up in -- a probe that reported no duration
+        over HLS, with no chapters, left no moment to wait for, so only the end of the file ever brought the box up. */
+    function creditMoment(info, el) {
+      const dur = knownDuration(info, el)
+      const chapters = info?.chapters
+      if (!dur && !chapters?.length) return { at: null, dur: 0, from: null }
+      const ch = chapters?.find((c) => CREDITS_RE.test(c.title) && c.start > 0 && (!dur || c.start < dur - 5))
+      if (ch) return { at: ch.start, dur, from: 'chapter' }
+      const m = info?.creditsAt
+      if (m > 0 && (!dur || m < dur - 3)) return { at: m, dur, from: 'marker' }
+      // 8% of the runtime, held between 45 seconds and two and a half minutes: a half-hour sitcom gets its last 144
+      // seconds, an hour-long drama 150, and a film 150.
+      return { at: dur > 0 ? Math.max(0, dur - Math.min(150, Math.max(45, dur * 0.08))) : null, dur, from: 'estimate' }
+    }
+    /* credits-end */
 
-    // Where that moment is for this file, worked out once: recomputing it four times a second would be wasteful, and a
-    // chapter list does not change under a playing file.
-    let creditAt = null, creditChecked = 0
+    // Where that moment is for this file, which answer it came from, and the runtime it was worked out against. Worked out
+    // again whenever the answer could have changed -- a runtime that has only just become known, one that moved, or a
+    // measured marker arriving where the estimate stood in for it -- and never on every tick: once a second at most.
+    const CREDIT_RANK = { estimate: 0, marker: 1, chapter: 2 }
+    let creditAt = null, creditDur = -1, creditFrom = null, creditChecked = 0
     // One showing per play. Not now sets `upNextMuted` for the rest of the episode: neither the credits check nor the end
     // of the file brings the box back, and navigating away does not need to because the whole view goes with it.
     let upNextMuted = false, upNextBox = null

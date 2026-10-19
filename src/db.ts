@@ -120,4 +120,12 @@ db.exec('CREATE TABLE IF NOT EXISTS votes (user_id INTEGER NOT NULL REFERENCES u
 // How much disk Flix's downloads take, sampled hourly, for the 12-month graph on the Torrents page.
 db.exec('CREATE TABLE IF NOT EXISTS storage_samples (ts INTEGER PRIMARY KEY, bytes INTEGER NOT NULL)')
 
+// Where the end credits begin, measured once per finished file with ffmpeg (see credits.ts). One row per torrent file,
+// `at` NULL for a file that was looked at and had no credits to be sure of, so it is not looked at again for nothing.
+db.exec(`CREATE TABLE IF NOT EXISTS credits_marker (
+  torrent_id INTEGER NOT NULL, file_index INTEGER NOT NULL,
+  at REAL, duration REAL, tries INTEGER NOT NULL DEFAULT 0, made_at INTEGER NOT NULL,
+  PRIMARY KEY (torrent_id, file_index)
+)`)
+
 export const now = () => Math.floor(Date.now() / 1000)
