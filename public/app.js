@@ -4,6 +4,9 @@ const app = $('#app'), top = $('#top')
 const rmq = matchMedia('(prefers-reduced-motion: reduce)')
 const smooth = () => (rmq.matches ? 'auto' : 'smooth')
 let me = null, cleanup = null, navToken = 0, retryT = null
+// The last /api/me answer, kept for views that render outside the router: addressHint reads its addresses, and a
+// variable local to route() left Settings throwing "st is not defined" before the page could draw.
+let myState = null
 window.__flixBooted = true
 
 /**
@@ -230,7 +233,7 @@ function renderTop() {
   top.hidden = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
     <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
-    <div class="hact">${me.cast ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
+    <div class="hact">${me.cast && !isTv ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
     // The cast button sits between the search bar and the profile: tap it once to pick the TV, then anything
     // started plays there. Tapping it again stops the session.
     casting.headerOff?.()
@@ -274,7 +277,7 @@ function renderTop() {
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}<a href="#/downloads">Downloads</a>${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${installed() ? '' : '<button id="inst">Install app</button>'}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}<a href="#/downloads">Downloads</a>${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
@@ -282,7 +285,6 @@ function renderTop() {
       if (profiles().length) go('#/profiles'); else route()
     }
     const sw = $('#sw'); if (sw) sw.onclick = () => { try { sessionStorage.removeItem('flix.picked') } catch { /* ignore */ } go('#/profiles') }
-    const ib = $('#inst'); if (ib) ib.onclick = installApp
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
   }
 }
@@ -345,26 +347,11 @@ function flixSting() {
     }
   } catch { /* silent intro */ }
 }
-/* ---------- install ---------- */
-let installEvt = null
-// Keep the event so the in-app button can use it, but deliberately do NOT preventDefault():
-// cancelling beforeinstallprompt is what stops Chrome from ever offering its own install UI.
-addEventListener('beforeinstallprompt', (e) => { installEvt = e })
-addEventListener('appinstalled', () => { installEvt = null })
-const installed = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
-function installHint() {
-  if (!window.isSecureContext) {
-    alert('Chrome only installs apps from a secure (HTTPS) address with a certificate it trusts. This address (' + location.origin + ') is not one, so the install option is switched off. Open Flix through its trusted https:// address (for example your Tailscale name without a port number), then try again.')
-  } else alert('Your browser has not offered to install Flix yet. Open the browser menu (⋮) and choose “Install app” or “Add to Home screen”. On iPhone: Share → Add to Home Screen.')
-}
-async function installApp() {
-  if (installEvt) {
-    const e = installEvt; installEvt = null
-    try { await e.prompt(); await e.userChoice } catch { installHint() }
-    return
-  }
-  installHint()
-}
+/* ---------- platform ---------- */
+// Declared before anything can render, because the header and the account menu both ask "is this a television?"
+// (a TV is the one place with no install button and no cast button: it is the thing a phone casts to).
+const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
+if (isTv) document.documentElement.classList.add('tv')
 
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
 addEventListener('click', () => closeMenu($('.menu')))
@@ -1565,7 +1552,7 @@ const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // 
 /** Where this server answers, so the address for a TV is on the page rather than in someone's head: the home-network
  *  address (works without Tailscale) and the tailnet one (real certificate). The one you are reading this on is left out. */
 function addressHint() {
-  const a = st?.addresses ?? {}
+  const a = myState?.addresses ?? {}
   const parts = []
   if (a.lan && a.lan !== location.origin) parts.push(`<b>${esc(a.lan)}</b> on the home network`)
   if (a.tailnet && a.tailnet !== location.origin) parts.push(`<b>${esc(a.tailnet)}</b> over Tailscale`)
@@ -2083,8 +2070,6 @@ async function healthBanner() {
 }
 
 /* ---------- TVs and keyboards: arrow keys move between things, Back goes back ---------- */
-const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
-if (isTv) document.documentElement.classList.add('tv')
 // A text field is a stop like any other: without it here a remote can never reach the search bar, which is what made
 // the search field impossible to select on a Google TV.
 const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input:not([disabled]), textarea:not([disabled]), select:not([disabled])'
@@ -2207,6 +2192,7 @@ async function route() {
     return
   }
   me = st.user
+  myState = st
   if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
   renderTop()
   syncDownloads().catch(() => {})
