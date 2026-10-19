@@ -847,11 +847,6 @@ function friendly(msg) {
   return msg
 }
 
-const SKIP_RE = /\b(intro|opening|recap|previously)\b/i
-// No guessing at an intro any more. A chapter named for one is exact, and once somebody skips one the window is kept
-// for the show, so its later episodes offer it. An episode with neither gets no button at all: without a chapter or a
-// known window Flix does not know where the intro is, and a button over a cold open is worse than no button.
-
 /** A short line that says why something did not happen, in place, and goes away by itself. One at a time. */
 let noteTimer
 function flashNote(text) {
@@ -948,7 +943,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
-      <div id="vw"></div><button class="btn p-skip" id="skip" hidden></button>
+      <div id="vw"></div>
         <div class="p-poster" id="pposter" aria-hidden="true"></div>
         <div class="p-info" id="pinfo" aria-hidden="true"><div class="eyebrow"><span class="p-rate" id="pirate" hidden></span><span id="pis"></span></div>
           <h2 id="pit"></h2><span class="ep" id="pie"></span><div class="p-castrow" id="picast"></div></div>
@@ -1260,7 +1255,6 @@ function playView(seriesId, season, label) {
       if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
       wireSubs(); wireSubMenu(); wireAudio(); wireExtras()
-      skipCheck() // the chapters are known from here on, so an intro is offered without waiting for the first tick
     }
 
     function attach(startAt) {
@@ -1291,7 +1285,6 @@ function playView(seriesId, season, label) {
         v.addEventListener('pause', withArt, { once: true })
         v.ontimeupdate = () => {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
-          skipCheck()
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.
           const now = Date.now()
@@ -1511,45 +1504,6 @@ function playView(seriesId, season, label) {
       }
     }
 
-    /* skip intro. A chapter named for one is exact, and it is remembered for the show the moment somebody skips it. An
-       episode with no named chapter then offers that remembered window in the same place -- never on the first episode of a
-       show, which has nothing to have learned it from yet. */
-    /** The intro window this show's episodes have had, as the last one somebody actually skipped: {start,end} or null. */
-    function rememberedIntro() {
-      const all = store.get('intros', {})
-      const w = all[seriesId]
-      return w && w.end > w.start ? w : null
-    }
-    function rememberIntro(w) {
-      const all = store.get('intros', {})
-      all[seriesId] = { start: Math.round(w.start), end: Math.round(w.end) }
-      store.set('intros', all)
-    }
-    /** What is on offer at this second of this episode, or null. */
-    function skipWindow() {
-      const t = v.currentTime
-      const c = info?.chapters?.find((c) => SKIP_RE.test(c.title) && t >= c.start - 0.5 && t < c.end - 2)
-      if (c) return { start: c.start, end: c.end, recap: /recap|previously/i.test(c.title), key: 'c' + c.start }
-      // Nothing named in this file. Only a window this show has actually been seen to have is offered -- learned from a
-      // chapter somebody skipped. There used to be a guess here (the first 90 seconds of any episode of a show already
-      // started), which put a Skip intro button over cold opens and studio logos and was mostly wrong.
-      const w = rememberedIntro()
-      if (!w) return null
-      if (t >= w.start - 0.5 && t < w.end - 2) return { start: w.start, end: w.end, recap: false, key: 'w' + w.start }
-      return null
-    }
-    let skipNow = null
-    function skipCheck() {
-      if (!v) return
-      const w = skipWindow()
-      if ((w?.key ?? null) === (skipNow?.key ?? null)) return
-      skipNow = w
-      const b = $('#skip'); if (!b) return
-      b.hidden = !w
-      if (!w) return
-      b.textContent = w.recap ? 'Skip recap' : 'Skip intro'
-      b.onclick = () => { rememberIntro(w); v.currentTime = w.end }
-    }
     let castWired = false
     const castTitle = () => `${play?.seriesName || label}${play?.episodeTitle ? ' · ' + play.episodeTitle : ''}`
     /** Send this episode to the connected TV; its progress is reported from there (see castTrack). */

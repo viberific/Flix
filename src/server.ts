@@ -28,7 +28,7 @@ import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.
 import { ROW_SIZE, curateHome } from './home.ts'
 import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
-import { gatesFor, gatedNote, STARTED_AT } from './gate.ts'
+import { gatesFor, gatedNote } from './gate.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
@@ -424,15 +424,12 @@ app.post('/api/watch', auth, async (req) => {
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
   const ni = eps.findIndex((e, j) => j > i && e.available)
   const next = ni < 0 ? undefined : eps[ni]
-  // Has another episode of this show been played? The skip-intro fallback waits for that: the first episode cannot have one,
-  // because there is nothing to have learned the intro from yet.
-  const playedBefore = eps.some((o, j) => j !== i && (o.watched || o.position > STARTED_AT))
   // The box offered at the credits must itself be allowed: it is, unless this episode was never counted as started.
   const nextOpen = ni >= 0 && !gates[ni].locked
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
   const titles = episodeInfoFor(Number(seriesId))
   const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
-  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), playedBefore, next: next ? { season: next.season, label: next.label, title: nameOf(next), locked: !nextOpen } : null }
+  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next), locked: !nextOpen } : null }
 })
 
 /** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */
