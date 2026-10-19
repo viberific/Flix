@@ -26,7 +26,7 @@ import { ROW_SIZE, curateHome } from './home.ts'
 import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { gatesFor, gatedNote, STARTED_AT } from './gate.ts'
-import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
+import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
@@ -255,7 +255,8 @@ const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[
 
 /**
  * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from HBO,
- * Crave, Showcase, Netflix, Disney+ and Apple TV+, then more of those under one genre each. Discovery rows hold ten shows (see home.ts).
+ * Crave, Showcase, Disney+, Apple TV+ and Paramount+, then more of those under one genre each. Shows on a hidden service
+ * (Netflix) are left off the discovery rows; see HIDDEN_STREAMERS in networks.ts. Discovery rows hold ten shows (see home.ts).
  */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
@@ -285,7 +286,7 @@ app.get('/api/home', auth, async (req) => {
   if (base) {
     const mine = new Set<string>(base.genres)
     const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
-    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && net.get(r.id)?.streamer).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length + 0.5 * taste.fit(r.genres) })).filter((x) => x.score > 0)
+    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && net.get(r.id)?.streamer && !isHiddenService(net.get(r.id)?.streamer)).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length + 0.5 * taste.fit(r.genres) })).filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, ROW_SIZE).map((x) => clean(x.r))
     if (rec.length === ROW_SIZE) { because = { name: base.name, liked: likedBase, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
@@ -300,7 +301,7 @@ app.get('/api/home', auth, async (req) => {
   // "Picked for you": the freshest shows that suit their taste, when they have given any thumbs or finished enough to tell.
   let picked: any[] | null = null
   if (taste.genres.size) {
-    const cands = all.filter((r) => !started.has(r.id) && !finished.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && taste.fit(r.genres) > 0.2)
+    const cands = all.filter((r) => !started.has(r.id) && !finished.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer) && taste.fit(r.genres) > 0.2)
     const rows = tasteSort(cands, taste, 40).slice(0, ROW_SIZE)
     if (rows.length === ROW_SIZE) { picked = rows.map(clean); rows.forEach((r) => taken.add(r.id)) }
   }

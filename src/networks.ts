@@ -3,8 +3,8 @@ import { config } from './config.ts'
 import { NET_VER, catalogChanged } from './seasons.ts'
 
 /**
- * What the home screen and the library rules are built from: which streaming service a show belongs to (HBO, Crave, Showcase,
- * Netflix, Disney+, Apple TV+, Paramount+), when it premiered, how popular it is, whether it is trending, what language it is in and how many
+ * What the home screen and the library rules are built from: which streaming service a show belongs to (Disney+, HBO, Crave,
+ * Showcase, Apple TV+, Paramount+), when it premiered, how popular it is, whether it is trending, what language it is in and how many
  * episodes each season has. BTN knows none of that, so it comes from TMDB (needs the optional key) and, as a fallback, from
  * TVmaze (no key). Read in the background for every show BTN has been fully read for (the `series_net` table lives in db.ts).
  */
@@ -13,9 +13,21 @@ CREATE TABLE IF NOT EXISTS trending_tv (tmdb_id INTEGER PRIMARY KEY, rank INTEGE
 `)
 
 /** The services the home screen is made of, in the order of its rows. A show on none of them is not on the home screen. */
-export const STREAMERS = ['HBO', 'Crave', 'Showcase', 'Netflix', 'Disney+', 'Apple TV+', 'Paramount+'] as const
+export const STREAMERS = ['HBO', 'Crave', 'Showcase', 'Disney+', 'Apple TV+', 'Paramount+'] as const
 const PATTERNS: [string, RegExp][] = [['HBO', /\bhbo\b|^max$/i], ['Crave', /\bcrave\b/i], ['Showcase', /\bshowcase\b/i], ['Netflix', /netflix/i],
-  ['Disney+', /disney\s*(\+|plus)|hulu originals? on disney/i], ['Apple TV+', /apple\s*tv/i], ['Paramount+', /paramount\s*(\+|plus)/i]]
+  // Disney brands its shows across several channels, and TMDB files most Disney+ series under "Disney Channel"; Hulu and
+  // National Geographic are Disney's too. Matching the family, not just the words "Disney+", is what puts them on the row.
+  ['Disney+', /disney|hulu|national\s*geographic|natgeo/i], ['Apple TV+', /apple\s*tv/i], ['Paramount+', /paramount\s*(\+|plus)/i]]
+
+/**
+ * Services Flix recognises and keeps in the library, but never puts on the home screen: the person watches these in the
+ * service's own app, and Flix is there to supplement them. Netflix is one. Its shows still search, list and play.
+ */
+export const HIDDEN_STREAMERS: readonly string[] = ['Netflix']
+/** True for a show on a service the home screen leaves out (see HIDDEN_STREAMERS). */
+export function isHiddenService(streamer?: string | null): boolean {
+  return !!streamer && HIDDEN_STREAMERS.includes(streamer)
+}
 
 /** A network name as TMDB or TVmaze spells it, mapped onto one of our rows ('Disney Plus' and 'Disney+' are the same row). */
 export function normalizeStreamer(name?: string | null): string | null {

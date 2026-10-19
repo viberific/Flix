@@ -273,7 +273,7 @@ test('assertSpace refuses when the disk would fill up', async () => {
   config.minFreeGb = 10
 })
 
-const { normalizeStreamer, primaryGenre } = await import('../src/networks.ts')
+const { normalizeStreamer, primaryGenre, isHiddenService, STREAMERS } = await import('../src/networks.ts')
 const { curateHome, ROW_SIZE } = await import('../src/home.ts')
 
 test('streaming services are recognised however a source spells them', () => {
@@ -292,7 +292,20 @@ test('streaming services are recognised however a source spells them', () => {
   assert.equal(normalizeStreamer('Paramount+'), 'Paramount+')
   assert.equal(normalizeStreamer('Paramount Plus'), 'Paramount+')
   assert.equal(normalizeStreamer('Paramount Network'), null)
+  // Disney brands its shows across several channels, and Disney+ carries Hulu and National Geographic: all of these belong
+  // to the Disney+ row. Most Disney+ series are filed under "Disney Channel" by the metadata, not under "Disney+".
+  assert.equal(normalizeStreamer('Disney Channel'), 'Disney+')
+  assert.equal(normalizeStreamer('Disney Junior'), 'Disney+')
+  assert.equal(normalizeStreamer('National Geographic'), 'Disney+')
+  assert.equal(normalizeStreamer('Hulu'), 'Disney+')
   assert.equal(normalizeStreamer(null), null)
+})
+
+test('Netflix is recognised but is never put on the home screen', () => {
+  assert.equal(normalizeStreamer('Netflix'), 'Netflix')
+  assert.ok(isHiddenService('Netflix'))
+  for (const s of STREAMERS) assert.ok(!isHiddenService(s), `${s} is on the home screen`)
+  assert.ok(!isHiddenService(null) && !isHiddenService('HBO'))
 })
 
 test('a show has one primary genre: the most specific it has', () => {
@@ -307,39 +320,49 @@ test('a show has one primary genre: the most specific it has', () => {
 const row = (id: number, genres: string[], latest = id) => ({ id, name: `S${id}`, poster: `/p${id}`, banner: null, genres, latest })
 const info = (streamer: string | null, first_air: string, trending: number | null = null, popularity = 10) => ({ streamer, first_air, notable: true, popularity, trending })
 
-test('home: only the seven services, every row exactly ten, trending first, no show twice while there are enough', () => {
+test('home: Disney+ and the other services, ten to a full row, a short row for a thin service, and Netflix nowhere', () => {
   const rows: any[] = [], net = new Map<number, any>()
   let id = 1
   const add = (n: number, streamer: string | null, genre: string, trending = false) => {
     for (let i = 0; i < n; i++, id++) { rows.push(row(id, [genre])); net.set(id, info(streamer, `20${String(10 + (id % 14))}-01-01`, trending ? id : null, id)) }
   }
-  add(8, 'Netflix', 'Drama', true)    // trending, all on Netflix
-  add(14, 'Netflix', 'Drama')
-  add(12, 'HBO', 'Crime')
+  add(12, 'HBO', 'Crime', true)       // trending, on HBO
   add(10, 'Disney+', 'Animation')
-  add(4, 'Crave', 'Comedy')            // too few for a row of its own
+  add(4, 'Crave', 'Comedy')            // too few for a row of ten: it gets a short row of its own instead
+  add(22, 'Netflix', 'Drama')          // where they watch anyway: never on the home screen
   add(15, null, 'Drama')               // on none of the services: never on the home screen
   const { hero, sections } = curateHome(rows, net)
   assert.ok(hero && net.get(hero.id)!.trending != null, 'the billboard is a trending show')
-  for (const s of sections) assert.equal(s.series.length, ROW_SIZE, `${s.title} has ${s.series.length}`)
+  for (const s of sections.filter((x) => x.title !== 'New on Crave')) assert.equal(s.series.length, ROW_SIZE, `${s.title} has ${s.series.length}`)
   const titles = sections.map((s) => s.title)
   assert.equal(titles[0], 'Trending shows')
-  assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Netflix') && titles.indexOf('New on Netflix') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
+  assert.ok(titles.indexOf('New on HBO') < titles.indexOf('New on Disney+'), 'rows follow the services\' order')
+  assert.ok(!titles.includes('New on Netflix'), 'Netflix is not on the home screen')
   assert.ok(!titles.includes('New on Showcase') && !titles.includes('New on Apple TV+'), 'a service with no shows has no row')
-  // Genre and "More to watch" rows are filled from the whole library, so shows outside the services appear there; the billboard and the
-  // trending and service rows are only ever shows on one of the seven.
-  const ids = [hero!.id, ...sections.filter((s) => s.title === 'Trending shows' || s.title.startsWith('New on ')).flatMap((s) => s.series.map((r) => r.id))]
-  assert.ok(ids.every((i) => net.get(i)!.streamer), 'nothing from outside the seven services')
   const crave = sections.find((s) => s.title === 'New on Crave')
-  assert.ok(!crave, 'four Crave shows cannot make ten, even topped up from the same service')
+  assert.equal(crave?.series.length, 4, 'four Crave shows make a short row, not no row at all')
+  assert.ok(!sections.some((s) => s.title === 'Comedy'), 'four shows cannot make a genre row')
+  // A hidden service is off every row, the billboard included, but the rest of the library still fills the genre rows.
+  const onHome = [hero!.id, ...sections.flatMap((s) => s.series.map((r) => r.id))]
+  assert.ok(onHome.every((i) => net.get(i)!.streamer !== 'Netflix'), 'no Netflix show on any row')
+  const onService = [hero!.id, ...sections.filter((s) => s.title === 'Trending shows' || s.title.startsWith('New on ')).flatMap((s) => s.series.map((r) => r.id))]
+  assert.ok(onService.every((i) => net.get(i)!.streamer), 'the billboard, trending and service rows are only shows on a service')
+})
+
+test('home: a library of nothing but Netflix leaves the home screen with no discovery rows', () => {
+  const rows: any[] = [], net = new Map<number, any>()
+  for (let i = 1; i <= 20; i++) { rows.push(row(i, [i % 2 ? 'Drama' : 'Comedy'])); net.set(i, info('Netflix', `2021-01-${String(i).padStart(2, '0')}`, i)) }
+  const { hero, sections } = curateHome(rows, net)
+  assert.equal(hero, null)
+  assert.deepEqual(sections, [])
 })
 
 test('home: a service with a few shows is topped up from shows already shown rather than left short', () => {
   const rows: any[] = [], net = new Map<number, any>()
-  for (let i = 1; i <= 14; i++) { rows.push(row(i, ['Drama'])); net.set(i, info('Netflix', `2020-01-${String(i).padStart(2, '0')}`, i <= 12 ? i : null)) }
+  for (let i = 1; i <= 14; i++) { rows.push(row(i, ['Drama'])); net.set(i, info('HBO', `2020-01-${String(i).padStart(2, '0')}`, i <= 12 ? i : null)) }
   const { sections } = curateHome(rows, net)
   // Two rows is under the four a page needs, so a "Newest additions" row (which may repeat shows) makes up the numbers.
-  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on Netflix', 'Newest additions'])
+  assert.deepEqual(sections.map((s) => s.title), ['Trending shows', 'New on HBO', 'Newest additions'])
   for (const s of sections) assert.equal(s.series.length, ROW_SIZE)
   const mine = new Set([1, 2, 3, 4, 5])
   const above = curateHome(rows, net, mine).sections[0].series
@@ -349,7 +372,7 @@ test('home: a service with a few shows is topped up from shows already shown rat
 
 test('home: genre rows only appear with ten shows not yet shown, and no rows when too little is known', () => {
   const rows: any[] = [], net = new Map<number, any>()
-  for (let i = 1; i <= 90; i++) { rows.push(row(i, [i % 2 ? 'Drama' : 'Comedy'])); net.set(i, info(['HBO', 'Netflix', 'Apple TV+'][i % 3], `2021-01-${String((i % 28) + 1).padStart(2, '0')}`)) }
+  for (let i = 1; i <= 90; i++) { rows.push(row(i, [i % 2 ? 'Drama' : 'Comedy'])); net.set(i, info(['HBO', 'Showcase', 'Apple TV+'][i % 3], `2021-01-${String((i % 28) + 1).padStart(2, '0')}`)) }
   const { hero, sections } = curateHome(rows, net)
   for (const s of sections) assert.equal(s.series.length, ROW_SIZE, s.title)
   assert.ok(sections.some((s) => s.title === 'Drama' || s.title === 'Comedy'), 'genre rows follow the service rows')
