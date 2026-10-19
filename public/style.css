@@ -198,7 +198,7 @@ img.fade.in { opacity: 1; }
   padding: max(16px, env(safe-area-inset-top, 0px)) var(--gutter-r) 40px var(--gutter); background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .player.idle .p-top { opacity: 0; transform: translateY(-14px); pointer-events: none; } .player.idle { cursor: none; }
 .p-title b { display: block; font-size: 17px; } .p-title span { color: rgba(255,255,255,.7); font-size: 13px; }
-.p-wait { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; text-align: center; color: #fff; padding: 24px; transition: opacity 1.4s cubic-bezier(.4,0,.2,1); }
+.p-wait { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
 .p-wait.gone { opacity: 0; pointer-events: none; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
 /* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
@@ -546,14 +546,17 @@ html.tv * { cursor: none; }
 .mark .sweep::after { content: ""; position: absolute; top: -30%; bottom: -30%; width: 55%; left: -80%; transform: skewX(-20deg);
   background: linear-gradient(100deg, transparent, rgba(255,255,255,.08) 30%, rgba(255,255,255,.38) 50%, rgba(255,255,255,.08) 70%, transparent);
   animation: sweep 1.3s cubic-bezier(.45,0,.2,1) .95s forwards; }
-.p-wait.gone .mark { transform: scale(1.7); opacity: 0; filter: blur(8px); transition: transform 1.4s cubic-bezier(.4,0,.2,1), opacity 1.2s cubic-bezier(.4,0,.2,1), filter 1.4s ease; }
+.p-wait.gone .mark { transform: scale(.985); opacity: 0; transition: transform .9s cubic-bezier(.4,0,.2,1), opacity .75s ease; }
 /* A light running around the tile while the episode is still being fetched: without it a slow start reads as a freeze.
    It is the tile's own squircle drawn as one stroke, not a conic gradient on a rotating box -- the gradient's bright spot
    orbited the middle of the box, so it swept across the corners instead of running along the edge. The rect sits 1px
    outside the 112px tile whose radius is 26, and pathLength=100 makes the dash travel exactly one lap and turn each
    corner with it. It comes in after the intro has played and goes with the overlay when playback starts. */
 .mark .tracer { position: absolute; inset: 0; width: 112px; height: 112px; overflow: visible; border-radius: 0; box-shadow: none;
-  pointer-events: none; opacity: 0; animation: tracerIn .6s ease 1.5s forwards; }
+  pointer-events: none; opacity: 0;
+  /* The tile floats up and down while it waits, so the stroke around it has to float with it: the same keyframes on the
+     same clock. It used to be a layer that never got the float, so the light sat still while the logo bobbed away from it. */
+  animation: tracerIn .6s ease 1.5s forwards, markFloat 5s ease-in-out 1.5s infinite; }
 .mark .tracer rect { animation: tracerRun 1.9s linear infinite; }
 .p-wait.gone .tracer, .p-wait.gone .tracer rect { opacity: 0; animation: none; }
 @keyframes tracerRun { to { stroke-dashoffset: -100; } }
@@ -599,8 +602,13 @@ html.tv * { cursor: none; }
 .arts-l { position: absolute; inset: 0; opacity: 0; transition: opacity 1.6s var(--ease); }
 .arts-l.on { opacity: 1; }
 .arts-bg { position: absolute; inset: -8%; background-size: cover; background-position: center; filter: blur(64px) saturate(1.05) brightness(.4); transform: scale(1.08); }
-.arts-p { position: absolute; inset: 0; margin: auto; height: min(68vh, 1000px); width: auto; max-width: 82vw; object-fit: contain; border-radius: 16px; box-shadow: 0 30px 90px rgba(0,0,0,.65); }
-.arts-t { position: absolute; left: 6vw; right: 6vw; bottom: 7vh; margin: 0; text-align: center; font-size: clamp(20px, 2.2vw, 38px); font-weight: 700; letter-spacing: .01em; color: #fff; text-shadow: 0 2px 24px rgba(0,0,0,.8); }
+.arts-p { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* wide art: the whole screen, drifting slowly from right to left as a television idles */
+.arts-p.cover { inset: -5%; width: 110%; height: 110%; animation: artsPan 16s linear both; }
+/* no wide picture for this show: its poster, held in the middle rather than stretched */
+.arts-p.contain { inset: 0; margin: auto; width: auto; height: min(68vh, 1000px); max-width: 82vw; object-fit: contain; border-radius: 16px; box-shadow: 0 30px 90px rgba(0,0,0,.65); }
+.arts-t { position: absolute; left: 6vw; right: 6vw; bottom: 9vh; margin: 0; text-align: left; font-size: clamp(22px, 2.4vw, 42px); font-weight: 700; letter-spacing: .01em; color: #fff; text-shadow: 0 2px 24px rgba(0,0,0,.8); }
+@keyframes artsPan { from { transform: translate3d(3.2%, 0, 0); } to { transform: translate3d(-3.2%, 0, 0); } }
 @media (prefers-reduced-motion: reduce) { .arts { display: none; } }
 
 /* ---------- the soft "Leaving soon" prompt: a card on Home, never a wall in front of the interface ---------- */

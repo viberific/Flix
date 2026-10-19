@@ -576,7 +576,7 @@ const bigScreen = () => isTv || matchMedia('(min-width: 1100px)').matches
 /** Long enough that nobody reading the page sees it appear under them. */
 const ART_IDLE_MS = 45_000
 /** How long one picture stays up before the next fades over it. */
-const ART_HOLD_MS = 6000
+const ART_HOLD_MS = 12_000
 let artShow = null
 
 /**
@@ -606,8 +606,14 @@ function artSlideshow(items) {
   }
   const draw = () => {
     const s = show[n], back = 1 - front, el = lay[back], img = $('img', el)
+    const wide = `/api/art/${s.id}/banner`
     $('.arts-bg', el).style.backgroundImage = `url("/api/art/${s.id}/poster")`
     $('b', el).textContent = s.name || ''
+    // Wide art first, filling the screen and drifting from right to left the way a television idles. A show with no wide
+    // picture of its own falls back to its poster, held in the middle as before -- a portrait poster stretched across the
+    // whole screen is a smear, so the two look deliberately different rather than one being a bad copy of the other.
+    img.dataset.fb = '0'
+    img.className = 'arts-p'
     // One picture that 404s (a show with no artwork) or 401s (a session that has expired on a television left idle) must
     // not walk the whole list at network speed for ever: a run of failures with no picture in between takes the
     // slideshow away. A poster that does arrive clears the count, so one missing poster among the others is not a run.
@@ -615,12 +621,19 @@ function artSlideshow(items) {
     img.onload = () => { misses = 0 }
     img.onerror = () => {
       if (!on) return
+      // The wide picture is missing: the poster is still worth showing, in the middle of the screen.
+      if (img.dataset.fb === '0') { img.dataset.fb = '1'; img.className = 'arts-p contain'; img.src = `/api/art/${s.id}/poster`; return }
       clearTimeout(hold)
       n = (n + 1) % show.length
       if (++misses > show.length) { misses = 0; hide(); return } // nothing to show at all: leave the page alone
       draw()
     }
-    img.src = `/api/art/${s.id}/poster`
+    img.src = wide
+    // The two layers are reused, so the drift has to be started again for each slide: without this the picture arrives
+    // already part-way through the pan it did last time, or not moving at all. The read of offsetWidth is what makes the
+    // browser settle the plain class before the drifting one goes on, so the animation really does begin here.
+    void img.offsetWidth
+    img.className = 'arts-p cover'
     el.classList.add('on')
     lay[front].classList.remove('on')
     front = back
@@ -835,10 +848,9 @@ function friendly(msg) {
 }
 
 const SKIP_RE = /\b(intro|opening|recap|previously)\b/i
-// An intro nobody has named in a chapter: the opening 90 seconds, which is where a television intro lives. It is only ever
-// offered on an episode after the first, and the first time somebody skips it the length they actually skipped is kept for
-// the show, so every later episode offers the same window instead of this guess.
-const DEFAULT_INTRO_END = 90
+// No guessing at an intro any more. A chapter named for one is exact, and once somebody skips one the window is kept
+// for the show, so its later episodes offer it. An episode with neither gets no button at all: without a chapter or a
+// known window Flix does not know where the intro is, and a button over a cold open is worse than no button.
 
 /** A short line that says why something did not happen, in place, and goes away by itself. One at a time. */
 let noteTimer
@@ -907,6 +919,24 @@ function artUsable(url) {
   })
 }
 
+/** Is this picture wide enough to fill the screen as a backdrop? A portrait poster stretched across a television is a
+    smear, so a backdrop only ever gets art at least 1.5:1 and 640px across. Anything narrower, or that will not load,
+    means black behind the picture. */
+function artWide(url) {
+  return new Promise((resolve) => {
+    try {
+      const im = new Image()
+      im.onerror = () => resolve(false)
+      im.onload = () => {
+        const wide = im.naturalWidth >= 640 && im.naturalWidth / Math.max(1, im.naturalHeight) >= 1.5
+        if (!wide) return resolve(false)
+        artUsable(url).then(resolve, () => resolve(false))
+      }
+      im.src = url
+    } catch { resolve(false) }
+  })
+}
+
 function playView(seriesId, season, label) {
   label = decodeURIComponent(label)
   return () => {
@@ -938,18 +968,25 @@ function playView(seriesId, season, label) {
     let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
-    // Nothing but black behind the mark until the picture is actually there. The art used to be set as soon as this view
-    // opened, so a show whose artwork Flix has none of (the server's flat grey card) filled the screen behind the loading
-    // logo, and a grey rectangle under a logo reads as a broken player. It comes in with the first frames, or the first
-    // pause, whichever is first -- and artUsable() refuses a near-greyscale poster even then.
+    // Nothing but black behind the mark, ever: the logo sits on black until it has faded out and the picture is up, and
+    // only then does any artwork come in. Flix's own fallback card behind the logo read as a broken player, so the
+    // backdrop is not even asked for until the mark is gone (withArt() refuses while #wait still holds it).
     const artUrl = `/api/art/${seriesId}/poster`
+    // A backdrop is wide art or nothing: a portrait poster blown up across the screen is a smear, and the fallback card
+    // is the 'grey play button' that was showing through. The banner is asked for first and only drawn when it is wide.
+    const wideUrl = `/api/art/${seriesId}/banner`
     let artDrawn = false
     const withArt = () => {
-      if (artDrawn) return
+      if (artDrawn || !$('#wait')?.classList.contains('gone')) return
       artDrawn = true
-      artUsable(artUrl).then((ok) => {
-        if (!ok || !alive) return
-        for (const el of [$('#pposter'), $('#pbg')]) if (el) el.style.backgroundImage = `url("${artUrl}")`
+      artWide(wideUrl).then((wide) => {
+        if (!alive) return
+        const bg = $('#pbg')
+        if (bg && wide) bg.style.backgroundImage = `url("${wideUrl}")`
+        artUsable(artUrl).then((ok) => {
+          const pp = $('#pposter')
+          if (ok && pp && alive) pp.style.backgroundImage = `url("${artUrl}")`
+        })
       })
     }
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
@@ -1242,7 +1279,7 @@ function playView(seriesId, season, label) {
           withArt()
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); withArt(); v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
@@ -1493,9 +1530,11 @@ function playView(seriesId, season, label) {
       const t = v.currentTime
       const c = info?.chapters?.find((c) => SKIP_RE.test(c.title) && t >= c.start - 0.5 && t < c.end - 2)
       if (c) return { start: c.start, end: c.end, recap: /recap|previously/i.test(c.title), key: 'c' + c.start }
-      // Nothing named in this file: the show's own intro, once an episode of it has been played before.
-      if (!play?.playedBefore) return null
-      const w = rememberedIntro() ?? { start: 0, end: DEFAULT_INTRO_END }
+      // Nothing named in this file. Only a window this show has actually been seen to have is offered -- learned from a
+      // chapter somebody skipped. There used to be a guess here (the first 90 seconds of any episode of a show already
+      // started), which put a Skip intro button over cold opens and studio logos and was mostly wrong.
+      const w = rememberedIntro()
+      if (!w) return null
       if (t >= w.start - 0.5 && t < w.end - 2) return { start: w.start, end: w.end, recap: false, key: 'w' + w.start }
       return null
     }
