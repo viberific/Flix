@@ -42,7 +42,7 @@ async function api(path, body, method, timeoutMs) {
     throw new Error(`Flix answered ${res.status}${res.statusText ? ' ' + res.statusText : ''}.`)
   }
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, pin: !!data.pin })
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, pin: !!data.pin, gated: !!data.gated, after: data.after ?? null })
   return data
 }
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -74,6 +74,7 @@ const AV_ART = {
 function avSvg(id, cls = '') { const a = AV_ART[id]; return a ? `<svg class="avsvg ${cls}" viewBox="0 0 48 48" aria-hidden="true">${a}</svg>` : '' }
 
 const I = {
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
   next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
@@ -638,7 +639,10 @@ async function seriesView(id) {
   const seasons = new Map()
   for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
   const resume = episodes.find((e) => e.position > 30 && !e.watched)
-  const hero = resume ?? episodes.find((e) => !e.watched && e.available)
+  // The hero never offers something the order rule forbids. A resume is always allowed (that episode was started);
+  // otherwise it is the first episode that may be started and has not been watched, so Play Now cannot dead-end.
+  const hero = resume ?? episodes.find((e) => !e.watched && e.available && !e.locked)
+  const firstLocked = episodes.find((e) => e.locked && e.available)
   const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
@@ -651,7 +655,7 @@ async function seriesView(id) {
       <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : '<span class="dim">Nothing is available to play right now.</span>'}
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">${firstLocked ? `Watch ${shortEp(firstLocked.after)} first` : 'Nothing is available to play right now.'}</span>`}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
@@ -700,13 +704,18 @@ async function seriesView(id) {
       }
     }
     const paint = () => {
-      $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
+      $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise${e.locked ? ' locked' : ''}" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
           <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', e.available ? (e.onServer ? 'Ready to watch' : e.isPack ? 'Part of the full season download' : '') : 'Not available right now'].filter(Boolean).join(' · ')}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
-        <span class="eside">${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
-      $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => go1(seasons.get(cur)[+b.dataset.i]))
+        <span class="eside">${e.locked ? `<span class="lock" aria-label="Watch ${esc(shortEp(e.after))} first" title="Watch ${esc(shortEp(e.after))} first">${I.lock}</span>` : ''}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
+      // A locked episode is not a dead end: it says which episode comes first, in one line, and stays where it is.
+      $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => {
+        const e = seasons.get(cur)[+b.dataset.i]
+        if (e.locked) return flashNote(`Watch ${shortEp(e.after)} first`)
+        go1(e)
+      })
       $('#eps').querySelectorAll('.dlb').forEach((b) => {
         const act = (ev) => {
           ev.stopPropagation(); ev.preventDefault()
@@ -763,6 +772,9 @@ async function seriesView(id) {
       }
     }
     const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
+    // Arrived here because a locked episode was asked for by its address: the reason the player turned it away belongs on
+    // this page, once, where the episode it names is on screen.
+    if (pendingSeriesNote) { const n = pendingSeriesNote; pendingSeriesNote = null; flashNote(n) }
   }
 }
 
@@ -781,6 +793,33 @@ function friendly(msg) {
 }
 
 const SKIP_RE = /\b(intro|opening|recap|previously)\b/i
+// An intro nobody has named in a chapter: the opening 90 seconds, which is where a television intro lives. It is only ever
+// offered on an episode after the first, and the first time somebody skips it the length they actually skipped is kept for
+// the show, so every later episode offers the same window instead of this guess.
+const DEFAULT_INTRO_END = 90
+
+/** A short line that says why something did not happen, in place, and goes away by itself. One at a time. */
+let noteTimer
+function flashNote(text) {
+  if (!text) return
+  document.querySelector('.note-flash')?.remove()
+  const el = document.createElement('div')
+  el.className = 'note-flash'
+  el.setAttribute('role', 'status')
+  el.textContent = text
+  document.body.appendChild(el)
+  clearTimeout(noteTimer)
+  noteTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 400) }, 2400)
+}
+
+let pendingSeriesNote = null
+
+/** "S01E03" reads as "E03" in a short note, the way it is said out loud; anything else is left alone. */
+const shortEp = (label) => { const m = /^S\d+\s*E(\d+)/i.exec(String(label ?? '')); return m ? `E${m[1]}` : String(label ?? '') }
+// A chapter named for the end of the episode. Whoever made the file names it "Credits", "End Credits" or "Outro"; the
+// extra words cover the closing ones the most common muxers write, and nothing here matches "Closing Time", a chapter
+// title a file may carry for other reasons, because the whole word has to be there.
+const CREDITS_RE = /\b(credits|end credits|outro|closing|closing credits)\b/i
 const ICON = {
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
@@ -792,6 +831,38 @@ const ICON = {
   vol: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 4.5 6.6 8.6H3.2v6.8h3.4l4.9 4.1V4.5Z" fill="currentColor" stroke="none"/><path d="M15.6 8.6a4.9 4.9 0 0 1 0 6.8"/><path d="M18.6 6a8.6 8.6 0 0 1 0 12"/></svg>',
   volOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 4.5 6.6 8.6H3.2v6.8h3.4l4.9 4.1V4.5Z" fill="currentColor" stroke="none"/><path d="m16.2 9.4 5 5.2M21.2 9.4l-5 5.2"/></svg>',
   fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
+}
+
+/** Is this poster worth putting behind the player at all? Flix draws a flat card for a show it has no art for, and that
+    card behind the loading mark read as a broken screen. The picture is drawn into a 16x16 canvas and its average
+    saturation and its lightness spread read off it, so a near-greyscale, near-flat image is refused. It is same-origin
+    (/api/art/...), so the canvas is not tainted; anything that throws resolves true, so this can only ever veto art. */
+function artUsable(url) {
+  return new Promise((resolve) => {
+    try {
+      const im = new Image()
+      im.onerror = () => resolve(false)
+      im.onload = () => {
+        try {
+          const c = document.createElement('canvas')
+          c.width = c.height = 16
+          const x = c.getContext('2d', { willReadFrequently: true })
+          x.drawImage(im, 0, 0, 16, 16)
+          const d = x.getImageData(0, 0, 16, 16).data
+          let sat = 0, lo = 1, hi = 0
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255
+            const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2
+            sat += max ? (max - min) / max : 0
+            if (l < lo) lo = l
+            if (l > hi) hi = l
+          }
+          resolve(sat / (d.length / 4) >= 0.06 || hi - lo >= 0.12)
+        } catch { resolve(true) }
+      }
+      im.src = url
+    } catch { resolve(true) }
+  })
 }
 
 function playView(seriesId, season, label) {
@@ -819,17 +890,26 @@ function playView(seriesId, season, label) {
               <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><i class="tracer"></i></div><div id="msg" role="status"></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i>${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></div><div id="msg" role="status"></div></div></div>`
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
-    // Black behind the mark until the picture is actually there. The blurred backdrop used to be set right here, so a
-    // show whose artwork Flix has none of filled the screen with a grey placeholder behind the loading logo.
+    // Nothing but black behind the mark until the picture is actually there. The art used to be set as soon as this view
+    // opened, so a show whose artwork Flix has none of (the server's flat grey card) filled the screen behind the loading
+    // logo, and a grey rectangle under a logo reads as a broken player. It comes in with the first frames, or the first
+    // pause, whichever is first -- and artUsable() refuses a near-greyscale poster even then.
     const artUrl = `/api/art/${seriesId}/poster`
-    const withArt = (el) => { if (!el) return; const im = new Image(); im.onload = () => { el.style.backgroundImage = `url("${artUrl}")` }; im.src = artUrl }
-    withArt($('#pposter'))
+    let artDrawn = false
+    const withArt = () => {
+      if (artDrawn) return
+      artDrawn = true
+      artUsable(artUrl).then((ok) => {
+        if (!ok || !alive) return
+        for (const el of [$('#pposter'), $('#pbg')]) if (el) el.style.backgroundImage = `url("${artUrl}")`
+      })
+    }
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
@@ -861,6 +941,15 @@ function playView(seriesId, season, label) {
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
+      // While the up-next box is up its two buttons are what a remote is pointed at, so left and right walk between them
+      // instead of seeking the picture. Enter and OK already work, because the button has the focus.
+      if ((k === 'ArrowLeft' || k === 'ArrowRight') && e.target.closest?.('.p-next')) {
+        e.preventDefault()
+        const b = [...e.target.closest('.p-next').querySelectorAll('button')]
+        const i = b.indexOf(e.target)
+        if (b.length) b[(Math.max(0, i) + (k === 'ArrowRight' ? 1 : -1) + b.length) % b.length].focus()
+        return
+      }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
       else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
@@ -996,7 +1085,6 @@ function playView(seriesId, season, label) {
       const rate = s.rating && s.rating !== 'Unrated' ? s.rating : ''
       for (const id of ['#prate', '#pirate']) { const el = $(id); if (!el) continue; el.hidden = !rate; el.textContent = rate }
       $('#pis').textContent = [s.name, s.year].filter(Boolean).join(' · ')
-      withArt($('#pposter'))
       $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
     }
     addEventListener('keydown', key)
@@ -1020,6 +1108,9 @@ function playView(seriesId, season, label) {
       report()
       avoid.push(play.torrentId); tries++; started = false
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null; if (v) { v.remove(); v = null }
+      // A new source is a new file, so the box goes and its countdown with it: leaving the interval running would send the
+      // viewer to the next episode while the episode they are watching is still being fetched.
+      clearInterval(cdT); upNextBox = null
       $('.p-next')?.remove()
       $('#wait').classList.remove('gone'); $('#msg').textContent = 'Finding a faster source…'
       t0 = Date.now(); begin()
@@ -1031,7 +1122,7 @@ function playView(seriesId, season, label) {
 
     async function begin() {
       try {
-        play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid })
+        play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
         if (!alive) return
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
         $('#pit').textContent = play.episodeTitle || play.title || label
@@ -1050,7 +1141,12 @@ function playView(seriesId, season, label) {
           $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : ''
         }, 500)
         await loadInfo(0, play.position)
-      } catch (e) { fail(e.message) }
+      } catch (e) {
+        // The order rule refused this episode: go to the show with the one line that says which episode comes first, rather
+        // than leaving a dead player behind. A direct #/play address ends up here too.
+        if (e.gated) { pendingSeriesNote = e.message; go(`#/series/${seriesId}`); return }
+        fail(e.message)
+      }
     }
 
     async function loadInfo(a, startAt) {
@@ -1070,6 +1166,7 @@ function playView(seriesId, season, label) {
       if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
       wireSubs(); wireSubMenu(); wireAudio(); wireExtras()
+      skipCheck() // the chapters are known from here on, so an intro is offered without waiting for the first tick
     }
 
     function attach(startAt) {
@@ -1085,7 +1182,7 @@ function playView(seriesId, season, label) {
           started = true
           // Only now does the blurred backdrop come in: until the first frames arrive the screen is black, so the
           // loading mark is the only thing on it.
-          withArt($('#pbg'))
+          withArt()
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
           const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
@@ -1093,9 +1190,19 @@ function playView(seriesId, season, label) {
         }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
+        // A show paused before it ever started playing still gets its art, once -- never at attach.
+        v.addEventListener('pause', withArt, { once: true })
         v.ontimeupdate = () => {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           skipCheck()
+          // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
+          // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.
+          const now = Date.now()
+          if (now - creditChecked > 1000) {
+            creditChecked = now
+            if (creditAt == null && (info?.duration || info?.chapters?.length)) creditAt = creditStart()
+            if (creditAt != null && v.currentTime >= creditAt) showUpNext()
+          }
           const dur = info?.duration || v.duration
           if (!prefetched && dur && v.currentTime / dur >= 0.6) {
             prefetched = true // watched past 60%: line up the next episode, so "Up next" is instant
@@ -1160,18 +1267,61 @@ function playView(seriesId, season, label) {
       api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
     }
 
-    function onEnded() {
-      report(true)
-      if (!play.next) return go(`#/series/${seriesId}`)
+    /* ---------- up next ----------
+       The next episode is offered while the credits are still running, not after the file has stopped, so the handover is
+       like a streaming service's rather than a wait on a black screen. One function draws the box for every trigger: the
+       credits check on timeupdate, the video's own `ended`, and the cast finishing on the TV. */
+
+    /** When the credits begin, in seconds, or null while the runtime is still unknown.
+        A chapter named for them is exact. Without one it is the closing stretch of the episode -- 6% of the runtime, held
+        between 45s and 2min -- so a half-hour sitcom gets its last 108 seconds and a film gets two minutes. */
+    function creditStart() {
+      const dur = info?.duration || v?.duration || 0
+      const ch = info?.chapters?.find((c) => CREDITS_RE.test(c.title) && c.start > 0 && (!dur || c.start < dur - 5))
+      if (ch) return ch.start
+      return dur > 0 ? Math.max(0, dur - Math.min(120, Math.max(45, dur * 0.06))) : null
+    }
+
+    // Where that moment is for this file, worked out once: recomputing it four times a second would be wasteful, and a
+    // chapter list does not change under a playing file.
+    let creditAt = null, creditChecked = 0
+    // One showing per play. Not now sets `upNextMuted` for the rest of the episode: neither the credits check nor the end
+    // of the file brings the box back, and navigating away does not need to because the whole view goes with it.
+    let upNextMuted = false, upNextBox = null
+
+    function showUpNext() {
+      // Nothing to offer, already offered, or already declined: no box. A countdown that is already running is left alone
+      // rather than restarted, so the `ended` path does not give the viewer a second helping of the same 15 seconds.
+      if (!alive || upNextMuted || upNextBox || !play?.next || play.next.locked) return
+      // The countdown is fifteen seconds and the next episode's bytes start right here: the server starts the fetch, the
+      // probe and the first piece now, so pressing "Play now" (or letting it run) lands on a warm episode instead of the
+      // twelve seconds a cold one spends waiting for its first bytes. Fire and forget: this box must never wait on it.
+      api('/api/warm', { seriesId: +seriesId, season: season === 'x' ? null : +season, label }).catch(() => {})
       const nx = play.next, target = `#/play/${seriesId}/${nx.season ?? 'x'}/${encodeURIComponent(nx.label)}`
       const box = document.createElement('div'); box.className = 'p-next'
       box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}${nx.title ? ' · ' + esc(nx.title) : ''}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
       pl.appendChild(box)
-      const bar = $('#cdb'); let left = 8
-      bar.style.transition = `transform ${left}s linear`; requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
+      upNextBox = box
+      // The bar starts empty and fills over the countdown, so it reads as time running out rather than time left.
+      const bar = $('#cdb'), LEFT = 15
+      clearInterval(cdT)
+      let left = LEFT
+      bar.style.transition = 'none'; bar.style.transform = 'scaleX(0)'
+      requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }))
       cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
-      $('#nn').onclick = () => go(target); $('#nn').focus()
-      $('#nc').onclick = () => { clearInterval(cdT); box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+      const dismiss = () => { upNextMuted = true; clearInterval(cdT); upNextBox = null; box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+      $('#nn').onclick = () => go(target)
+      $('#nc').onclick = dismiss
+      // A remote needs something to land on, so on a television Play now takes the focus. A computer keeps what it was
+      // doing: taking the focus off the seek bar, a field being typed into or a button already pressed would drop it.
+      const a = document.activeElement
+      if (isTv || !a || a === document.body || a === pl) $('#nn').focus({ preventScroll: true })
+    }
+
+    function onEnded() {
+      report(true)
+      if (!play.next || play.next.locked) return go(`#/series/${seriesId}`)
+      showUpNext()
     }
 
     /* subtitles: the browser's own CC menu lists them; we add the tracks, pick a sensible one and remember changes */
@@ -1264,14 +1414,42 @@ function playView(seriesId, season, label) {
       }
     }
 
-    /* skip intro (when the file has chapters named like one) and casting */
-    let chapterNow = null
+    /* skip intro. A chapter named for one is exact, and it is remembered for the show the moment somebody skips it. An
+       episode with no named chapter then offers that remembered window in the same place -- never on the first episode of a
+       show, which has nothing to have learned it from yet. */
+    /** The intro window this show's episodes have had, as the last one somebody actually skipped: {start,end} or null. */
+    function rememberedIntro() {
+      const all = store.get('intros', {})
+      const w = all[seriesId]
+      return w && w.end > w.start ? w : null
+    }
+    function rememberIntro(w) {
+      const all = store.get('intros', {})
+      all[seriesId] = { start: Math.round(w.start), end: Math.round(w.end) }
+      store.set('intros', all)
+    }
+    /** What is on offer at this second of this episode, or null. */
+    function skipWindow() {
+      const t = v.currentTime
+      const c = info?.chapters?.find((c) => SKIP_RE.test(c.title) && t >= c.start - 0.5 && t < c.end - 2)
+      if (c) return { start: c.start, end: c.end, recap: /recap|previously/i.test(c.title), key: 'c' + c.start }
+      // Nothing named in this file: the show's own intro, once an episode of it has been played before.
+      if (!play?.playedBefore) return null
+      const w = rememberedIntro() ?? { start: 0, end: DEFAULT_INTRO_END }
+      if (t >= w.start - 0.5 && t < w.end - 2) return { start: w.start, end: w.end, recap: false, key: 'w' + w.start }
+      return null
+    }
+    let skipNow = null
     function skipCheck() {
-      const c = info?.chapters?.find((c) => SKIP_RE.test(c.title) && v.currentTime >= c.start - 0.5 && v.currentTime < c.end - 2)
-      if (c === chapterNow) return
-      chapterNow = c ?? null
-      const b = $('#skip'); b.hidden = !c
-      if (c) { b.textContent = /recap|previously/i.test(c.title) ? 'Skip recap' : 'Skip intro'; b.onclick = () => { v.currentTime = c.end } }
+      if (!v) return
+      const w = skipWindow()
+      if ((w?.key ?? null) === (skipNow?.key ?? null)) return
+      skipNow = w
+      const b = $('#skip'); if (!b) return
+      b.hidden = !w
+      if (!w) return
+      b.textContent = w.recap ? 'Skip recap' : 'Skip intro'
+      b.onclick = () => { rememberIntro(w); v.currentTime = w.end }
     }
     let castWired = false
     const castTitle = () => `${play?.seriesName || label}${play?.episodeTitle ? ' · ' + play.episodeTitle : ''}`
@@ -1907,6 +2085,55 @@ async function healthBanner() {
 /* ---------- TVs and keyboards: arrow keys move between things, Back goes back ---------- */
 const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
 if (isTv) document.documentElement.classList.add('tv')
+// A text field is a stop like any other: without it here a remote can never reach the search bar, which is what made
+// the search field impossible to select on a Google TV.
+const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input:not([disabled]), textarea:not([disabled]), select:not([disabled])'
+
+/** One metrics pass for a whole press: every stop with its rect read once, and no computed style per element (a remote's
+    press used to rebuild this list, read getComputedStyle on every candidate and measure each of them twice -- on a rail
+    of 200 posters that is a style recalc and 400 layout reads before the highlight has moved). checkVisibility answers
+    "is this drawn" on its own, and the offsetParent test is the fallback for a WebView that has never had it. */
+function focusStops() {
+  const out = []
+  for (const n of document.querySelectorAll(FOCUSABLE)) {
+    if (n.closest('[hidden]') || n.classList.contains('arrow')) continue
+    if (!(n.checkVisibility?.({ visibilityProperty: true }) ?? (n.offsetParent !== null || getComputedStyle(n).position === 'fixed'))) continue
+    const r = n.getBoundingClientRect()
+    if (r.width > 8 && r.height > 8 && r.bottom > 0 && r.top < innerHeight + 400) out.push({ el: n, r, cx: r.left + r.width / 2, cy: r.top + r.height / 2 })
+  }
+  return out
+}
+
+/** Stops grouped into rows by where they are, never by what they are: anything whose vertical band overlaps the row, or
+    starts within a third of a tile of its first item, is on that row. A rail of posters, a grid, a line of buttons and a
+    lone search field all sort the same way, which is what lets Left/Right stay on one line and Up/Down find the next one. */
+function focusRows(stops) {
+  const rows = []
+  for (const s of stops.slice().sort((a, b) => a.r.top - b.r.top)) {
+    const row = rows[rows.length - 1]
+    const same = row && (s.r.top < row.bottom - 1 || Math.abs(s.r.top - row.top) <= Math.min(s.r.height, row.h) / 3)
+    if (!same) { rows.push({ top: s.r.top, bottom: s.r.bottom, h: s.r.height, items: [s] }); continue }
+    row.items.push(s); row.bottom = Math.max(row.bottom, s.r.bottom); row.h = Math.max(row.h, s.r.height)
+  }
+  for (const row of rows) row.cy = (row.top + row.bottom) / 2
+  return rows
+}
+
+/** Bring a newly highlighted thing into view, and only when it is really cut off. A rail of posters is its own sideways
+    scroller, so the tile can be off the rail while the rail is on screen; the page then moves by the least that shows
+    it. The old block/inline 'center' glide re-centred the page on every press, so the picture drifted under a highlight
+    that had already jumped. On a television both are instant: a glide is a 300ms smear on a remote. */
+function revealStop(el) {
+  const r = el.getBoundingClientRect()
+  let cut = r.top < 0 || r.bottom > innerHeight
+  for (let p = el.parentElement; !cut && p && p !== document.documentElement; p = p.parentElement) {
+    if (p.scrollWidth <= p.clientWidth + 1 || !/auto|scroll|overlay|hidden/.test(getComputedStyle(p).overflowX)) continue
+    const pr = p.getBoundingClientRect()
+    cut = r.left < pr.left - 1 || r.right > pr.right + 1
+  }
+  if (cut) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: isTv ? 'instant' : smooth() })
+}
+
 addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
   const el = document.activeElement
@@ -1918,26 +2145,43 @@ addEventListener('keydown', (e) => {
   if (!dir || typing) return
   const onThing = el && el !== document.body
   if (!onThing && !isTv) return // on a computer with nothing focused, arrows keep scrolling the page
-  const vis = (n) => { const r = n.getBoundingClientRect(); return r.width > 8 && r.height > 8 && r.bottom > 0 && r.top < innerHeight + 400 && getComputedStyle(n).visibility !== 'hidden' }
-  // A text field is a stop like any other: without it here a remote can never reach the search bar, which is what made
-  // the search field impossible to select on a Google TV.
-  const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input:not([disabled]), textarea:not([disabled]), select:not([disabled])'
-  const all = [...document.querySelectorAll(FOCUSABLE)].filter((n) => !n.closest('[hidden]') && !n.classList.contains('arrow') && vis(n))
-  const from = onThing ? el.getBoundingClientRect() : { left: innerWidth / 2, right: innerWidth / 2, top: 0, bottom: 0, width: 0, height: 0 }
-  const cx = from.left + from.width / 2, cy = from.top + from.height / 2
+  const rows = focusRows(focusStops())
+  if (!rows.length) return
+  const [dx, dy] = dir
+  const from = onThing ? el.getBoundingClientRect() : { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 }
+  const ox = from.left + from.width / 2, oy = from.top + from.height / 2
+  // The row the highlight is on; with nothing focused yet (a television that has just drawn the page) the row nearest the
+  // middle of the screen stands in for it, so a first press still lands somewhere.
+  const cur = (onThing && rows.find((row) => row.items.some((s) => s.el === el))) || rows.reduce((a, b) => (Math.abs(b.cy - oy) < Math.abs(a.cy - oy) ? b : a))
   let best = null, bestScore = Infinity
-  for (const n of all) {
-    if (n === el) continue
-    const r = n.getBoundingClientRect(), dx = r.left + r.width / 2 - cx, dy = r.top + r.height / 2 - cy
-    const along = dx * dir[0] + dy * dir[1], across = Math.abs(dx * dir[1] + dy * dir[0])
-    if (along <= 4 || across > along * 2.5 + 60) continue
-    const score = along + across * 2.5
-    if (score < bestScore) { bestScore = score; best = n }
+  if (dx) {
+    // Left/Right stays on this row: the nearest thing beside us, and never a diagonal jump into another rail.
+    for (const s of cur.items) {
+      if (s.el === el) continue
+      const along = (s.cx - ox) * dx
+      if (along <= 4) continue
+      const score = along + Math.abs(s.cy - oy) * 0.25
+      if (score < bestScore) { bestScore = score; best = s.el }
+    }
+  } else {
+    // Up/Down goes to the next row in that direction -- the nearest one, not any row in the half of the page -- and takes
+    // the thing nearest our own column in it.
+    let row = null, rowGap = Infinity
+    for (const r of rows) {
+      if (r === cur) continue
+      const gap = (r.cy - cur.cy) * dy
+      if (gap <= 4 || gap >= rowGap) continue
+      rowGap = gap; row = r
+    }
+    for (const s of row?.items ?? []) {
+      const score = Math.abs(s.cx - ox)
+      if (score < bestScore) { bestScore = score; best = s.el }
+    }
   }
   if (!best) return
   e.preventDefault()
   best.focus({ preventScroll: true })
-  best.scrollIntoView({ block: 'center', inline: 'center', behavior: smooth() })
+  revealStop(best)
   // A remote's OK on a text field has to raise the on-screen keyboard: the focus above happens inside a key event, which
   // is what lets a WebView show it, but a field that already had focus never raises it again.
   if (/^(INPUT|TEXTAREA)$/.test(best.tagName)) { try { best.setSelectionRange?.(best.value.length, best.value.length) } catch {} }

@@ -176,6 +176,19 @@ img.fade.in { opacity: 1; }
 @keyframes grow { from { transform: scaleX(0); } }
 .tick svg { animation: tickpop .45s var(--spring) .1s both; } @keyframes tickpop { from { transform: scale(0) rotate(-30deg); } }
 .tick { color: var(--ok); font-size: 13px; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+/* An episode that has to wait its turn: a small lock in the side column, and nothing else changes -- no dimming of the
+   row, no overlay on the picture. The note it gives when pressed is .note-flash. */
+.ep .lock { color: var(--dim); display: inline-flex; align-items: center; }
+.ep .lock svg { width: 15px; height: 15px; }
+.ep.locked .thumb .play { opacity: .35; }
+@media (hover: hover) { .ep.locked:hover:not(:disabled) .play { background: rgba(0,0,0,.5); transform: none; } }
+/* One line that says why nothing happened, then fades. Below the middle of the screen so it never covers a face. */
+.note-flash { position: fixed; left: 50%; bottom: max(84px, calc(env(safe-area-inset-bottom, 0px) + 72px)); transform: translateX(-50%); z-index: 60;
+  padding: 10px 18px; border-radius: 999px; background: rgba(20,22,30,.92); color: #fff; font-size: 14px; font-weight: 600;
+  box-shadow: 0 8px 26px rgba(0,0,0,.45); pointer-events: none; animation: noteIn .22s var(--ease-out) both; }
+.note-flash.out { animation: noteOut .38s var(--ease) both; }
+@keyframes noteIn { from { opacity: 0; transform: translate(-50%, 8px); } }
+@keyframes noteOut { to { opacity: 0; transform: translate(-50%, 6px); } }
 
 /* ---------- player ---------- */
 .player { touch-action: manipulation; position: fixed; inset: 0; z-index: 60; background: #000; overflow: hidden; animation: fadein .4s var(--ease); }
@@ -190,8 +203,11 @@ img.fade.in { opacity: 1; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
 /* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
 .castnote { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 60; max-width: min(420px, 86vw); padding: 10px 14px; border-radius: 10px; background: rgba(12,14,18,.94); border: 1px solid var(--border); color: var(--text); font-size: 13px; line-height: 1.45; text-align: center; }
-.p-next { position: absolute; z-index: 6; right: var(--gutter-r); bottom: max(28px, env(safe-area-inset-bottom, 0px)); width: min(340px, calc(100vw - 36px)); padding: 18px; border-radius: 16px; color: #fff;
-  background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); }
+.p-next { position: absolute; z-index: 6; right: var(--gutter-r); bottom: max(124px, calc(env(safe-area-inset-bottom, 0px) + 100px)); width: min(340px, calc(100vw - 36px)); padding: 18px; border-radius: 16px; color: #fff;
+  background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); transition: bottom .35s var(--ease); }
+/* Clear of the player's own bar. The bar is ~110px tall (10px padding, 24px seek, 4px gap, a 60px button, 12px below), so
+   the card sits over it rather than under it at 960x540 and 1280x720, and drops back into the corner while the bar is away. */
+.player.idle .p-next { bottom: max(28px, env(safe-area-inset-bottom, 0px)); }
 .p-next small { color: rgba(255,255,255,.65); } .p-next b { display: block; font-size: 20px; margin: 2px 0 14px; } .p-next .actions { display: flex; gap: 10px; }
 .p-next .btn { padding: 10px 16px; flex: 1; }
 
@@ -432,6 +448,11 @@ a.pill { display: inline-block; }
    width, so a further zoom here only made every control a third bigger again on top of an already scaled layout. */
 html.tv :focus-visible { outline: 4px solid var(--accent); outline-offset: 4px; box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent); }
 html.tv .tile:focus-visible .poster { transform: translateY(-6px) scale(1.07); }
+/* A remote moves the highlight by calling focus() from script, and :focus-visible never matches that, so the ring has to
+   come from :focus as well -- otherwise the arrow keys moved something the eye could not find. Desktop keeps the
+   :focus-visible rule on its own, so a mouse click still rings nothing. */
+html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus, html.tv .tile:focus { outline: 4px solid var(--accent); outline-offset: 4px; box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent); }
+html.tv .tile:focus .poster { transform: translateY(-6px) scale(1.07); }
 html.tv * { cursor: none; }
 
 
@@ -527,14 +548,15 @@ html.tv * { cursor: none; }
   animation: sweep 1.3s cubic-bezier(.45,0,.2,1) .95s forwards; }
 .p-wait.gone .mark { transform: scale(1.7); opacity: 0; filter: blur(8px); transition: transform 1.4s cubic-bezier(.4,0,.2,1), opacity 1.2s cubic-bezier(.4,0,.2,1), filter 1.4s ease; }
 /* A light running around the tile while the episode is still being fetched: without it a slow start reads as a freeze.
-   It comes in after the intro has played, and goes with the overlay when playback starts. */
-.mark .tracer { position: absolute; inset: -5px; border-radius: 32px; pointer-events: none; opacity: 0; padding: 2px;
-  background: conic-gradient(from 0deg, transparent 0deg 248deg, rgba(255,255,255,.06) 292deg, rgba(255,255,255,.6) 340deg, #fff 355deg, transparent 360deg);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude;
-  animation: tracerSpin 1.9s linear infinite, tracerIn .6s ease 1.5s forwards; }
-.p-wait.gone .tracer { opacity: 0; animation: none; }
-@keyframes tracerSpin { to { rotate: 360deg; } }
+   It is the tile's own squircle drawn as one stroke, not a conic gradient on a rotating box -- the gradient's bright spot
+   orbited the middle of the box, so it swept across the corners instead of running along the edge. The rect sits 1px
+   outside the 112px tile whose radius is 26, and pathLength=100 makes the dash travel exactly one lap and turn each
+   corner with it. It comes in after the intro has played and goes with the overlay when playback starts. */
+.mark .tracer { position: absolute; inset: 0; width: 112px; height: 112px; overflow: visible; border-radius: 0; box-shadow: none;
+  pointer-events: none; opacity: 0; animation: tracerIn .6s ease 1.5s forwards; }
+.mark .tracer rect { animation: tracerRun 1.9s linear infinite; }
+.p-wait.gone .tracer, .p-wait.gone .tracer rect { opacity: 0; animation: none; }
+@keyframes tracerRun { to { stroke-dashoffset: -100; } }
 @keyframes tracerIn { to { opacity: 1; } }
 @keyframes markIn { 0% { opacity: 0; transform: translateY(18px) scale(.8) rotateX(22deg); filter: blur(14px); } 55% { opacity: 1; filter: blur(0); } 100% { opacity: 1; transform: none; filter: none; } }
 @keyframes markFloat { 0%, 100% { transform: none; } 50% { transform: translateY(-5px); } }

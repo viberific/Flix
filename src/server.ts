@@ -24,7 +24,8 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { fullInDays, storageHistory } from './storage.ts'
-import { autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { gatesFor, gatedNote, STARTED_AT } from './gate.ts'
 import { ensureNet, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
@@ -37,7 +38,9 @@ export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } 
 app.setErrorHandler((err: any, _req, reply) => {
   const status = err instanceof RateLimitError ? 429 : err instanceof IpNotAuthorizedError ? 403 : err.statusCode ?? 500
   if (status >= 500) app.log.error(err)
-  reply.code(status).send({ error: err.message })
+  // `gated` and `after` ride along so the player knows to send the viewer to the show page with the one-line note,
+  // instead of drawing an error it cannot act on.
+  reply.code(status).send({ error: err.message, ...(err.gated ? { gated: true, after: err.after ?? null } : {}) })
 })
 
 /** True for a host that only exists on the home network: a private IPv4 literal, an mDNS .local name, whatever
@@ -227,11 +230,14 @@ app.get('/api/series/:id', auth, async (req) => {
 })
 
 /** Add each episode's title, summary, length and still image when we know them. */
-function withInfo<T extends { season: number | null; episode: number | null }>(seriesId: number, eps: T[]) {
+function withInfo<T extends { season: number | null; episode: number | null; watched: boolean; position: number; label: string }>(seriesId: number, eps: T[]) {
   const info = episodeInfoFor(seriesId)
-  return eps.map((e) => {
+  const gates = gatesFor(eps)
+  return eps.map((e, n) => {
     const i = e.season !== null && e.episode !== null ? info.get(`${e.season}|${e.episode}`) : undefined
-    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: e.season !== null && e.episode !== null ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null } // always asked for: the server falls back to the show's artwork
+    // Every episode carries its own answer to "may this be started yet?", so a card, a row and the hero all read the same
+    // rule without any of them working it out again.
+    return { ...e, ...gates[n], title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: e.season !== null && e.episode !== null ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null } // always asked for: the server falls back to the show's artwork
   })
 }
 
@@ -378,12 +384,25 @@ app.post('/api/watch', auth, async (req) => {
   if (i < 0) throw Object.assign(new Error(avoid.size ? 'There is no other source for this episode.' : 'That episode is not available'), { statusCode: 404 })
   const ep = eps[i]
   if (!ep.available) throw Object.assign(new Error('Nobody is sharing this episode right now. Please try again later.'), { statusCode: 503 })
+  // One, two, three (see gate.ts). Only a play is held to it: the same route starts a download for the "save this"
+  // button, and that must keep working from any episode. `play: true` is what the player itself sends.
+  const gates = gatesFor(eps)
+  const gate = gates[i]
+  if (gate.locked && (req.body as any).play === true) {
+    throw Object.assign(new Error(gatedNote(gate.after!)), { statusCode: 409, gated: true, after: gate.after })
+  }
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
-  const next = eps.slice(i + 1).find((e) => e.available)
+  const ni = eps.findIndex((e, j) => j > i && e.available)
+  const next = ni < 0 ? undefined : eps[ni]
+  // Has another episode of this show been played? The skip-intro fallback waits for that: the first episode cannot have one,
+  // because there is nothing to have learned the intro from yet.
+  const playedBefore = eps.some((o, j) => j !== i && (o.watched || o.position > STARTED_AT))
+  // The box offered at the credits must itself be allowed: it is, unless this episode was never counted as started.
+  const nextOpen = ni >= 0 && !gates[ni].locked
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
   const titles = episodeInfoFor(Number(seriesId))
   const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
-  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
+  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), playedBefore, next: next ? { season: next.season, label: next.label, title: nameOf(next), locked: !nextOpen } : null }
 })
 
 /** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */
@@ -391,6 +410,43 @@ app.post('/api/prefetch', auth, async (req) => {
   const { seriesId, season, label } = req.body as any
   if (!canViewSeries(req.user, Number(seriesId))) return { ok: false }
   void autoNext(req.user!.id, Number(seriesId), season ?? null, String(label ?? ''))
+  return { ok: true }
+})
+
+/**
+ * The player has just put the "Up next" box on screen: get that episode's bytes moving and its first piece made now, so
+ * the handover at the end of the credits is a cut instead of a wait. Measured on the box, a cold episode spends about
+ * 12 s in its first probe waiting for bytes that have not arrived yet; warmed a minute ahead, the same play answers in a
+ * fraction of a second. Answers at once and carries on behind: the player is showing a countdown and must not wait.
+ */
+async function warmNextEpisode(userId: number, seriesId: number, season: number | null, label: string) {
+  const eps = buildEpisodes(seriesId, userId)
+  const i = eps.findIndex((e) => e.season === season && e.label === label)
+  const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
+  if (!next) return
+  // The fetch itself, exactly as at 60% of the episode: idempotent, and held to the automatic-download limits.
+  if (!(await autoFetch(userId, next, 'up next, warming the first piece'))) return
+  const r = await startPlayback(userId, next.torrentId, undefined, { episodeLabel: next.isPack && next.episode === null ? undefined : next.label, auto: true })
+  const p = await probe(r.torrentId, r.fileIndex)
+  // The same choice /info makes, in the same order. Bytes that can be served as they are need nothing done to them.
+  if (p.direct) return
+  // A complete file the player would rather have as one seekable MP4: a remux takes minutes, so building it ahead of the
+  // handover is the only way it is ready in time. Worth starting even if it will not finish before the credits do.
+  const fi = await fileInfo(r.torrentId, r.fileIndex).catch(() => null)
+  if (fi && fi.file.progress >= 1 && !p.hdr && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080) {
+    await remuxPlayback(r.torrentId, r.fileIndex, p, () => false, 0)
+    return
+  }
+  // Otherwise the HLS cut, whose first piece is only made when somebody asks for it: ask here.
+  await ensureHls(r.torrentId, r.fileIndex, p)
+  await vodSegment(r.torrentId, r.fileIndex, 'seg00000.ts', new AbortController().signal).catch(() => null)
+}
+
+app.post('/api/warm', auth, async (req) => {
+  const b = req.body as any
+  const seriesId = Number(b?.seriesId)
+  if (!Number.isInteger(seriesId) || !canViewSeries(req.user, seriesId)) return { ok: false }
+  void warmNextEpisode(req.user!.id, seriesId, b.season ?? null, String(b.label ?? '')).catch((e) => console.log(`[warm] ${e.message}`))
   return { ok: true }
 })
 
