@@ -9,6 +9,7 @@ import { fetchTorrentFile } from './btn/client.ts'
 import { isVideo, parseEpisodeTag } from './btn/parse.ts'
 import { assertSpace } from './health.ts'
 import { SUBFILE } from './transcode.ts'
+import { diag, hitch } from './diag.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -161,6 +162,8 @@ export class StreamTimeout extends Error {}
 /** Resolve once every piece covering bytes [start,end] of the file has been downloaded and verified (state 2). */
 async function waitForBytes(hash: string, fileIndex: number, start: number, end: number, signal: AbortSignal, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs
+  const from = Date.now()
+  let logged = false // one line per stall, not one per poll: a long wait must not bury the log it is recorded in
   for (;;) {
     if (signal.aborted) throw new Error('aborted')
     const l = await layoutFor(hash)
@@ -171,10 +174,21 @@ async function waitForBytes(hash: string, fileIndex: number, start: number, end:
     const first = Math.floor((base + start) / l.pieceSize)
     const last = Math.floor((base + end) / l.pieceSize)
     const states = await pieces(hash)
-    let ok = true
-    for (let i = first; i <= last; i++) if (states[i] !== 2) { ok = false; break }
-    if (ok) return
-    if (Date.now() > deadline) throw new StreamTimeout('Timed out waiting for data (no seeders?)')
+    let missing = 0
+    for (let i = first; i <= last; i++) if (states[i] !== 2) missing++
+    if (!missing) return
+    const waited = Date.now() - from
+    // A wait of half a second is where a player starts to hitch: that is the line worth having, and it records what was
+    // actually short (how many of the pieces under these bytes had not arrived) rather than only that something was slow.
+    if (!logged && waited > 500) {
+      logged = true
+      const t = await qb.info(hash).catch(() => null)
+      hitch('pieces', 'playback waiting for data', { file: fileIndex, atBytes: start, pieces: `${missing} missing of ${last - first + 1}`, waitedMs: waited, progress: Math.round(f.progress * 100) / 100, dlspeed: t?.dlspeed ?? null, seeds: t?.num_seeds ?? null, peers: t?.num_leechs ?? null, state: t?.state ?? null })
+    }
+    if (Date.now() > deadline) {
+      hitch('pieces', 'gave up waiting for data', { file: fileIndex, atBytes: start, waitedMs: Date.now() - from, pieces: `${missing} missing of ${last - first + 1}` })
+      throw new StreamTimeout('Timed out waiting for data (no seeders?)')
+    }
     await sleep(200)
   }
 }
@@ -189,7 +203,9 @@ export async function fileInfo(torrentId: number, fileIndex: number) {
 
 /** Readable over [start,end] that blocks (without busy-reading zeros) until the needed pieces exist. */
 export function readRange(hash: string, savePathHint: string, f: QbFile, start: number, end: number, signal: AbortSignal): Readable {
-  const CHUNK = 1 << 20
+  // 2 MB per read: the player takes what it is given as fast as the pieces allow, and every read costs a piece-state
+  // round trip to the engine. At 1 MB a 4 Mbit/s episode asked the engine forty times a minute for an answer it had just had.
+  const CHUNK = 2 << 20
   async function* gen() {
     const path = join(savePathHint, f.name)
     let fh: Awaited<ReturnType<typeof open>> | null = null

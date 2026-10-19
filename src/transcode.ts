@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { config } from './config.ts'
+import { hitch } from './diag.ts'
 
 const execFileP = promisify(execFile)
 export const rawUrl = (t: number, f: number) => `http://127.0.0.1:${config.port}/api/stream/${t}/${f}/raw?k=${config.internalKey}`
@@ -177,10 +178,17 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
   if (n < 0 || n >= v.count) return null
   const deadline = Date.now() + 120_000
   let startedFor = -1
+  const asked = Date.now()
   for (;;) {
     if (signal.aborted) throw new Error('aborted')
     scanDone(j)
-    if (v.done.has(n)) return segPath(j, n)
+    if (v.done.has(n)) {
+      // A segment the encoder was not ready with is a hitch on screen: the player had nothing to play for that wait. Recorded
+      // with the job it came from, so a slow CPU (every segment late) looks nothing like one late seek.
+      const waited = Date.now() - asked
+      if (waited > 600) hitch('hls', 'player waited for a segment', { torrent: torrentId, file: fileIndex, seg: n, waitedMs: waited, made: v.done.size, of: v.count })
+      return segPath(j, n)
+    }
     const r = v.run
     if (!(r && !r.exited && n >= r.from && n < r.stopAt && n <= vodNext(v, r) + AHEAD)) {
       if (startedFor === n && r?.exited) throw new Error('ffmpeg failed')
@@ -199,6 +207,11 @@ export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr
   for (let n = 0; n < v.count; n++) lines.push(`#EXTINF:${(n === v.count - 1 ? v.duration - n * SEG : SEG).toFixed(3)},`, `seg${String(n).padStart(5, '0')}.ts`)
   lines.push('#EXT-X-ENDLIST')
   return lines.join('\n') + '\n'
+}
+
+/** Every HLS job running now, and how far each has got: enough to tell a job that is encoding faster than it plays from one that is not. */
+export function hlsSummary() {
+  return [...jobs.entries()].map(([key, j]) => ({ job: key, segs: j.vod ? j.vod.done.size : null, of: j.vod ? j.vod.count : null, running: !!j.proc && j.proc.exitCode === null, dir: j.dir }))
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))

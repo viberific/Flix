@@ -1177,6 +1177,9 @@ function playView(seriesId, season, label) {
         }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
+        // What the player itself felt: a stall, a seek, a picture that dropped to a lower resolution. The server only sees its
+        // side of a gap, and the two timestamps together say which end was slow.
+        watchStalls(v, () => play)
         // A show paused before it ever started playing still gets its art, once -- never at attach.
         v.addEventListener('pause', withArt, { once: true })
         v.ontimeupdate = () => {
@@ -2227,3 +2230,28 @@ async function route() {
 addEventListener('hashchange', route)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 route()
+
+/**
+ * Report what the player felt, so a hitch has a time on both ends: the browser knows it ran dry and when, the server knows
+ * who it was waiting on. Only a stall, a seek and a coarse resolution change are sent -- never every tick -- so this costs
+ * a handful of small requests an evening and nothing while the picture is fine.
+ */
+function watchStalls(v, getPlay) {
+  let last = 0
+  let waitingSince = 0
+  const send = (kind, extra) => {
+    const now = Date.now()
+    if (now - last < 1500) return // a stall fires waiting, stalled and suspend in a burst; one report is the story
+    last = now
+    const ahead = (() => { try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime && v.currentTime <= v.buffered.end(i)) return Math.round((v.buffered.end(i) - v.currentTime) * 10) / 10; return 0 } catch { return 0 } })()
+    api('/api/diag/client', { kind, at: Math.round(v.currentTime * 10) / 10, bufferedAhead: ahead, height: v.videoHeight || null, width: v.videoWidth || null, paused: v.paused, readyState: v.readyState, torrentId: getPlay?.()?.torrentId ?? null, fileIndex: getPlay?.()?.fileIndex ?? null, ...extra }).catch(() => {})
+  }
+  v.addEventListener('waiting', () => { waitingSince = Date.now(); send('stall') })
+  v.addEventListener('stalled', () => send('stalled'))
+  v.addEventListener('seeking', () => send('seek'))
+  v.addEventListener('error', () => send('error', { code: v.error?.code ?? null, message: String(v.error?.message ?? '').slice(0, 120) }))
+  v.addEventListener('playing', () => { if (waitingSince && Date.now() - waitingSince > 400) send('recovered', { stalledForMs: Date.now() - waitingSince }); waitingSince = 0 })
+  // A resolution the browser settled on well below the file's told us it fell back to a lower rendition.
+  let lowest = null
+  v.addEventListener('resize', () => { const h = v.videoHeight || 0; if (h && (lowest == null || h < lowest)) { lowest = h; if (h <= 480) send('low-res', {}) } })
+}

@@ -3,6 +3,7 @@ import fastifyStatic from '@fastify/static'
 import { createReadStream, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar, isChild, hasPassword } from './auth.ts'
@@ -12,7 +13,7 @@ import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, tmdbKeyStatus } from './settings.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, jobDir, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
+import { SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { frame as frameAt, startThumbSweeper } from './thumbs.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
@@ -28,6 +29,7 @@ import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './auto
 import { gatesFor, gatedNote, STARTED_AT } from './gate.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
+import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
 import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
@@ -660,8 +662,24 @@ async function rawHandler(req: any, reply: any) {
   reply.header('accept-ranges', 'bytes').header('content-length', end - start + 1).type(MIME[ext] ?? 'application/octet-stream')
   const ac = new AbortController()
   req.raw.on('close', () => ac.abort())
+  // A closed stream is what a hitch looks like from this side: the player gave up on a gap and dropped the connection.
+  // Which range it was reading, for how long, and whether it was cut short is the evidence a report can never carry.
+  const at = Date.now()
+  let sent = 0
+  let why = 'eof'
+  const t0 = await qb.info(fi.rel.info_hash).catch(() => null)
+  diag('stream', 'raw open', { torrent: t, file: f, range: `${start}-${end}`, mb: Math.round((end - start + 1) / 1048576), progress: t0 ? Math.round(t0.progress * 100) / 100 : null, dlspeed: t0?.dlspeed ?? null, seeds: t0?.num_seeds ?? null })
   const stream = readRange(fi.rel.info_hash, fi.layout.savePath, fi.file, start, end, ac.signal)
-  stream.on('error', (e) => { if (!ac.signal.aborted) app.log.warn(`stream ${t}/${f}: ${e.message}`); reply.raw.destroy() })
+  stream.on('data', (c: Buffer) => { sent += c.length })
+  stream.on('error', (e) => {
+    why = ac.signal.aborted ? 'client closed' : `error: ${e.message}`
+    if (!ac.signal.aborted) app.log.warn(`stream ${t}/${f}: ${e.message}`)
+    reply.raw.destroy()
+  })
+  reply.raw.on('close', () => {
+    const ms = Date.now() - at
+    diag('stream', 'raw close', { torrent: t, file: f, sentMb: Math.round(sent / 1048576 * 10) / 10, ms, why })
+  })
   return reply.send(stream)
 }
 
@@ -777,6 +795,37 @@ app.post('/api/report', auth, async (req) => {
   const label = String(b.label ?? '').slice(0, 40), message = String(b.message ?? '').slice(0, 300)
   const dup = db.prepare('SELECT 1 FROM reports WHERE user_id = ? AND torrent_id IS ? AND label = ? AND kind = ? AND created_at > ? AND resolved_at IS NULL').get(req.user!.id, torrentId, label, kind, now() - 600)
   if (!dup) db.prepare('INSERT INTO reports (user_id, torrent_id, series_id, label, kind, message, created_at) VALUES (?,?,?,?,?,?,?)').run(req.user!.id, torrentId, seriesId, label, kind, message, now())
+  return { ok: true }
+})
+/**
+ * What Flix itself saw: the hits the player took, the streams it dropped, the pieces that were late.
+ * Kept in memory and on disk, and only ever shown to an admin.
+ */
+app.get('/api/admin/diag', admin, async (req) => {
+  const q = (req.query ?? {}) as any
+  const n = Math.max(1, Math.min(3000, Number(q.n) || 200))
+  const areas = String(q.area ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  const tail = diagTail(3000).filter((e) => (!areas.length || areas.includes(e.area)) && (!q.level || e.lvl === q.level)).slice(-n)
+  return {
+    counts: diagCounts(),
+    files: diagFiles(),
+    // The box as it is now: a hitch during a transcode on a loaded CPU has a different cause from one on an idle one.
+    host: { cpus: cpus().length, model: cpus()[0]?.model ?? '', load: loadavg().map((x) => Math.round(x * 100) / 100), uptimeH: Math.round(uptime() / 360) / 10, memMb: Math.round(freemem() / 1048576), totalMb: Math.round(totalmem() / 1048576), node: process.version },
+    hls: hlsSummary(),
+    events: tail,
+  }
+})
+/** A viewer's player saying what it felt: a stall, a seek, a picture that fell back. Kept with the server's own stream events. */
+app.post('/api/diag/client', auth, async (req) => {
+  const b = (req.body ?? {}) as any
+  const kind = String(b.kind ?? '').slice(0, 20)
+  if (!kind) return { ok: false }
+  const at = Number(b.at) || null
+  diag('client', kind, {
+    torrent: Number(b.torrentId) || null, file: Number(b.fileIndex) || null, at, bufferedAhead: Number(b.bufferedAhead) || 0,
+    height: Number(b.height) || null, readyState: Number(b.readyState) || null, paused: !!b.paused,
+    stalledForMs: Number(b.stalledForMs) || null, code: b.code ?? null, message: b.message ?? null, user: req.user!.id,
+  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' ? 'warn' : 'info')
   return { ok: true }
 })
 app.get('/api/admin/reports', admin, async () => ({
