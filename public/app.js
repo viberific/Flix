@@ -1272,12 +1272,16 @@ function playView(seriesId, season, label) {
       // Flix is set never to re-encode the picture, and this file needs it. Ask once, in the player, rather than
       // leaving a dead screen: the viewer decides whether this episode is worth the CPU.
       if (info.mode === 'convert') {
+        // Nothing on the box converts anything any more: it plays files as they are. Say so, and offer nothing to tap --
+        // asking again would only come back with the same line.
         allowConvert = false
         const el = $('#msg')
         if (el) {
-          el.textContent = `${info.message} Tap here to allow it for this episode.`
-          el.style.cursor = 'pointer'
-          el.onclick = () => { el.onclick = null; el.style.cursor = ''; allowConvert = true; loadInfo(a, startAt).catch((e) => fail(e.message)) }
+          el.textContent = info.convertAvailable ? `${info.message} Tap here to allow it for this episode.` : info.message
+          if (info.convertAvailable) {
+            el.style.cursor = 'pointer'
+            el.onclick = () => { el.onclick = null; el.style.cursor = ''; allowConvert = true; loadInfo(a, startAt).catch((e) => fail(e.message)) }
+          }
         }
         return
       }

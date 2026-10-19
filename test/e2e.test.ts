@@ -323,15 +323,15 @@ test('casting: a finished episode goes to the TV as one seekable file, not a pla
   assert.equal(direct.seekable, true)
   assert.match(direct.tvUrl, /\/raw$/)
   assert.equal(direct.tvType, 'video/mp4')
-  // An MKV goes over as the single remuxed MP4. This is the whole point: the playlist for a passed-through picture is built
-  // forwards and a cast receiver never re-reads it, so the TV would only ever have the part converted so far to drag in.
+  // An MKV goes over as the single repacked MP4, picture copied and never re-encoded. A cast receiver keeps whatever
+  // timeline it is handed, so it gets one file and no playlist at all.
   const two = await playAndFetch(1001)
   await offlineReady(1001, two.fileIndex)
   const info: any = await jget(`/api/stream/1001/${two.fileIndex}/info?cast=1`)
   assert.equal(info.seekable, true)
   assert.match(info.tvUrl, /\/offline\/file$/)
   assert.equal(info.tvType, 'video/mp4')
-  assert.match(info.castFallbackUrl ?? '/hls/index.m3u8', /\/hls\/index\.m3u8$/)
+  assert.equal(info.castFallbackUrl, null)
   // Fetched the way the TV does -- the token in the path, no cookie -- a range comes back with the whole episode's length
   // in it, which is what the scrubber is drawn from.
   const part = await api(info.tvUrl, { headers: { range: 'bytes=0-1023' } })
@@ -343,23 +343,21 @@ test('casting: a finished episode goes to the TV as one seekable file, not a pla
   assert.equal(Number(/(\d+)$/.exec(cr)![1]), s.size)
 })
 
-test('transcode path: mkv/ac3 is served as HLS', async () => {
-  // Torrent 1002: its own show, and a picture no remux can put in an MP4, so the mode is HLS whatever ran before this.
+test('a file that would have to be converted is refused, and nothing is encoded', async () => {
+  // Torrent 1002: its own show, and a picture no repack can put in an MP4. The server says so and stops there: no encoder
+  // is started, and the playlist routes answer with the same line instead of cutting segments on demand.
   const play = await playAndFetch(1002)
-  const info = await jget(`/api/stream/1002/${play.fileIndex}/info`)
-  assert.equal(info.mode, 'hls')
-  // Nothing finished can be handed over as a file, so the TV is given the playlist and told that is what it is.
-  assert.equal(info.seekable, false)
-  assert.equal(info.tvType, 'application/vnd.apple.mpegurl')
-  assert.match(info.tvUrl, /hls\/index\.m3u8$/)
-  const pl = await api(info.url)
-  assert.equal(pl.status, 200)
-  const text = await pl.text()
-  assert.match(text, /#EXTM3U/)
-  const seg = text.split('\n').find((l) => l.endsWith('.ts'))!
-  const sr = await api(`/api/stream/1002/${play.fileIndex}/hls/${seg}`)
-  assert.equal(sr.status, 200)
-  assert.ok((await sr.arrayBuffer()).byteLength > 1000)
+  const info: any = await jget(`/api/stream/1002/${play.fileIndex}/info`)
+  assert.equal(info.mode, 'convert')
+  assert.equal(info.needsConvert, true)
+  assert.equal(info.convertAvailable, false, 'nothing may be offered that would start a conversion')
+  assert.match(String(info.message), /converting is turned off/)
+  // The player gets one clear line, not a playlist that would put every core of the box to work.
+  for (const path of ['hls/index.m3u8', 'hdr/index.m3u8']) {
+    const r = await api(`/api/stream/1002/${play.fileIndex}/${path}`)
+    assert.equal(r.status, 409, path)
+    assert.match(String((await r.json() as any).error), /converting is turned off/, path)
+  }
 })
 
 test('retention: kept until watched AND seeded; force-remove refused; removed once both hold', async () => {

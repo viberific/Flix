@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { createReadStream, existsSync } from 'node:fs'
+import { createReadStream } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
@@ -14,10 +14,10 @@ import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
 import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { MP4_CARRY, SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, mayEncode, needsEncode, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
-import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
-import { buildSprite, spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
-import { creditsAt as measuredCredits, creditsNeedsWork, measureCredits, saveCredits } from './credits.ts'
+import { MP4_CARRY, SUBFILE, cleanHlsCache, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
+import { offlineCopy, startOfflineSweeper } from './offline.ts'
+import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
+import { creditsAt as measuredCredits } from './credits.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -461,13 +461,9 @@ async function warmNextEpisode(userId: number, seriesId: number, season: number 
   // A complete file the player would rather have as one seekable MP4: a remux takes minutes, so building it ahead of the
   // handover is the only way it is ready in time. Worth starting even if it will not finish before the credits do.
   const fi = await fileInfo(r.torrentId, r.fileIndex).catch(() => null)
-  if (fi && fi.file.progress >= 1 && !p.hdr && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080) {
+  if (fi && fi.file.progress >= 1 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080) {
     await remuxPlayback(r.torrentId, r.fileIndex, p, () => false, 0)
-    return
   }
-  // Otherwise the HLS cut, whose first piece is only made when somebody asks for it: ask here.
-  await ensureHls(r.torrentId, r.fileIndex, p)
-  await vodSegment(r.torrentId, r.fileIndex, 'seg00000.ts', new AbortController().signal).catch(() => null)
 }
 
 app.post('/api/warm', auth, async (req) => {
@@ -492,60 +488,60 @@ app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
 
 const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInteger(n) && n >= 0 && n < 32 ? n : 0 }
 
+/**
+ * Said instead of starting an encoder. Flix plays files as they are, and a box the family is watching must never have ffmpeg
+ * working on a play: a conversion here would take every core the player needs to serve the bytes.
+ */
+const CONVERT_OFF = 'This file would need converting, and converting is turned off. Flix plays files as they are.'
+const CONVERT_AUDIO = 'This file plays with its first audio track only. Switching tracks would need converting, and converting is turned off.'
+const STILL_ARRIVING = 'This episode is still downloading. It plays as soon as the download has finished, with nothing converted.'
+const CONVERT_OFF_VOD = 'This would have to be converted to play, and converting is turned off.'
+
 app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const { t, f } = req.params as any
   const a = audioIdx((req.query as any).a)
-  // A cast is about to be handed to a TV, and a receiver keeps whatever timeline it was given when it loaded: a playlist
-  // still being built would leave it with only the part converted so far, and no way to drag past it. So a cast waits
-  // longer for the one seekable file, while an ordinary play starts at once and lets the remux catch up in the background.
+  // A cast is about to be handed to a TV, and a receiver keeps whatever timeline it was given when it loaded: it needs the
+  // one file, not a stream still being made. So a cast waits longer for the repack, while an ordinary play starts at once.
   const cast = (req.query as any).cast === '1'
   // A remux this call starts may hold the play for a moment; a viewer who has closed the page must not hold it at all.
   let closed = false
   reply.raw.on('close', () => { closed = true })
   const p = await probe(+t, +f)
-  const direct = p.direct && a === 0 // another audio track needs the transcode path (raw bytes can't switch tracks)
-  // A file that is fully downloaded and needs only its container changed (MKV holding H.264, say) is remuxed once into
-  // one MP4 and served with byte ranges. That is what makes the whole episode seekable: the HLS fallback for a passed
-  // through picture is built forwards from the start, so a seek ahead of it cannot work until it catches up.
-  const remux = !direct && !p.hdr && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
-  // Setting the picture may never be re-encoded ('off') has to mean it: say plainly that this copy needs a
-  // conversion instead of quietly spending the CPU that setting exists to save. 'convert=1' is the viewer's own
-  // one-off yes, from the button the player shows for this answer.
-  const allowConvert = (req.query as any).convert === '1'
-  if (!direct && !remux && !allowConvert && !mayEncode() && needsEncode(p)) {
+  const direct = p.direct && a === 0 // another audio track needs a repack, which is only done for the first one
+  // Nothing on this box converts anything: Flix plays files as they are. A finished file whose container the player cannot
+  // take (an MKV holding H.264, say) is repacked once into one MP4 with the picture copied untouched -- no decoder on the
+  // stream, no encoder, just bytes moved -- and served by byte range, which is also what makes the whole episode seekable.
+  // Everything else is refused below, plainly, instead of starting ffmpeg on a box the family is watching.
+  const remux = !direct && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
+  const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
+  if (!direct && !remux) {
+    // The answer is the truth and nothing happens behind it: the player shows this line and offers nothing to tap,
+    // because there is nothing the box will do about it.
+    const repackable = a === 0 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080
     return {
-      mode: 'convert', needsConvert: true, duration: p.duration, audioIndex: a, chapters: p.chapters, audio: p.audio,
-      message: 'This copy has to be converted before it will play, and Flix is set never to convert the picture. Allowing one conversion plays it now.',
+      mode: 'convert', needsConvert: true, convertAvailable: false, duration: p.duration, audioIndex: a, chapters: p.chapters, audio: p.audio,
+      message: a !== 0 ? CONVERT_AUDIO : repackable && !complete ? STILL_ARRIVING : CONVERT_OFF,
     }
   }
-  const path = direct ? 'raw' : a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'
+  const path = direct ? 'raw' : 'offline/file'
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
-  // to it as one file served by byte range -- the plain MP4 as it is, anything else as the remuxed MP4 -- because only a
-  // file carries its whole length at once. The growing playlist is what is left when there is no finished file to send.
-  // direct is decided from the container and codecs alone, so it says nothing about how much is downloaded: a file still
-  // arriving is served as raw bytes that run out partway with no way for a receiver to retry, so only a complete one is
-  // handed over as a file and an unfinished one keeps the playlist it has always had.
-  const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
-  const seekable = direct && complete ? 'raw' : remux ? 'offline/file' : null
-  const tvPath = seekable ?? (a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8')
-  const tv = `/api/tv/${token}/${t}/${f}/${tvPath}`
-  // The playlist, kept as the fallback for a receiver that will not take the file: same picture, built forwards.
-  const tvHls = `/api/tv/${token}/${t}/${f}/${a ? `hls-a/${a}/index.m3u8` : 'hls/index.m3u8'}`
+  // to it as one file served by byte range -- the plain MP4 as it is, anything else as the repacked MP4 -- because only a
+  // file carries its whole length at once. There is no playlist any more: a picture that went through HLS needed ffmpeg
+  // working for as long as it played, which is the thing this release exists to stop. A direct file still arriving is served as raw bytes as it always was.
+  const tv = `/api/tv/${token}/${t}/${f}/${path}`
   // What the receiver must be told the link is, since it decides how to play it from this alone.
-  const tvType = seekable ? (direct ? await rawType(+t, +f) : 'video/mp4') : 'application/vnd.apple.mpegurl'
-  // The HDR path: the HEVC stream is copied, not re-encoded, into fragmented MP4 so the TV keeps its HDR metadata
-  // and the picture is bit-for-bit the source instead of an 8-bit downconvert. Only offered when the source is HDR.
-  const hdrUrl = p.hdr ? `${base}/hdr/index.m3u8?a=${a}` : null
-  const tvHdr = p.hdr ? `/api/tv/${tvToken(req.user!.id)}/${t}/${f}/hdr/index.m3u8?a=${a}` : null
+  const tvType = direct ? await rawType(+t, +f) : 'video/mp4'
   return {
-    mode: direct ? 'direct' : remux ? 'file' : 'hls', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, tvType, seekable: !!seekable,
-    castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: config.lanUrl ? config.lanUrl + tvHls : null, duration: p.duration, audioIndex: a, hdr: p.hdr,
-    // Where the credits begin, measured once in the background when the file finished downloading; null while there is no
-    // measurement, and the player then estimates from the runtime.
+    mode: direct ? 'direct' : 'file', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, tvType, seekable: true,
+    castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: null, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    // The HDR playlist went with the other conversions. An HDR episode is repacked with its picture copied and its colour
+    // tags kept, and the player falls back to that file when there is no hdrUrl.
+    hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
+    // Where the credits begin, from a marker measured by an older version while the file downloaded; null when there is
+    // no marker (nothing measures them any more) and the player then estimates from the runtime, which needs no ffmpeg.
     creditsAt: measuredCredits(+t, +f, p.duration ?? 0),
-    hdrUrl, hdrTvUrl: tvHdr, hdrCastUrl: config.lanUrl && tvHdr ? config.lanUrl + tvHdr : null,
     audio: p.audio, chapters: p.chapters,
     subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
   }
@@ -720,27 +716,15 @@ async function rawHandler(req: any, reply: any) {
   return reply.send(stream)
 }
 
+/**
+ * The converted-playlist routes: they exist so an old player, a bookmark or a cast receiver gets a plain answer instead of a
+ * 404, and they never start a conversion. Nothing on this server encodes any more -- a picture that came through HLS needed
+ * ffmpeg working for as long as it played, which is exactly what Flix must not do on a box the family watches.
+ */
 async function hlsHandler(req: any, reply: any, hdr = false) {
-  const { t, f, file } = req.params as any
-  const a = audioIdx(req.params.a ?? req.query?.a)
+  const { file } = req.params as any
   if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
-  if (file === 'index.m3u8' || !touchHls(+t, +f, a, hdr)) {
-    const p = await probe(+t, +f)
-    if (hdr && !hdrCopyOk(p, true)) return reply.code(409).send({ error: 'this file is not HDR' })
-    try { await ensureHls(+t, +f, p, a, hdr) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
-  }
-  const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
-  // A re-encoded picture has a complete playlist from the start, and each piece is made when it is asked for.
-  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, hdr) : null
-  if (list) return reply.type(type).header('cache-control', 'no-store').send(list)
-  const ac = new AbortController()
-  req.raw.on('close', () => ac.abort())
-  let path: string | null | undefined
-  try { path = await vodSegment(+t, +f, file, ac.signal, a, hdr) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
-  if (path === null) return reply.code(404).send({ error: 'no such segment' })
-  path ??= join(jobDir(+t, +f, a, hdr), file)
-  if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
-  return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
+  return reply.code(409).send({ error: hdr ? CONVERT_OFF : CONVERT_OFF_VOD })
 }
 
 /** The same video routes twice: with the login cookie, and with a signed token in the path for TVs and cast devices. */
@@ -1040,59 +1024,10 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
   catch (e: any) { throw Object.assign(new Error(`Could not connect to qBittorrent: ${e.message}`), { statusCode: 502 }) }
 })
 
-/**
- * Sprite sheets and credits markers are made here, on a slow timer, because nothing tells the server when qBittorrent
- * finishes a file: every file's progress is polled, so "the download has completed" is a question asked rather than an
- * event received. A file that has arrived is cut once and measured once, one at a time, in the background; one that is
- * still arriving is left for the next pass. Never on a seek or a play -- the request path only ever reads what this has
- * already written. Episodes that were on disk before any of this existed want one too, which is why the pass walks every
- * interest rather than only the download that just finished.
- */
-const spriteTried = new Map<string, number>()
-let spriteBusy = false
-/** How many episodes are measured for credits in one pass. The pass runs every five minutes, so a whole library fills in
- *  over a few hours and the box never spends its evening decoding one file after another. */
-const CREDITS_PER_PASS = 4
-async function planSprites() {
-  if (spriteBusy) return
-  spriteBusy = true
-  try {
-    const rows = db.prepare('SELECT DISTINCT torrent_id, file_index FROM interests').all() as { torrent_id: number; file_index: number }[]
-    let creditsDone = 0
-    for (const r of rows) {
-      const t = r.torrent_id, f = r.file_index, key = `${t}:${f}`
-      const wantSprite = !spriteMeta(t, f) && (spriteTried.get(key) ?? 0) < 2
-      const wantCredits = creditsDone < CREDITS_PER_PASS && creditsNeedsWork(t, f)
-      if (!wantSprite && !wantCredits) continue
-      const fi = await fileInfo(t, f).catch(() => null)
-      if (!fi || fi.file.progress < 1) continue // still arriving: next pass
-      const p = await probe(t, f).catch(() => null) // one probe answers both jobs
-      const source = offlineReadyPath(t, f) ?? join(fi.layout.savePath, fi.file.name)
-      if (wantSprite) {
-        spriteTried.set(key, (spriteTried.get(key) ?? 0) + 1) // an episode ffmpeg cannot read is not worth a third go
-        if (!(await buildSprite(t, f, source, p?.duration ?? 0))) app.log.warn(`[sprite] no sheet for ${t}/${f}`)
-      }
-      // No runtime means no honest answer, so a file that never reported one is left for the pass after this one.
-      if (wantCredits && p?.duration) {
-        creditsDone++
-        const at = await measureCredits(source, p.duration)
-        saveCredits(t, f, at, p.duration)
-        if (at == null) app.log.info(`[credits] no marker for ${t}/${f}; the player estimates from the runtime`)
-      }
-    }
-  } finally { spriteBusy = false }
-}
-/** Starts the download-complete hook above. The first pass waits a minute, so a restart is not competing with itself. */
-export function startSpritePlanner() {
-  setTimeout(() => void planSprites().catch(() => {}), 60_000).unref()
-  setInterval(() => void planSprites().catch(() => {}), 5 * 60_000).unref()
-}
-
 // ---- boot -------------------------------------------------------------------
 cleanHlsCache()
 startOfflineSweeper()
 startSpriteSweeper()
-startSpritePlanner()
 const runSweep = startSweeper()
 
 let btnSyncStarted = false
