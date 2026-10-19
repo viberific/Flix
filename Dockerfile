@@ -14,7 +14,14 @@ WORKDIR /app
 # Dependencies first so code changes rebuild fast. tsx is a devDependency but
 # npm start runs the TypeScript through it, so install everything.
 COPY package.json package-lock.json ./
-RUN npm ci
+# npm writes the install time into every file it creates, so this layer's bytes
+# differed on every build even when package-lock.json had not changed. Docker
+# could not reuse it, and every release re-downloaded the whole ~95 MB layer --
+# which is a quarter of an hour on a slow link to ghcr. The contents are already
+# reproducible (checked: two installs, identical file hashes); only the
+# timestamps are not, so pinning them to one fixed date makes the layer
+# byte-identical between builds and lets later releases pull just the source.
+RUN npm ci && find /app/node_modules -exec touch -h -d @1735689600 {} +
 
 COPY . .
 
