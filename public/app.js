@@ -464,6 +464,56 @@ function wireRows(root) {
   root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
 }
 
+/* ---------- the soft "Leaving soon" prompt ---------- */
+const LP_KEY = 'flix.leaving.asked'
+const lpAsked = () => { try { return new Set(JSON.parse(sessionStorage.getItem(LP_KEY) || '[]')) } catch { return new Set() } }
+/** Remember which downloads were already put to this person, for this session only: it asks once, then keeps quiet. */
+function lpMark(ids) { try { const s = lpAsked(); ids.forEach((i) => s.add(i)); sessionStorage.setItem(LP_KEY, JSON.stringify([...s])) } catch { /* ignore */ } }
+const lpDays = (l) => { const d = Math.max(1, Math.ceil((l.leavesAt - Date.now() / 1000) / 86400)); return d === 1 ? 'gone tomorrow' : `${d} days left` }
+
+/**
+ * A card at the top of Home that asks, once a session, about downloads on their way out: keep one, or say it can go.
+ * Deliberately not a modal -- no backdrop, no focus trap, the rest of Home stays usable -- because a jarring dialog in
+ * front of the interface is what makes people dismiss it without reading. "Not now" and Escape quiet it until tomorrow.
+ */
+function leavingPromptPick(items) {
+  const asked = lpAsked()
+  return items.filter((l) => !asked.has(l.torrentId)).slice(0, 3)
+}
+
+function leavingPrompt(show) {
+  if (!show.length) return ''
+  return `<section class="lp rise" id="lp" role="group" aria-labelledby="lp-t">
+    <div class="lp-head"><h2 id="lp-t">Leaving soon</h2><button class="lp-x" id="lp-x" aria-label="Not now">×</button></div>
+    <p class="lp-sub">Finished and seeded, but ${show.length === 1 ? 'nobody has' : 'nobody here has'} opened ${show.length === 1 ? 'it' : 'them'} yet. Say what you want and it is remembered.</p>
+    <ul class="lp-list">${show.map((l) => `<li data-t="${l.torrentId}">
+      <a class="lp-name" href="#/series/${l.seriesId}">${esc(l.series || l.label || 'This download')}${l.season ? ' · S' + l.season : ''}</a>
+      <span class="lp-when">${lpDays(l)}</span>
+      <button class="btn lp-keep" data-t="${l.torrentId}">Keep it</button>
+      <button class="btn lp-go" data-t="${l.torrentId}">Let it go</button>
+    </li>`).join('')}</ul>
+  </section>`
+}
+
+/** The Leaving soon card's buttons: one tap records the answer and the line then says what happened. */
+function wireLeavingPrompt() {
+  const lp = $('#lp')
+  if (!lp) return
+  const ids = [...lp.querySelectorAll('li[data-t]')].map((li) => Number(li.dataset.t))
+  const say = (li, text) => { li.className = 'lp-done'; li.innerHTML = `<span class="lp-name">${esc(text)}</span>` }
+  const act = async (btn, path, done) => {
+    const li = btn.closest('li'), t = Number(li.dataset.t)
+    btn.disabled = true
+    try { await api(path, { torrentId: t }); lpMark([t]); done(li) } catch (e) { btn.disabled = false; say(li, e.message || 'That did not work') }
+  }
+  lp.querySelectorAll('.lp-keep').forEach((b) => { b.onclick = () => act(b, '/api/leaving/keep', (li) => say(li, 'Kept — it stays while you are watching it')) })
+  lp.querySelectorAll('.lp-go').forEach((b) => { b.onclick = () => act(b, '/api/leaving/let-go', (li) => say(li, 'Noted — it goes once everyone is done and it has seeded')) })
+  const close = () => { lpMark(ids); lp.remove() }
+  const x = $('#lp-x')
+  if (x) x.onclick = close
+  lp.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
+}
+
 async function homeView(q, local = false) {
   const [list, cont, home, leaving] = await Promise.all([
     q ? api('/api/series?q=' + encodeURIComponent(q) + (local ? '&local=1' : '')) : { series: [] },
@@ -477,6 +527,9 @@ async function homeView(q, local = false) {
   const listIds = new Set(home.listIds ?? [])
   return () => {
     let html = ''
+    // Titles the card asks about are not repeated as a row beneath it.
+    const lpShow = q ? [] : leavingPromptPick(leaving.items)
+    const lpIds = new Set(lpShow.map((l) => l.torrentId))
     if (!q && featured) {
       const s = featured
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">Featured</div>
@@ -486,9 +539,10 @@ async function homeView(q, local = false) {
         <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
+    if (lpShow.length) html += leavingPrompt(lpShow)
     // The featured show is never one being resumed (the server keeps it out), so every show to resume is in this row.
     if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
-    if (!q && leaving.items.length) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items, leavingTile)}`
+    if (!q && leaving.items.some((l) => !lpIds.has(l.torrentId))) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items.filter((l) => !lpIds.has(l.torrentId)), leavingTile)}`
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
     if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
     if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
@@ -500,6 +554,7 @@ async function homeView(q, local = false) {
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
+    wireLeavingPrompt()
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
     // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
     artShow?.()

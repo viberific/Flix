@@ -84,7 +84,47 @@ export function leavingSoonFor(user: { id: number; name: string }) {
       '/api/art/' || r.series_id || '/poster' AS poster
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id WHERE d.state = 'active' AND d.leaving_at IS NOT NULL AND d.leaving_at > ?
     ORDER BY d.leaving_at`).all(now()) as any[]
-  return rows.filter((r) => untouchedEligible(r.torrentId).includes(user.name))
+  return rows.filter((r) => untouchedEligible(r.torrentId).includes(user.name) && !pendingViewers(r.torrentId).includes(user.name))
+}
+
+/** The files inside a torrent: every episode of a pack, else whatever index this person already has for it. */
+function fileIndexes(torrentId: number, userId: number): number[] {
+  const pack = (db.prepare('SELECT idx FROM pack_files WHERE torrent_id = ? ORDER BY idx').all(torrentId) as { idx: number }[]).map((r) => r.idx)
+  if (pack.length) return pack
+  const mine = (db.prepare('SELECT file_index FROM interests WHERE user_id = ? AND torrent_id = ?').all(userId, torrentId) as { file_index: number }[]).map((r) => r.file_index)
+  if (mine.length) return [...new Set(mine)]
+  const any = db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? LIMIT 1').get(torrentId) as { file_index: number } | undefined
+  return [any?.file_index ?? 0]
+}
+
+/**
+ * "Keep it": this person now holds the download, so its "Leaving soon" clock stops. Writes (or refreshes) an interest for
+ * every file in it, which makes them a pending viewer and clears their release. It lapses like any other hold (abandonDays)
+ * if they never come back to it, so one tap cannot pin a season on disk for ever.
+ */
+export function keepFor(userId: number, torrentId: number): { kept: boolean; leavesAt: null } {
+  const d = db.prepare('SELECT state FROM downloads WHERE torrent_id = ?').get(torrentId) as { state: string } | undefined
+  if (!d || d.state !== 'active') throw new Error('that download is not here any more')
+  const t = now()
+  const ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, auto) VALUES (?,?,?,?,?,0)
+    ON CONFLICT(user_id, torrent_id, file_index) DO UPDATE SET updated_at = excluded.updated_at, released_at = NULL, auto = 0`)
+  for (const i of fileIndexes(torrentId, userId)) ins.run(userId, torrentId, i, t, t)
+  db.prepare('UPDATE downloads SET leaving_at = NULL WHERE torrent_id = ?').run(torrentId)
+  console.log(`[retention] user ${userId} kept torrent ${torrentId}; leaving clock stopped`)
+  return { kept: true, leavesAt: null }
+}
+
+/**
+ * "Let it go": this person is done with it without watching, so they stop holding it. Counts as done for every file in the
+ * torrent. Nobody else's hold is touched: it goes when the last allowed viewer is done AND BTN's seeding rule is met.
+ */
+export function letGoFor(userId: number, torrentId: number): { ok: true } {
+  const t = now()
+  const ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, auto, released_at) VALUES (?,?,?,?,?,0,?)
+    ON CONFLICT(user_id, torrent_id, file_index) DO UPDATE SET released_at = excluded.released_at, updated_at = excluded.updated_at, auto = 0`)
+  for (const i of fileIndexes(torrentId, userId)) ins.run(userId, torrentId, i, t, t, t)
+  console.log(`[retention] user ${userId} let go of torrent ${torrentId}`)
+  return { ok: true }
 }
 
 export interface Holder { name: string; state: 'partway' | 'queued' | 'ahead' | 'unwatched'; lapsesAt: number | null }

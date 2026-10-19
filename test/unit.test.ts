@@ -725,6 +725,36 @@ test('leaving soon also covers single episodes; a pack counts as done only once 
   assert.ok(!unwatchedEligible(9201).includes('lv2_a'), 'both watched: done')
 })
 
+test('the leaving-soon prompt: "Keep it" stops the clock, "Let it go" counts as done for a whole pack', async () => {
+  const { updateLeaving, unwatchedEligible, leavingSoonFor, keepFor, letGoFor } = await import('../src/retention.ts')
+  const { db, now } = await import('../src/db.ts')
+  const watcher = createUser('lp_watcher', 'password123', false).id
+  const chooser = createUser('lp_chooser', 'password123', false)
+  const tid = 9300
+  const seeded = { amount_left: 0, uploaded: 2, total_size: 1, seeding_time: 0 }
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (?,?,?,?,1,?,?)`).run(tid, 9300, 'Prompt Show', 'Season 1', 'pk', now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (?,?,?)`).run(tid, 'pk', now() - 1e6)
+  db.prepare(`INSERT INTO pack_files (torrent_id, idx, path, size, season, episode) VALUES (?,0,'e1.mkv',1,1,1),(?,1,'e2.mkv',1,1,2)`).run(tid, tid)
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,?,0,?,?,?)`).run(watcher, tid, now(), now(), now())
+  assert.ok(updateLeaving(tid, seeded), 'the clock runs')
+  assert.ok(leavingSoonFor(chooser).some((r) => r.torrentId === tid), 'the chooser is offered it')
+
+  // Keep it: holds every episode, so the clock stops and it drops out of the prompt.
+  keepFor(chooser.id, tid)
+  assert.equal(updateLeaving(tid, seeded), null, 'kept: clock stopped')
+  assert.ok(!leavingSoonFor(chooser).some((r) => r.torrentId === tid), 'no longer offered once kept')
+
+  // Let it go: done with every episode without watching one, so this person no longer holds it.
+  letGoFor(chooser.id, tid)
+  assert.ok(!unwatchedEligible(tid).includes('lp_chooser'), 'counted as done despite never watching')
+  assert.ok(updateLeaving(tid, seeded), 'the clock can run again for whoever is left')
+
+  // Changed their mind: keeping it again clears the release and holds it once more.
+  keepFor(chooser.id, tid)
+  assert.ok(unwatchedEligible(tid).includes('lp_chooser'), 'released then kept again: holding it')
+  assert.equal(updateLeaving(tid, seeded), null, 'and the clock stops again')
+})
+
 test('storage forecast: days left at the recent pace, none when flat', async () => {
   const { fullInDays } = await import('../src/storage.ts')
   const D = 86400

@@ -32,7 +32,7 @@ import { gatesFor, gatedNote, STARTED_AT } from './gate.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
-import { holdersOf, leavingSoonFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { holdersOf, keepFor, leavingSoonFor, letGoFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -341,6 +341,28 @@ app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.use
 
 /** Season packs already watched by others and about to be removed, which this person never opened (see updateLeaving in retention.ts). */
 app.get('/api/leaving', auth, async (req) => ({ items: leavingSoonFor(req.user!) }))
+
+/** "Keep it": the prompt's answer that stops the leaving clock. Writes a hold for this person. */
+app.post('/api/leaving/keep', auth, async (req, reply) => {
+  const torrentId = Number((req.body as any)?.torrentId)
+  if (!Number.isFinite(torrentId)) return reply.code(400).send({ error: 'torrentId is required' })
+  const sid = (db.prepare('SELECT series_id FROM releases WHERE torrent_id = ?').get(torrentId) as any)?.series_id
+  if (sid != null && !canViewSeries(req.user!, Number(sid))) return reply.code(404).send({ error: 'Not found' })
+  try {
+    return keepFor(req.user!.id, torrentId)
+  } catch (e) {
+    return reply.code(409).send({ error: (e as Error).message })
+  }
+})
+
+/** "Let it go": this person is done with it unwatched, so they stop holding it. Others' holds are untouched. */
+app.post('/api/leaving/let-go', auth, async (req, reply) => {
+  const torrentId = Number((req.body as any)?.torrentId)
+  if (!Number.isFinite(torrentId)) return reply.code(400).send({ error: 'torrentId is required' })
+  const sid = (db.prepare('SELECT series_id FROM releases WHERE torrent_id = ?').get(torrentId) as any)?.series_id
+  if (sid != null && !canViewSeries(req.user!, Number(sid))) return reply.code(404).send({ error: 'Not found' })
+  return letGoFor(req.user!.id, torrentId)
+})
 
 /** Rating guard for every route that names a torrent: a restricted user cannot reach a blocked show's streams. */
 const torrentGuard = async (req: any, reply: any) => {
