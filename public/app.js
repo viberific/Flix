@@ -878,70 +878,10 @@ const ICON = {
   fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
 }
 
-/** Is this poster worth putting behind the player at all? Flix draws a flat card for a show it has no art for, and that
-    card behind the loading mark read as a broken screen. The picture is drawn into a 16x16 canvas and its average
-    saturation and its lightness spread read off it, so a near-greyscale, near-flat image is refused. It is same-origin
-    (/api/art/...), so the canvas is not tainted; anything that throws resolves true, so this can only ever veto art. */
-function artUsable(url) {
-  return new Promise((resolve) => {
-    try {
-      const im = new Image()
-      im.onerror = () => resolve(false)
-      im.onload = () => {
-        try {
-          const N = 16
-          const c = document.createElement('canvas')
-          c.width = c.height = N
-          const x = c.getContext('2d', { willReadFrequently: true })
-          x.drawImage(im, 0, 0, N, N)
-          const d = x.getImageData(0, 0, N, N).data
-          const lum = new Float32Array(N * N)
-          let sat = 0
-          for (let i = 0, px = 0; i < d.length; i += 4, px++) {
-            const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255
-            const max = Math.max(r, g, b), min = Math.min(r, g, b)
-            sat += max ? (max - min) / max : 0
-            lum[px] = (max + min) / 2
-          }
-          sat /= N * N
-          // Flatness alone is not the test: a grey card with a white play triangle on it has a wide lightness range and
-          // used to pass, which is how the placeholder got behind the loading mark. So the image is also cut into 2x2
-          // cells and the busy ones counted -- a glyph lights up a handful, a photograph nearly all of them.
-          let busy = 0
-          for (let cy = 0; cy < N; cy += 2) for (let cx = 0; cx < N; cx += 2) {
-            const a = lum[cy * N + cx], b = lum[cy * N + cx + 1], c2 = lum[(cy + 1) * N + cx], d2 = lum[(cy + 1) * N + cx + 1]
-            if (Math.max(a, b, c2, d2) - Math.min(a, b, c2, d2) > 0.1) busy++
-          }
-          resolve(sat >= 0.06 || busy >= (N / 2) * (N / 2) * 0.3)
-        } catch { resolve(true) }
-      }
-      im.src = url
-    } catch { resolve(true) }
-  })
-}
-
-/** Is this picture wide enough to fill the screen as a backdrop? A portrait poster stretched across a television is a
-    smear, so a backdrop only ever gets art at least 1.5:1 and 640px across. Anything narrower, or that will not load,
-    means black behind the picture. */
-function artWide(url) {
-  return new Promise((resolve) => {
-    try {
-      const im = new Image()
-      im.onerror = () => resolve(false)
-      im.onload = () => {
-        const wide = im.naturalWidth >= 640 && im.naturalWidth / Math.max(1, im.naturalHeight) >= 1.5
-        if (!wide) return resolve(false)
-        artUsable(url).then(resolve, () => resolve(false))
-      }
-      im.src = url
-    } catch { resolve(false) }
-  })
-}
-
 function playView(seriesId, season, label) {
   label = decodeURIComponent(label)
   return () => {
-    app.innerHTML = `<div class="player" id="pl"><div class="p-bg" id="pbg"></div>
+    app.innerHTML = `<div class="player" id="pl">
       <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a>
         <span class="p-mark" aria-hidden="true">${I.logo}</span><span class="p-rate" id="prate" hidden></span>
         <div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span>
@@ -950,11 +890,9 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
-        <div class="p-poster" id="pposter" aria-hidden="true"></div>
-        <div class="p-info" id="pinfo" aria-hidden="true"><div class="eyebrow"><span class="p-rate" id="pirate" hidden></span><span id="pis"></span></div>
-          <h2 id="pit"></h2><span class="ep" id="pie"></span><div class="p-castrow" id="picast"></div></div>
+        <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
-          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
+          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
@@ -969,30 +907,9 @@ function playView(seriesId, season, label) {
     let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
-    // Nothing but black behind the mark, ever: the logo sits on black until it has faded out and the picture is up, and
-    // only then does any artwork come in. Flix's own fallback card behind the logo read as a broken player, so the
-    // backdrop is not even asked for until the mark is gone (withArt() refuses while #wait still holds it).
-    const artUrl = `/api/art/${seriesId}/poster`
-    // A backdrop is wide art or nothing: a portrait poster blown up across the screen is a smear, and the fallback card
-    // is the 'grey play button' that was showing through. The banner is asked for first and only drawn when it is wide.
-    const wideUrl = `/api/art/${seriesId}/banner`
-    let artDrawn = false
-    const withArt = () => {
-      if (artDrawn || !$('#wait')?.classList.contains('gone')) return
-      artDrawn = true
-      artWide(wideUrl).then((wide) => {
-        if (!alive) return
-        const bg = $('#pbg')
-        if (bg && wide) bg.style.backgroundImage = `url("${wideUrl}")`
-        artUsable(artUrl).then((ok) => {
-          const pp = $('#pposter')
-          if (ok && pp && alive) pp.style.backgroundImage = `url("${artUrl}")`
-        })
-      })
-    }
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
-    Promise.resolve().then(() => { wirePlayer(); loadMeta() })
-    let alive = true, hls = null, timer = null, idleT = null, cdT = null, subT = null, v = null
+    Promise.resolve().then(() => { wirePlayer(); loadRating() })
+    let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, v = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
     // The viewer's one-off yes to converting this episode, when Settings says never to convert the picture.
@@ -1038,8 +955,11 @@ function playView(seriesId, season, label) {
       else if (k === 'MediaPause') { e.preventDefault(); v.pause() }
       else if (k === 'MediaRewind') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
       else if (k === 'MediaFastForward') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
-      else if (k === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
-      else if (k === 'ArrowRight') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+      else if (k === 'ArrowLeft' || k === 'j') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
+      else if (k === 'ArrowRight' || k === 'l') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+      else if (/^[0-9]$/.test(k) && !e.ctrlKey && !e.metaKey && !e.altKey && totalT()) { e.preventDefault(); setT(totalT() * Number(k) / 10) }
+      else if (k === 'Home') { e.preventDefault(); setT(0) }
+      else if (k === 'End') { e.preventDefault(); setT(Math.max(0, totalT() - 5)) }
       else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
       else if (k === 'ArrowDown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1) }
       else if (k === 'm') v.muted = !v.muted
@@ -1068,7 +988,7 @@ function playView(seriesId, season, label) {
       return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(sec).padStart(2, '0')
     }
     // While the TV has the show, the phone is only its remote: the bar shows and drives the TV's player (see enterCastMode).
-    let rem = null
+    let rem = null, haveFrac = 0
     const remoteOn = () => castingOnly && !!rem
     const totalT = () => (remoteOn() && rem.p.duration > 0 ? rem.p.duration : v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
     const nowT = () => (remoteOn() ? rem.p.currentTime || 0 : v?.currentTime || 0)
@@ -1085,14 +1005,20 @@ function playView(seriesId, season, label) {
       $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
       $('#ptime').textContent = fmtT(t); $('#pdur').textContent = fmtT(d)
       $('#pseek').setAttribute('aria-valuenow', String(Math.round(pct)))
-      try { const b = remoteOn() ? null : v?.buffered; if (b?.length && d) $('#pbuf').style.width = Math.min(100, (b.end(b.length - 1) / d) * 100) + '%' } catch { /* nothing buffered yet */ }
+      // The range the playhead is in, not the last one: after a seek the last range is somewhere else entirely.
+      try {
+        const b = remoteOn() ? null : v?.buffered
+        if (b?.length && d) { let end = t; for (let i = 0; i < b.length; i++) if (b.start(i) <= t + 0.5 && b.end(i) >= end) end = b.end(i); $('#pbuf').style.width = Math.min(100, (end / d) * 100) + '%' }
+      } catch { /* nothing buffered yet */ }
+      // How much of the file is on the box. A finished episode has all of it, so the whole bar is open to seek in.
+      $('#phave').style.width = Math.round(haveFrac * 1000) / 10 + '%'
+      pl.classList.toggle('whole', haveFrac >= 1)
     }
     /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
     function paint() {
       const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
       pl.classList.toggle('paused', paused && !castingOnly) // the paused art would sit under the "playing on the TV" card
       pl.classList.toggle('casting', castingOnly)
-      $('#pinfo').setAttribute('aria-hidden', String(!paused))
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
       const muted = remoteOn() ? rem.p.isMuted : v?.muted
@@ -1173,7 +1099,12 @@ function playView(seriesId, season, label) {
         try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ }
         onMove(e)
       })
-      bar.addEventListener('pointermove', (e) => { if (bar.classList.contains('on')) onMove(e) })
+      bar.addEventListener('pointermove', (e) => {
+        if (bar.classList.contains('on')) return onMove(e)
+        // Hovering with a mouse shows where a click would land, and its picture, as a scrubber on a desktop does.
+        if (e.pointerType === 'mouse' && (v || remoteOn())) showTip(at(e))
+      })
+      bar.addEventListener('pointerleave', () => { if (!bar.classList.contains('on')) hideTip() })
       bar.addEventListener('pointerup', () => endDrag(true))
       bar.addEventListener('pointercancel', () => endDrag(false))
       bar.addEventListener('keydown', (e) => {
@@ -1193,17 +1124,15 @@ function playView(seriesId, season, label) {
       $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('idle')) wake(); else { clearTimeout(idleT); pl.classList.add('idle') } })
       paint()
     }
-    /** The paused screen: the show's own art, its certificate and who is in it, all from the details page's data. */
-    async function loadMeta() {
+    /** The certificate beside the title in the top bar. */
+    async function loadRating() {
       const s = await api(`/api/series/${seriesId}`).catch(() => null)
       if (!s || !alive) return
-      const rate = s.rating && s.rating !== 'Unrated' ? s.rating : ''
-      for (const id of ['#prate', '#pirate']) { const el = $(id); if (!el) continue; el.hidden = !rate; el.textContent = rate }
-      $('#pis').textContent = [s.name, s.year].filter(Boolean).join(' · ')
-      $('#picast').innerHTML = (s.cast || []).slice(0, 14).map((c) => `<div class="p-actor"><span class="pic"><span class="ph" style="--h:${hue(c.name)}">${esc((c.name || '?').trim()[0] || '?')}</span>${c.photo ? `<img loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('on')" onerror="this.remove()">` : ''}</span><b>${esc(c.name || '')}</b><small>${esc(c.role || '')}</small></div>`).join('')
+      const el = $('#prate'), rate = s.rating && s.rating !== 'Unrated' ? s.rating : ''
+      if (el) { el.hidden = !rate; el.textContent = rate }
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
@@ -1240,8 +1169,6 @@ function playView(seriesId, season, label) {
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
         if (!alive) return
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
-        $('#pit').textContent = play.episodeTitle || play.title || label
-        $('#pie').textContent = [play.season != null ? 'Season ' + play.season : '', label ? 'Episode ' + label : '', play.quality].filter(Boolean).join(' · ')
         $('#rep').hidden = false
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
@@ -1311,21 +1238,29 @@ function playView(seriesId, season, label) {
         v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
         v.addEventListener('playing', () => {
           started = true
-          // Only now does the blurred backdrop come in: until the first frames arrive the screen is black, so the
-          // loading mark is the only thing on it.
-          withArt()
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); withArt(); v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
+        // A seek into a part of the file that has not arrived yet leaves the picture frozen with nothing to say why. The ring
+        // is shown while the element is waiting for data (and not before the first frame, where the loading mark is up).
+        const spin = (on) => { const el = $('#pspin'); if (el) el.hidden = !(on && started) }
+        for (const ev of ['waiting', 'seeking']) v.addEventListener(ev, () => spin(v.readyState < 3))
+        for (const ev of ['playing', 'seeked', 'canplay', 'pause', 'emptied']) v.addEventListener(ev, () => spin(false))
+        const haveStatus = async () => {
+          const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
+          if (!alive || !st || st.error) return
+          haveFrac = Math.max(haveFrac, Math.min(1, Number(st.fileProgress) || 0))
+          syncBar()
+          if (haveFrac >= 1) { clearInterval(haveT); haveT = null }
+        }
+        haveT = setInterval(haveStatus, 4000); haveStatus()
         // What the player itself felt: a stall, a seek, a picture that dropped to a lower resolution. The server only sees its
         // side of a gap, and the two timestamps together say which end was slow.
         watchStalls(v, () => play)
-        // A show paused before it ever started playing still gets its art, once -- never at attach.
-        v.addEventListener('pause', withArt, { once: true })
         v.ontimeupdate = () => {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
@@ -1599,7 +1534,8 @@ function playView(seriesId, season, label) {
       castWired = true
       // No LAN address configured means the TV could not reach the media anyway,
       // so the button stays away rather than failing at the last step.
-      if (!info?.castUrl) return
+      // A television is the thing being cast to, so the button is for phones and computers only.
+      if (!info?.castUrl || isTv) return
       $('#cast').hidden = false
       $('#cast').onclick = async () => {
         try {
