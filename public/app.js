@@ -958,7 +958,7 @@ function playView(seriesId, season, label) {
         <div class="p-info" id="pinfo" aria-hidden="true"><div class="eyebrow"><span class="p-rate" id="pirate" hidden></span><span id="pis"></span></div>
           <h2 id="pit"></h2><span class="ep" id="pie"></span><div class="p-castrow" id="picast"></div></div>
         <div class="p-ctl" id="pctl">
-          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><img id="ptipimg" alt="" decoding="async"><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
+          <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
@@ -1081,6 +1081,9 @@ function playView(seriesId, season, label) {
       if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) v.currentTime = t
     }
     function syncBar() {
+      // While a finger is down the bar shows where the finger is, not where the film is: without this the timeupdate tick
+      // would drag the bar back to the playback position under the finger four times a second.
+      if ($('#pseek')?.classList.contains('on')) return
       const d = totalT(), t = nowT(), pct = d ? Math.min(100, (t / d) * 100) : 0
       if (!$('#pprog')) return
       $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
@@ -1105,15 +1108,32 @@ function playView(seriesId, season, label) {
     }
     function wirePlayer() {
       const bar = $('#pseek')
-      // The picture above the bar while scrubbing: one small JPEG of that second, cut by the server and cached (/frame).
-      // It is debounced because dragging across the bar asks for a frame per pixel, and a TV seeks back over ground
-      // it has already covered, which the cache answers with no work at all.
-      const tip = $('#ptip'), tipImg = $('#ptipimg'), tipLab = $('#ptipt')
-      let tipAsk = 0, tipHide = 0, tipFor = -1
+      // The picture above the bar is one tile of a sheet the server cut in the background once the download finished
+      // (/api/stream/<t>/<f>/sprite); the geometry in its metadata is the same arithmetic as src/sprites.ts. Nothing is
+      // generated while somebody scrubs -- cropping a still that is already on disk costs one image and no requests,
+      // which is what the old per-second ffmpeg cut got wrong. No sheet (still downloading, or the cut not finished yet)
+      // means the bar on its own, with no picture and nothing moving.
+      const tip = $('#ptip'), tipShot = $('#ptipimg'), tipLab = $('#ptipt')
+      let shot = null, shotFor = '', shotAsked = false, tipHide = 0
+      async function loadSheet(forWhat) {
+        if (!play) return
+        const m = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/sprite/meta`).catch(() => null)
+        if (!m || !m.cols || !m.tileW || !alive || forWhat !== `${play.torrentId}:${play.fileIndex}`) return
+        shot = m
+        tipShot.style.backgroundImage = `url("/api/stream/${play.torrentId}/${play.fileIndex}/sprite")`
+        tipShot.classList.add('has')
+      }
       function hideTip() { clearTimeout(tipHide); tip.hidden = true }
       function showTip(t, hold) {
         const d = totalT()
         if (!d || !play) return
+        // A new source is a new file, so a sheet belonging to the old one is dropped rather than shown over it.
+        const forWhat = `${play.torrentId}:${play.fileIndex}`
+        if (shotFor !== forWhat) {
+          shotFor = forWhat; shot = null; shotAsked = false
+          tipShot.classList.remove('has'); tipShot.style.backgroundImage = ''
+        }
+        if (!shot && !shotAsked) { shotAsked = true; void loadSheet(forWhat) }
         const pct = Math.max(0, Math.min(100, (t / d) * 100))
         // Kept inside the bar's own width, so the picture never hangs off the edge of a narrow screen.
         const w = bar.clientWidth || 1
@@ -1123,30 +1143,43 @@ function playView(seriesId, season, label) {
         tipLab.textContent = fmtT(Math.max(0, t))
         clearTimeout(tipHide)
         if (hold) tipHide = setTimeout(hideTip, 1600)
-        const sec = Math.max(1, Math.round(t))
-        if (sec === tipFor) return
-        tipFor = sec
-        clearTimeout(tipAsk)
-        tipAsk = setTimeout(() => {
-          const url = `/api/stream/${play.torrentId}/${play.fileIndex}/frame?at=${sec}`
-          const img = new Image()
-          img.onload = () => { if (tipFor === sec) tipImg.src = url }
-          img.onerror = () => { if (tipFor === sec) tipImg.removeAttribute('src') }
-          img.src = url
-        }, 90)
+        if (!shot) return
+        const i = Math.max(0, Math.min(shot.count - 1, Math.floor(Math.max(0, t) / Math.max(0.5, shot.interval))))
+        // The element is exactly one tile, so the sheet is laid out at its full size and shifted to the tile asked for.
+        tipShot.style.backgroundSize = `${shot.cols * shot.tileW}px ${shot.rows * shot.tileH}px`
+        tipShot.style.backgroundPosition = `${-((i % shot.cols) * shot.tileW)}px ${-(Math.floor(i / shot.cols) * shot.tileH)}px`
       }
-      const seekTo = (e) => {
-        const d = totalT(); if (!d || !(v || remoteOn())) return
-        const r = bar.getBoundingClientRect()
-        const t = Math.min(d - 0.4, ((e.clientX - r.left) / r.width) * d)
-        showTip(t)
-        setT(t)
-        syncBar()
+      // Dragging paints the bar and the picture and nothing else. It used to set video.currentTime on every pointermove, so
+      // one drag across an episode was a hundred seeks in flight, each interrupting the last, and the picture spent the
+      // drag catching up. The seek happens once, where the finger lets go.
+      let dragT = 0
+      const at = (e) => {
+        const d = totalT() || 0, r = bar.getBoundingClientRect()
+        return Math.min(Math.max(0, d - 0.4), ((e.clientX - r.left) / Math.max(1, r.width)) * d)
       }
-      bar.addEventListener('pointerdown', (e) => { if (!v && !remoteOn()) return; e.preventDefault(); bar.classList.add('on'); try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ } seekTo(e) })
-      bar.addEventListener('pointermove', (e) => { if (bar.classList.contains('on')) seekTo(e) })
-      bar.addEventListener('pointerup', () => { bar.classList.remove('on'); hideTip() })
-      bar.addEventListener('pointercancel', () => { bar.classList.remove('on'); hideTip() })
+      const paintDrag = () => {
+        const d = totalT(); if (!d || !$('#pprog')) return
+        const pct = Math.max(0, Math.min(100, (dragT / d) * 100))
+        $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
+        $('#ptime').textContent = fmtT(dragT)
+        bar.setAttribute('aria-valuenow', String(Math.round(pct)))
+      }
+      const onMove = (e) => { dragT = at(e); showTip(dragT); paintDrag() }
+      const endDrag = (commit) => {
+        const was = bar.classList.contains('on')
+        bar.classList.remove('on')
+        if (was && commit) { setT(dragT); syncBar() }
+        hideTip()
+      }
+      bar.addEventListener('pointerdown', (e) => {
+        if (!v && !remoteOn()) return
+        e.preventDefault(); bar.classList.add('on')
+        try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ }
+        onMove(e)
+      })
+      bar.addEventListener('pointermove', (e) => { if (bar.classList.contains('on')) onMove(e) })
+      bar.addEventListener('pointerup', () => endDrag(true))
+      bar.addEventListener('pointercancel', () => endDrag(false))
       bar.addEventListener('keydown', (e) => {
         if ((!v && !remoteOn()) || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
         e.preventDefault(); e.stopPropagation() // the window handler would move the same 10 s twice

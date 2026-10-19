@@ -16,7 +16,7 @@ import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { MP4_CARRY, SUBFILE, cleanHlsCache, ensureHls, fileSubtitleVtt, guessSubLang, hdrCopyOk, hlsSummary, jobDir, mayEncode, needsEncode, probe, rawUrl, releaseHls, subtitleVtt, touchHls, vodPlaylist, vodSegment, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
-import { frame as frameAt, startThumbSweeper } from './thumbs.ts'
+import { buildSprite, spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
@@ -622,22 +622,21 @@ async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boole
 }
 
 /**
- * The picture above the seek bar while someone scrubs: one small JPEG at the asked-for second. Cached on disk, so a
- * thumb dragged back and forth across the same ground costs one cut per second and nothing after that.
+ * The pictures above the seek bar: one still sheet per finished episode, cut in the background, cropped by the player.
+ * Both answer 404 when there is no sheet -- content that is still arriving, or a file that finished a moment ago and whose
+ * sheet is still being cut -- and the player then draws the plain bar with no picture and no reflow.
  */
-app.get('/api/stream/:t/:f/frame', guarded, async (req, reply) => {
+app.get('/api/stream/:t/:f/sprite', guarded, async (req, reply) => {
   const { t, f } = req.params as any
-  const at = Number((req.query as any).at)
-  if (!Number.isFinite(at) || at < 0) return reply.code(400).send({ error: 'Bad time' })
-  const fi = await fileInfo(+t, +f)
-  if (!fi) return reply.code(404).send({ error: 'Not downloading' })
-  const p = await probe(+t, +f)
-  // A finished remux is a plain MP4 with an index, so a frame anywhere in it is cut instantly; otherwise ffmpeg seeks
-  // in the torrent's own bytes, which the raw route serves by range.
-  const source = offlineReadyPath(+t, +f) ?? rawUrl(+t, +f)
-  const buf = await frameAt(+t, +f, at, source, p.duration ?? 0, fi.file.progress)
-  if (!buf) return reply.code(404).send({ error: 'No frame there yet' })
-  return reply.header('content-type', 'image/jpeg').header('cache-control', 'private, max-age=604800').send(buf)
+  const m = spriteMeta(+t, +f)
+  if (!m) return reply.code(404).send({ error: 'No pictures for this episode' })
+  return reply.type('image/jpeg').header('cache-control', 'private, max-age=604800').send(createReadStream(spritePath(+t, +f)))
+})
+app.get('/api/stream/:t/:f/sprite/meta', guarded, async (req, reply) => {
+  const { t, f } = req.params as any
+  const m = spriteMeta(+t, +f)
+  if (!m) return reply.code(404).send({ error: 'No pictures for this episode' })
+  return reply.header('cache-control', 'private, max-age=300').send(m)
 })
 
 /**
@@ -1037,10 +1036,43 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
   catch (e: any) { throw Object.assign(new Error(`Could not connect to qBittorrent: ${e.message}`), { statusCode: 502 }) }
 })
 
+/**
+ * Sprite sheets are made here, on a slow timer, because nothing tells the server when qBittorrent finishes a file: every
+ * file's progress is polled, so "the download has completed" is a question asked rather than an event received. A file
+ * that has arrived is cut once, one at a time, in the background; one that is still arriving is left for the next pass.
+ * Never on a seek -- the request path only ever reads what this has already written.
+ */
+const spriteTried = new Map<string, number>()
+let spriteBusy = false
+async function planSprites() {
+  if (spriteBusy) return
+  spriteBusy = true
+  try {
+    const rows = db.prepare('SELECT DISTINCT torrent_id, file_index FROM interests').all() as { torrent_id: number; file_index: number }[]
+    for (const r of rows) {
+      const key = `${r.torrent_id}:${r.file_index}`
+      if (spriteMeta(r.torrent_id, r.file_index)) continue
+      if ((spriteTried.get(key) ?? 0) >= 2) continue // an episode ffmpeg cannot read is not worth a third go
+      const fi = await fileInfo(r.torrent_id, r.file_index).catch(() => null)
+      if (!fi || fi.file.progress < 1) continue // still arriving: next pass
+      spriteTried.set(key, (spriteTried.get(key) ?? 0) + 1)
+      const p = await probe(r.torrent_id, r.file_index).catch(() => null)
+      const source = offlineReadyPath(r.torrent_id, r.file_index) ?? join(fi.layout.savePath, fi.file.name)
+      if (!(await buildSprite(r.torrent_id, r.file_index, source, p?.duration ?? 0))) app.log.warn(`[sprite] no sheet for ${r.torrent_id}/${r.file_index}`)
+    }
+  } finally { spriteBusy = false }
+}
+/** Starts the download-complete hook above. The first pass waits a minute, so a restart is not competing with itself. */
+export function startSpritePlanner() {
+  setTimeout(() => void planSprites().catch(() => {}), 60_000).unref()
+  setInterval(() => void planSprites().catch(() => {}), 5 * 60_000).unref()
+}
+
 // ---- boot -------------------------------------------------------------------
 cleanHlsCache()
 startOfflineSweeper()
-startThumbSweeper()
+startSpriteSweeper()
+startSpritePlanner()
 const runSweep = startSweeper()
 
 let btnSyncStarted = false
