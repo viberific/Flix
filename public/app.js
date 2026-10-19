@@ -1534,7 +1534,8 @@ function playView(seriesId, season, label) {
       castWired = true
       // No LAN address configured means the TV could not reach the media anyway,
       // so the button stays away rather than failing at the last step.
-      if (!info?.castUrl) return
+      // A television is the thing being cast to, so the button is for phones and computers only.
+      if (!info?.castUrl || isTv) return
       $('#cast').hidden = false
       $('#cast').onclick = async () => {
         try {
