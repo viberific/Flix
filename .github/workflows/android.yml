@@ -77,6 +77,17 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --target "$GITHUB_SHA" --title "Flix $VERSION" --notes "Flix $VERSION. Install \`flix-$VERSION.apk\` on an Android TV or phone."
           fi
+          # The key this APK was actually signed with, as the installed app sees its own: the two must match or the
+          # installer refuses the update, so the app says that plainly instead of trying and failing in silence.
+          cert="$(keytool -printcert -jarfile "flix-$VERSION.apk" | awk '/SHA256:/ { print $2; exit }' | tr -d ':' | tr 'A-F' 'a-f')"
+          # A debug-signed APK is signed with a key the runner makes up on the spot, so it can never install over an
+          # earlier build. Saying versionCode 0 keeps the app from offering an update that cannot land.
+          code="$GITHUB_RUN_NUMBER"
+          if [ -z "$FLIX_KEYSTORE_FILE" ]; then
+            code=0
+            echo "::warning::This APK is debug-signed, so it cannot install over an earlier Flix. Not offering it as an in-app update; set ANDROID_KEYSTORE_BASE64 to make self-updates work."
+          fi
           # The installed app reads this to learn whether the APK on the release is newer than itself.
-          echo "{\"versionCode\": $GITHUB_RUN_NUMBER, \"versionName\": \"$VERSION\", \"apk\": \"flix-$VERSION.apk\"}" > update.json
+          echo "{\"versionCode\": $code, \"versionName\": \"$VERSION\", \"apk\": \"flix-$VERSION.apk\", \"cert\": \"$cert\"}" > update.json
+          cat update.json
           gh release upload "$tag" "flix-$VERSION.apk" update.json --clobber
