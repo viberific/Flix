@@ -27,6 +27,7 @@ android {
         if (keystore) {
             release {
                 storeFile file(keystore)
+                storeType 'PKCS12'
                 storePassword System.getenv('FLIX_KEYSTORE_PASSWORD')
                 keyAlias System.getenv('FLIX_KEY_ALIAS')
                 keyPassword System.getenv('FLIX_KEY_PASSWORD') ?: System.getenv('FLIX_KEYSTORE_PASSWORD')
