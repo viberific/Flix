@@ -211,7 +211,24 @@ img.fade.in { opacity: 1; }
    brightens, the aura flaring with it) then a dissolve into blur, gone in about a second -- not a plain fade of the
    whole overlay, which took the logo and the picture down together. */
 .p-wait.gone { background: transparent; pointer-events: none; }
-.p-wait.gone #msg { visibility: hidden; }
+.p-wait.gone #msg, .p-wait.gone #pnow { visibility: hidden; }
+/* What a wait looks like on the picture: a bar, a plain line and how long it is. The how-fast and how-many numbers are real
+   and worth keeping, so they live behind Details -- on screen they read like a torrent client, which is not what this is. */
+.p-now { display: grid; justify-items: center; gap: 10px; width: min(380px, 76vw); }
+.p-now[hidden] { display: none; }
+.p-bar { width: 100%; height: 3px; border-radius: 999px; background: rgba(255,255,255,.16); overflow: hidden; }
+.p-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width .7s var(--ease); }
+/* No bytes yet: a bar sitting at nothing reads as broken, so it drifts while the source is found. */
+.p-bar.wait i { width: 34%; animation: pbarDrift 1.7s ease-in-out infinite; }
+@keyframes pbarDrift { 0% { transform: translateX(-115%); } 100% { transform: translateX(310%); } }
+.p-eta { display: flex; align-items: center; gap: 12px; font-size: 13px; color: rgba(255,255,255,.62); }
+.p-more { background: none; border: 0; padding: 2px 0; font: inherit; font-size: 12px; color: rgba(255,255,255,.42); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.p-more:hover, .p-more:focus-visible { color: rgba(255,255,255,.8); }
+.p-more[hidden] { display: none; }
+.p-stats { font-size: 12px; color: rgba(255,255,255,.55); font-variant-numeric: tabular-nums; }
+.p-stats[hidden] { display: none; }
+/* A casting splash owns #msg, so the bar has no business sitting under it. */
+.p-wait:has(.cast-splash) #pnow { display: none; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
 /* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
 .castnote { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 60; max-width: min(420px, 86vw); padding: 10px 14px; border-radius: 10px; background: rgba(12,14,18,.94); border: 1px solid var(--border); color: var(--text); font-size: 13px; line-height: 1.45; text-align: center; }

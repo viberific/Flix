@@ -919,7 +919,7 @@ function playView(seriesId, season, label) {
               <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div><button class="btn" id="cnc" hidden>Cancel</button></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div>`
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
@@ -1299,19 +1299,47 @@ function playView(seriesId, season, label) {
      * with nothing playable it says so in plain words and offers a way out, rather than giving up on its own: a slow
      * 2021 season pack with two seeders is not a failure, it is a wait.
      */
-    let msgNow = ''
+    let msgNow = '', detOpen = false
+    // A wait said the way a person says it: no seconds counted out, no bitrates, nothing that sounds like a torrent client.
+    function niceLeft(ms) {
+      const s = Math.round(ms / 1000)
+      if (s < 50) return 'Almost ready'
+      if (s < 95) return 'About a minute to go'
+      const m = Math.round(s / 60)
+      if (m < 55) return `About ${m} minutes to go`
+      const h = Math.floor(m / 60), r = m % 60
+      return r >= 5 ? `About ${h} hour${h > 1 ? 's' : ''} ${r} minutes to go` : `About ${h} hour${h > 1 ? 's' : ''} to go`
+    }
+    // The same numbers Settings shows, one tap away. They are the only way to tell a slow wait from a stuck one, so they are
+    // never thrown away -- they are just not what plays on the television in the front room.
+    $('#pmore').onclick = () => {
+      detOpen = !detOpen
+      $('#pmore').setAttribute('aria-expanded', String(detOpen))
+      $('#pmore').textContent = detOpen ? 'Hide details' : 'Details'
+      $('#pstats').hidden = !detOpen
+    }
     function showWaiting(s, waited) {
-      const frac = Math.max(0, Math.min(1, s.fileProgress ?? 0)), left = s.dlspeed > 0 ? (1 - frac) * (s.size ?? 0) / s.dlspeed : 0
-      const from = s.seeds === 1 ? '1 seeder' : `${s.seeds} seeders`
-      const bits = [`Downloading ${Math.round(frac * 100)}%`]
-      if (s.dlspeed > 0) bits.push(mbps(s.dlspeed))
-      bits.push(from)
-      if (left > 0) bits.push(`about ${dur(left)} left`)
-      let text
-      if (frac >= 1) text = 'Downloaded — opening the file…'
-      else if (waited > 20000 && s.bufferedPct < 3) text = `Still downloading from ${from} — this can take a while. ${bits.join(' · ')}`
-      else text = bits.join(' · ')
-      if (text !== msgNow) { $('#msg').textContent = text; msgNow = text }
+      const frac = Math.max(0, Math.min(1, s.fileProgress ?? 0)), pct = Math.round(frac * 100)
+      const left = s.dlspeed > 0 ? (1 - frac) * (s.size ?? 0) / s.dlspeed : 0
+      // What the viewer reads: what is happening, then how long. A bar frozen at nothing reads as broken, so until bytes
+      // arrive it drifts instead of sitting still.
+      let head
+      if (frac >= 1) head = 'Ready — opening it now'
+      else if (pct >= 92) head = 'Almost there'
+      else if (frac === 0 && waited > 20000) head = 'Still finding this one — fewer people are sharing it, so it is slower than usual'
+      else if (frac === 0 && waited > 6000) head = 'Looking for a source'
+      else head = 'Getting your episode ready'
+      if (head !== msgNow) { $('#msg').textContent = head; msgNow = head }
+      $('#pnow').hidden = false
+      $('#pbar').classList.toggle('wait', frac <= 0)
+      $('#pfill').style.width = pct + '%'
+      $('#peta').textContent = frac >= 1 ? '' : left > 0 ? niceLeft(left) : frac > 0 ? 'Just a moment' : ''
+      $('#pmore').hidden = frac >= 1
+      const stats = [`${pct}%`]
+      if (s.dlspeed > 0) stats.push(mbps(s.dlspeed))
+      stats.push(s.seeds > 0 ? `${s.seeds} ${s.seeds === 1 ? 'person' : 'people'} sharing it` : 'nobody sharing it right now')
+      $('#pstats').textContent = stats.join(' · ')
+      $('#pstats').hidden = !detOpen
       $('#cnc').hidden = waited < 20000
     }
     // Leaving while it downloads is allowed and is not a fault: the download carries on and the episode is here next time.
