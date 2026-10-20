@@ -30,7 +30,7 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { fullInDays, storageHistory } from './storage.ts'
-import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
+import { autoFetch, autoFirst, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { gatesFor, gatedNote } from './gate.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
@@ -436,6 +436,18 @@ app.post('/api/watch', auth, async (req) => {
   const titles = episodeInfoFor(Number(seriesId))
   const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
   return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next), locked: !nextOpen } : null }
+})
+
+/**
+ * A show's page has been open a while (the client waits ten seconds and sends this only if the page is still up): start
+ * the first episode, and only that one. Answers at once and carries on behind -- the page must not wait on a torrent --
+ * and autoFirst applies the ordinary automatic-download limits itself.
+ */
+app.post('/api/opened', auth, async (req) => {
+  const seriesId = Number((req.body as any)?.seriesId)
+  if (!Number.isInteger(seriesId) || !canViewSeries(req.user, seriesId)) return { ok: false }
+  void autoFirst(req.user!.id, seriesId).catch(() => {})
+  return { ok: true }
 })
 
 /** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */

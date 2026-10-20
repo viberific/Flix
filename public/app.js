@@ -798,8 +798,14 @@ async function seriesView(id) {
     paint()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paint() }
     let alive = true
+    // A page a person flicks past is not intent, and the catalogue is browsed by opening pages and leaving them, so the
+    // first episode starts only once this show has actually been on screen for a while. The server fetches one episode
+    // and only one, under the ordinary automatic-download limits; leaving the page cancels it before it is ever sent.
+    const openTimer = hero && !hero.locked && !hero.watched
+      ? setTimeout(() => { if (alive && !document.hidden) api('/api/opened', { seriesId: +id }).catch(() => {}) }, 10_000)
+      : 0
     addEventListener('flix-dl', onDl)
-    cleanup = () => { alive = false; gone = true; seasonRun++; removeEventListener('flix-dl', onDl) }
+    cleanup = () => { alive = false; gone = true; seasonRun++; clearTimeout(openTimer); removeEventListener('flix-dl', onDl) }
     app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
       cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
       app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))

@@ -3,6 +3,7 @@ import { config } from './config.ts'
 import { diskInfo, freeFloor } from './health.ts'
 import { qb } from './qb.ts'
 import { buildEpisodes, type Episode } from './episodes.ts'
+import { withFileProgress } from './wanted.ts'
 import { getRelease, startPlayback } from './streaming.ts'
 
 /**
@@ -70,6 +71,30 @@ export async function autoNext(userId: number, seriesId: number, season: number 
   const i = eps.findIndex((e) => e.season === season && e.label === label)
   const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
   return next ? autoFetch(userId, next, why) : false
+}
+
+/**
+ * Somebody has been looking at a show's page for a while, which is as close to intent as browsing gets: fetch the
+ * episode the Play button would start, and only that one file. Nothing already on disk is touched -- opening a page
+ * must never create a claim on an episode that is already here -- and movies are deliberately left out: a film is one
+ * file of 8-30 GB with no single episode to take, so prefetching one on a page view is how a box fills up. Everything
+ * is still held to the ordinary automatic-download limits (config.auto: off when storage is low, a few per person,
+ * dropped after a week if nobody watches).
+ */
+export async function autoFirst(userId: number, seriesId: number, why = 'first episode, page open'): Promise<boolean> {
+  try {
+    const eps = buildEpisodes(seriesId, userId)
+    // The first episode this person has not watched is the one their Play button starts, and it cannot be gated: a
+    // predecessor that is unwatched would itself be the first unwatched one.
+    const first = eps.find((e) => e.available && !e.watched && e.episode !== null)
+    if (!first) return false
+    const [p] = await withFileProgress([first])
+    if (p?.onServer) return false
+    return await autoFetch(userId, first, why)
+  } catch (e: any) {
+    console.log(`[auto] skipped: ${e.message}`)
+    return false
+  }
 }
 
 /** Every few minutes: whoever is partway through an episode that has now finished downloading gets the next one lined up. */
