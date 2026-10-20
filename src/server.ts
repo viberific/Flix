@@ -14,6 +14,8 @@ import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
 import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
+import { enableNextFile } from './ahead.ts'
+import { wantedBytes, withFileProgress } from './wanted.ts'
 import { MP4_CARRY, SUBFILE, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, startOfflineSweeper } from './offline.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
@@ -228,7 +230,8 @@ app.get('/api/series/:id', auth, async (req) => {
   const trailerIds = d?.trailers.length ? d.trailers : [youtubeId(trailer) ?? youtubeId(d?.trailer)].filter((x): x is string => !!x)
   const trailerId = trailerIds[0] ?? null
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
-  const episodes = buildEpisodes(id, req.user!.id)
+  // Per-file progress: "ready to watch" means THIS episode's file is on disk in full, not that its release exists.
+  const episodes = await withFileProgress(buildEpisodes(id, req.user!.id))
   return {
     // The soonest of this show's downloads that is leaving and that this person has not finished, for a note on the show page.
     leavesAt: leavingSoonFor(req.user!).filter((l) => l.seriesId === id).map((l) => l.leavesAt as number).sort((a, b) => a - b)[0] ?? null,
@@ -478,7 +481,11 @@ app.post('/api/warm', auth, async (req) => {
 
 app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   const { t, f } = req.params as any
-  return (await bufferStatus(+t, +f)) ?? { error: 'not ready' }
+  const s = (await bufferStatus(+t, +f)) ?? { error: 'not ready' }
+  // The next episode of a pack is lined up from here because this is the only place that sees, while a person watches,
+  // how much of THIS file is actually on disk. Fire and forget: it never holds up the status the player asked for.
+  if (!('error' in s)) void enableNextFile(+t, +f).catch(() => {})
+  return s
 })
 
 /** The player was closed: drop the temporary converted copy (if there was one) after a short grace period. */
@@ -809,8 +816,11 @@ app.get('/api/admin/downloads', admin, async () => {
     const t = await engine.info(d.info_hash)
     if (!t) { out.push({ ...d, missing: true }); continue }
     const k = whyKept(t, d.torrent_id)
-    out.push({ ...d, progress: t.progress, size: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
-      engineState: t.state, eta: t.eta ?? null, left: t.amount_left,
+    // What this download is FOR, not what the pack would be if it were pulled whole: a 38 GB season pack with one
+    // 6.25 GB episode selected reads as 6.25 GB, which is the disk and the wait the person actually has.
+    const w = await wantedBytes(d.torrent_id).catch(() => null)
+    out.push({ ...d, progress: w ? w.progress : t.progress, size: w ? w.wanted : t.total_size, held: w ? w.held : t.size * t.progress, total: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
+      engineState: t.state, eta: t.eta ?? null, left: w ? w.left : t.amount_left,
       ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id) })
   }
   return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }

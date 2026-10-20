@@ -774,7 +774,7 @@ async function seriesView(id) {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise${e.locked ? ' locked' : ''}" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
-          <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', e.available ? (e.onServer ? 'Ready to watch' : e.isPack ? 'Part of the full season download' : '') : 'Not available right now'].filter(Boolean).join(' · ')}</span>
+          <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · ')}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
         <span class="eside">${e.locked ? `<span class="lock" aria-label="Watch ${esc(shortEp(e.after))} first" title="Watch ${esc(shortEp(e.after))} first">${I.lock}</span>` : ''}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       // A locked episode is not a dead end: it says which episode comes first, in one line, and stays where it is.
@@ -913,7 +913,7 @@ function playView(seriesId, season, label) {
               <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div><button class="btn" id="cnc" hidden>Cancel</button></div></div>`
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
@@ -1287,6 +1287,30 @@ function playView(seriesId, season, label) {
       sendReport('manual', 'Viewer tapped Something’s wrong'); switchSource('Viewer tapped Something’s wrong')
     }
 
+    /**
+     * The file is not on disk yet, so the screen would otherwise be black and silent. Say what is actually happening --
+     * how much of THIS file, how fast, from how many people, and how long that leaves -- and keep waiting. After 20 s
+     * with nothing playable it says so in plain words and offers a way out, rather than giving up on its own: a slow
+     * 2021 season pack with two seeders is not a failure, it is a wait.
+     */
+    let msgNow = ''
+    function showWaiting(s, waited) {
+      const frac = Math.max(0, Math.min(1, s.fileProgress ?? 0)), left = s.dlspeed > 0 ? (1 - frac) * (s.size ?? 0) / s.dlspeed : 0
+      const from = s.seeds === 1 ? '1 seeder' : `${s.seeds} seeders`
+      const bits = [`Downloading ${Math.round(frac * 100)}%`]
+      if (s.dlspeed > 0) bits.push(mbps(s.dlspeed))
+      bits.push(from)
+      if (left > 0) bits.push(`about ${dur(left)} left`)
+      let text
+      if (frac >= 1) text = 'Downloaded — opening the file…'
+      else if (waited > 20000 && s.bufferedPct < 3) text = `Still downloading from ${from} — this can take a while. ${bits.join(' · ')}`
+      else text = bits.join(' · ')
+      if (text !== msgNow) { $('#msg').textContent = text; msgNow = text }
+      $('#cnc').hidden = waited < 20000
+    }
+    // Leaving while it downloads is allowed and is not a fault: the download carries on and the episode is here next time.
+    $('#cnc').onclick = () => { clearInterval(timer); go(`#/series/${seriesId}`) }
+
     async function begin() {
       try {
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
@@ -1295,16 +1319,11 @@ function playView(seriesId, season, label) {
         $('#rep').hidden = false
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-        let slow = 0
         timer = setInterval(async () => {
           const s = await api(base + '/status').catch(() => null)
           if (!alive || !s || s.error || started) return
-          const waited = Date.now() - t0
-          slow = s.bufferedPct < 3 && s.dlspeed < 20000 ? slow + 1 : 0 // one tick is half a second
-          // Nothing arriving for ~25 s: try another release of the same episode, up to twice.
-          if (waited > 25000 && slow >= 40 && tries < 2) return switchSource()
-          $('#msg').textContent = waited > 25000 && s.bufferedPct < 10 ? 'Still looking for a fast source… this can take a minute.' : ''
-        }, 500)
+          showWaiting(s, Date.now() - t0)
+        }, 1000)
         await loadInfo(0, play.position)
       } catch (e) {
         // The order rule refused this episode: go to the show with the one line that says which episode comes first, rather
@@ -1794,6 +1813,20 @@ async function settingsView(section = 'torrents') {
 }
 
 const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
+/**
+ * What an episode's OWN file is, in the words shown under it. "Ready to watch" is a claim about bytes on disk, so it is
+ * only said when qBittorrent reports that file at 1: a release that merely exists -- or a pack that has just started --
+ * is downloading, and a file in the pack nobody has asked for is waiting in the pack.
+ */
+const epState = (e) => {
+  if (!e.available) return 'Not available right now'
+  if (e.onServer) return 'Ready to watch'
+  const p = e.fileProgress
+  if (p != null && p > 0) return `Downloading ${Math.min(99, Math.max(1, Math.floor(p * 100)))}%`
+  if (e.inPack) return 'In the season pack'
+  if (e.isPack) return 'Part of the full season download'
+  return 'Not downloaded yet'
+}
 const ago = (t) => { const d = Math.floor(Date.now() / 1000) - t; return d < 3600 ? Math.max(1, Math.round(d / 60)) + ' min ago' : d < 86400 ? Math.round(d / 3600) + ' h ago' : Math.round(d / 86400) + ' d ago' }
 
 /** Twelve months of the space Flix's downloads take: an SVG line with a hover crosshair, and the same numbers as a table. */

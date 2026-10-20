@@ -4,6 +4,7 @@ import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
 import { syncFolder, tidyAfterRemoval } from './folder.ts'
 import { recordStorage } from './storage.ts'
+import { wantedBytes } from './wanted.ts'
 import { canView, getRating, parseAllowed } from './ratings.ts'
 
 export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
@@ -292,7 +293,7 @@ export async function sweep(): Promise<string[]> {
       db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
       continue
     }
-    const held = t.size * t.progress
+    const held = (await wantedBytes(d.torrent_id).catch(() => null))?.held ?? t.size * t.progress
     onDisk += held
     if (d.added_at > now() - config.sweepGraceSec) continue // just added: its first viewer's interest may not be written yet
     updateLeaving(d.torrent_id, t)

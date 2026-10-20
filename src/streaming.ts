@@ -250,6 +250,6 @@ export async function bufferStatus(torrentId: number, fileIndex: number) {
   for (let i = a; i <= b; i++) if (states[i] === 2) have++
   return {
     bufferedPct: file.progress >= 1 ? 100 : Math.round((have / (b - a + 1)) * 100),
-    fileProgress: file.progress, dlspeed: t?.dlspeed ?? 0, seeds: t?.num_seeds ?? 0, peers: t?.num_leechs ?? 0, state: t?.state ?? 'unknown',
+    fileProgress: file.progress, size: file.size, dlspeed: t?.dlspeed ?? 0, seeds: t?.num_seeds ?? 0, peers: t?.num_leechs ?? 0, state: t?.state ?? 'unknown',
   }
 }

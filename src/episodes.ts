@@ -13,6 +13,9 @@ export interface Episode {
   /** True when the episode lives inside a season pack (fetched one episode at a time, as it is watched, so it can be seeded). */
   isPack: boolean
   torrentId: number; quality: string; available: boolean; onServer: boolean
+  /** Which file inside the torrent this episode plays. Null for a single-file release (whose own progress is the
+   *  file's), and for a pack whose .torrent could not be read yet. */
+  fileIndex: number | null
   watched: boolean; position: number; duration: number
 }
 
@@ -52,7 +55,7 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
         // entirely by unplayableSeries() when it has nothing playable at all.
         const pick = pickRelease(g)
         if (!pick) continue
-        add({ season, episode: pick.episode, label: pick.label, isPack: false, torrentId: pick.torrent_id, quality: qualityLabel(pick.resolution), available: isAlive(pick), onServer: pick.on_server })
+        add({ season, episode: pick.episode, label: pick.label, isPack: false, torrentId: pick.torrent_id, quality: qualityLabel(pick.resolution), available: isAlive(pick), onServer: pick.on_server, fileIndex: null })
       }
       continue
     }
@@ -61,12 +64,12 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
     if (!pack) continue
     const files = packEpisodes(pack.torrent_id)
     if (!files.length) { // pack not readable yet: one "Season N" entry that resumes at the next unfinished file
-      add({ season, episode: null, label: `Season ${season}`, isPack: true, torrentId: pack.torrent_id, quality: qualityLabel(pack.resolution), available: isAlive(pack), onServer: pack.on_server })
+      add({ season, episode: null, label: `Season ${season}`, isPack: true, torrentId: pack.torrent_id, quality: qualityLabel(pack.resolution), available: isAlive(pack), onServer: pack.on_server, fileIndex: null })
       continue
     }
     for (const f of files) {
       add({ season, episode: f.episode, label: `S${String(season).padStart(2, '0')}E${String(f.episode).padStart(2, '0')}`, isPack: true,
-        torrentId: pack.torrent_id, quality: qualityLabel(pack.resolution), available: isAlive(pack), onServer: pack.on_server })
+        torrentId: pack.torrent_id, quality: qualityLabel(pack.resolution), available: isAlive(pack), onServer: pack.on_server, fileIndex: f.idx })
     }
   }
   return out.sort((a, b) => (a.season ?? 1e9) - (b.season ?? 1e9) || (a.episode ?? 1e9) - (b.episode ?? 1e9) || a.label.localeCompare(b.label))
