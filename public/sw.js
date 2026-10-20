@@ -1,6 +1,6 @@
 // App-shell cache only. API responses and video streams are never cached (auth + huge, partially-downloaded files).
 // The one exception is 'flix-downloads': episodes the person chose to save on this device, answered under /_offline/ (see downloads.js).
-const CACHE = 'flix-shell-v24'
+const CACHE = 'flix-shell-v25'
 const SHELL = ['/', '/app.js', '/downloads.js', '/style.css', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/manifest.webmanifest', '/vendor/hls.min.js']
 
 self.addEventListener('install', (e) => {

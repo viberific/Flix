@@ -198,13 +198,20 @@ img.fade.in { opacity: 1; }
 .p-top { position: absolute; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; gap: 14px; color: #fff;
   padding: max(16px, env(safe-area-inset-top, 0px)) var(--gutter-r) 40px var(--gutter); background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .player.idle .p-top { opacity: 0; transform: translateY(-14px); pointer-events: none; } .player.idle { cursor: none; }
+/* Paused is a menu, not a film: the title and the certificate stay up even if the idle timer had just put the bar away
+   when the viewer hit pause (the wake() that follows cannot always win the race against the class that hid it). */
+.player.paused .p-top { opacity: 1; transform: none; pointer-events: auto; }
 .p-title b { display: block; font-size: 17px; } .p-title span { color: rgba(255,255,255,.7); font-size: 13px; }
 /* Black, not see-through. The overlay used to have no background of its own, so whatever sat behind it showed through
    while an episode was being found -- and a poster Flix had to invent is a flat card, which is what read as a grey play
    button behind the logo. The black belongs to this layer, so it fades out with the mark and the picture is revealed
    underneath in the same moment, rather than the black vanishing first. */
 .p-wait { position: absolute; inset: 0; z-index: 4; background: #000; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
-.p-wait.gone { opacity: 0; pointer-events: none; }
+/* On reveal the black lifts at once and the mark plays its exit over the first frames: a bloom (it swells and
+   brightens, the aura flaring with it) then a dissolve into blur, gone in about a second -- not a plain fade of the
+   whole overlay, which took the logo and the picture down together. */
+.p-wait.gone { background: transparent; pointer-events: none; }
+.p-wait.gone #msg { visibility: hidden; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
 /* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
 .castnote { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 60; max-width: min(420px, 86vw); padding: 10px 14px; border-radius: 10px; background: rgba(12,14,18,.94); border: 1px solid var(--border); color: var(--text); font-size: 13px; line-height: 1.45; text-align: center; }
@@ -213,6 +220,19 @@ img.fade.in { opacity: 1; }
 /* Clear of the player's own bar. The bar is ~110px tall (10px padding, 24px seek, 4px gap, a 60px button, 12px below), so
    the card sits over it rather than under it at 960x540 and 1280x720, and drops back into the corner while the bar is away. */
 .player.idle .p-next { bottom: max(28px, env(safe-area-inset-bottom, 0px)); }
+/* Paused: what you are watching, centre-left over the dimmed frame -- the episode's title with its age rating beside
+   it, the episode's own description under that, then the people in it. No artwork behind it: the frame itself, dimmed,
+   is always right (see the paused block above). */
+.p-info { position: absolute; z-index: 6; left: var(--gutter); top: 50%; transform: translateY(-50%); max-width: min(560px, 62vw); color: #fff; animation: rise .5s var(--ease); pointer-events: none; }
+.p-info-h { display: flex; align-items: center; gap: 12px; }
+.p-info-h b { font-size: clamp(20px, 2.6vw, 34px); font-weight: 700; letter-spacing: .01em; text-shadow: 0 2px 24px rgba(0,0,0,.7); }
+.p-info-rate { flex: none; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; border: 1px solid rgba(255,255,255,.45); }
+.p-info-o { margin: 10px 0 0; font-size: 15px; line-height: 1.5; color: rgba(255,255,255,.85); max-width: 54ch; text-shadow: 0 1px 14px rgba(0,0,0,.8); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.p-info-c { display: flex; gap: 14px; margin-top: 18px; flex-wrap: wrap; }
+.p-cast { display: grid; justify-items: center; gap: 6px; width: 64px; font-size: 11px; color: rgba(255,255,255,.75); text-align: center; }
+.p-cast img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
+.p-cast b { font-weight: 600; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+@media (max-width: 640px) { .p-info { top: auto; bottom: 128px; transform: none; max-width: calc(100vw - 32px); } .p-info-o { font-size: 13px; -webkit-line-clamp: 3; } .p-cast { width: 52px; } .p-cast img { width: 44px; height: 44px; } }
 .p-next small { color: rgba(255,255,255,.65); } .p-next b { display: block; font-size: 20px; margin: 2px 0 14px; } .p-next .actions { display: flex; gap: 10px; }
 .p-next .btn { padding: 10px 16px; flex: 1; }
 
@@ -532,8 +552,8 @@ html.tv * { cursor: none; }
 .mark .sweep { position: absolute; inset: 0; border-radius: 26px; overflow: hidden; pointer-events: none; }
 .mark .sweep::after { content: ""; position: absolute; top: -30%; bottom: -30%; width: 55%; left: -80%; transform: skewX(-20deg);
   background: linear-gradient(100deg, transparent, rgba(255,255,255,.08) 30%, rgba(255,255,255,.38) 50%, rgba(255,255,255,.08) 70%, transparent);
-  animation: sweep 1.3s cubic-bezier(.45,0,.2,1) .95s forwards; }
-.p-wait.gone .mark { transform: scale(.985); opacity: 0; transition: transform .9s cubic-bezier(.4,0,.2,1), opacity .75s ease; }
+  animation: sweep 3.4s cubic-bezier(.45,0,.2,1) .95s infinite; }
+.p-wait.gone .mark { animation: markOut 1.15s cubic-bezier(.4,0,.2,1) forwards; }
 /* A light running around the tile while the episode is still being fetched: without it a slow start reads as a freeze.
    It is the tile's own squircle drawn as one stroke, not a conic gradient on a rotating box -- the gradient's bright spot
    orbited the middle of the box, so it swept across the corners instead of running along the edge. The rect sits 1px
@@ -548,7 +568,6 @@ html.tv * { cursor: none; }
   pointer-events: none; opacity: 0;
   animation: tracerIn .6s ease 1.5s forwards; }
 .mark .tracer rect { animation: tracerRun 1.9s linear infinite; }
-.p-wait.gone .tracer, .p-wait.gone .tracer rect { opacity: 0; animation: none; }
 @keyframes tracerRun { to { stroke-dashoffset: -100; } }
 @keyframes tracerIn { to { opacity: 1; } }
 @keyframes markIn { 0% { opacity: 0; transform: translateY(18px) scale(.8) rotateX(22deg); filter: blur(14px); } 55% { opacity: 1; filter: blur(0); } 100% { opacity: 1; transform: none; filter: none; } }
@@ -558,9 +577,16 @@ html.tv * { cursor: none; }
 @keyframes auraSpin { to { rotate: 360deg; } }
 @keyframes auraPulse { 0%, 100% { scale: 1; } 50% { scale: 1.12; } }
 @keyframes ripple { 0% { opacity: 0; transform: scale(.94); } 14% { opacity: .75; } 100% { opacity: 0; transform: scale(2.3); border-radius: 50%; } }
-@keyframes sweep { to { left: 130%; } }
+/* One pass across the face, then a rest, then again: while the episode is still fetching the shine keeps travelling,
+   so a slow start reads as busy rather than frozen. 42% of the period is the pass, the rest is the dwell. */
+@keyframes sweep { 0% { left: -80%; } 42% { left: 130%; } 100% { left: 130%; } }
+@keyframes markOut {
+  0% { opacity: 1; transform: none; filter: none; }
+  40% { opacity: 1; transform: scale(1.07); filter: brightness(1.3); }
+  100% { opacity: 0; transform: scale(1.16); filter: brightness(1.7) blur(12px); }
+}
 #msg:empty { display: none; }
-@media (prefers-reduced-motion: reduce) { .mark svg { animation: markFade .5s forwards; } .mark svg g { animation: none; opacity: 1; } .mark .aura, .mark .ripple, .mark .sweep, .mark .tracer { display: none; } @keyframes markFade { to { opacity: 1; } } }
+@media (prefers-reduced-motion: reduce) { .mark svg { animation: markFade .5s forwards; } .mark svg g { animation: none; opacity: 1; } .mark .aura, .mark .ripple, .mark .sweep, .mark .tracer { display: none; } .p-wait.gone .mark { animation: none; opacity: 0; transition: opacity .4s ease; } @keyframes markFade { to { opacity: 1; } } }
 
 /* ---------- downloads ---------- */
 .eside { display: flex; align-items: center; gap: 10px; }

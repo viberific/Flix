@@ -410,7 +410,9 @@ app.post('/api/watch', auth, async (req) => {
     db.prepare(`UPDATE interests SET released_at = ? WHERE user_id = ? AND watched_at IS NULL AND torrent_id IN (${[...avoid].map(() => '?').join(',')})`).run(now(), req.user!.id, ...avoid)
   }
   await ensurePackFiles(Number(seriesId), avoid)
-  const eps = buildEpisodes(Number(seriesId), req.user!.id, avoid)
+  // withInfo adds each episode's own summary, so the player's pause card can show the episode's description
+  // without a second lookup -- the same shapes the series page already serves.
+  const eps = withInfo(Number(seriesId), buildEpisodes(Number(seriesId), req.user!.id, avoid))
   const i = eps.findIndex((e) => e.season === (season ?? null) && e.label === label)
   if (i < 0) throw Object.assign(new Error(avoid.size ? 'There is no other source for this episode.' : 'That episode is not available'), { statusCode: 404 })
   const ep = eps[i]

@@ -557,10 +557,10 @@ async function homeView(q, local = false) {
     wireLeavingPrompt()
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
     // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
-    artShow?.()
+    artShow?.stop?.()
     const art = (artShow = artSlideshow([...(featured ? [featured] : []), ...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])]))
     const beforeCleanup = cleanup
-    cleanup = () => { beforeCleanup?.(); art?.(); if (artShow === art) artShow = null }
+    cleanup = () => { beforeCleanup?.(); art?.stop?.(); if (artShow === art) artShow = null }
     const hs = !q && featured
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
@@ -584,7 +584,9 @@ let artShow = null
  * left on the home screen does. The next poster is fetched while the one before it is still up, so there is never a burst
  * of requests, and any input at all takes it away at once. Returns its stop(), or null when it must not run.
  */
-function artSlideshow(items) {
+/** `opts.manual`: the caller starts and stops it (the player's idle timer), so it never arms itself on input;
+    `opts.parent`: where the overlay lives (inside the player, above the picture, instead of on the body). */
+function artSlideshow(items, opts = {}) {
   if (rmq.matches || !bigScreen()) return null
   const show = [...new Map((items || []).filter((s) => s && s.id != null).map((s) => [s.id, s])).values()].slice(0, 12)
   if (show.length < 2) return null
@@ -659,16 +661,17 @@ function artSlideshow(items) {
   // again. Re-arming at most once a second, because a drag is thousands of pointer moves.
   const touched = () => {
     if (on) hide()
+    if (opts.manual) return // manual mode: the owner (the player) decides when it may come back
     const now = Date.now()
     if (now - armedAt > 1000) { armedAt = now; arm() }
   }
-  const seen = () => { if (document.hidden) hide(); else arm() }
+  const seen = () => { if (document.hidden) hide(); else if (!opts.manual) arm() }
   const events = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll']
-  document.body.appendChild(box)
+  ;(opts.parent || document.body).appendChild(box)
   events.forEach((e) => addEventListener(e, touched, true))
   addEventListener('visibilitychange', seen)
-  arm()
-  return () => {
+  if (!opts.manual) arm()
+  const stop = () => {
     if (stopped) return
     stopped = true
     clearTimeout(idle)
@@ -677,6 +680,7 @@ function artSlideshow(items) {
     removeEventListener('visibilitychange', seen)
     box.remove()
   }
+  return { stop, start, hide }
 }
 
 /* ---------- series ---------- */
@@ -890,6 +894,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
+        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
@@ -908,8 +913,9 @@ function playView(seriesId, season, label) {
     top.hidden = true
     const pl = $('#pl')
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
-    Promise.resolve().then(() => { wirePlayer(); loadRating() })
+    Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, v = null
+    let meta = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
     // The viewer's one-off yes to converting this episode, when Settings says never to convert the picture.
@@ -919,7 +925,19 @@ function playView(seriesId, season, label) {
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
     let castingOnly = false
     const avoid = []
-    const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused && !castingOnly) pl.classList.add('idle') }, 3000) }
+    // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
+    // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
+    // started only by the player's own idle timer (manual mode), and any input at all brings the film back at once.
+    let idleArt = null, artRun = 0
+    const startIdleArt = async () => {
+      const run = ++artRun
+      if (idleArt) { if (run === artRun) idleArt.start(); return }
+      const home = await api('/api/home').catch(() => null)
+      if (!home || !alive || run !== artRun) return
+      idleArt = artSlideshow([...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])], { manual: true, parent: pl })
+      if (run === artRun) idleArt?.start()
+    }
+    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused && !castingOnly) { pl.classList.add('idle'); startIdleArt() } }, 3000) }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
     pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
     // Touching the bar itself only restarts the hide timer.
@@ -1026,7 +1044,30 @@ function playView(seriesId, season, label) {
       $('#pvol').setAttribute('aria-label', muted ? 'Unmute' : 'Mute')
       $('#pfull').setAttribute('aria-pressed', String(fill))
       if (paused || castingOnly) wake()
+      fillPause()
       syncBar()
+    }
+    /** What you are watching, centre-left over the dimmed frame while paused: the episode's title with its age
+        rating beside it, the episode's own description under that, then the cast. Only once playback has really
+        started -- the loading screen and the cast handshake must never show it. */
+    function fillPause() {
+      const card = $('#pinfo')
+      if (!card) return
+      const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
+      const show = paused && !castingOnly && started
+      card.hidden = !show
+      if (!show) return
+      const s = meta?.series
+      const head = play?.episodeTitle ? `${play.title} · ${play.episodeTitle}` : (play?.seriesName || play?.title || '')
+      if ($('#pit').textContent !== head) $('#pit').textContent = head
+      const rate = s?.rating && s.rating !== 'Unrated' ? s.rating : ''
+      const r = $('#pir'); r.hidden = !rate; r.textContent = rate
+      const ep = meta?.episodes?.find((e) => e.label === play?.title && e.season === (season === 'x' ? null : +season))
+      const desc = ep?.overview || s?.overview || ''
+      $('#pio').textContent = desc; $('#pio').hidden = !desc
+      const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 6)
+      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b></span>`).join('')
+      $('#pic').hidden = !cast.length
     }
     function wirePlayer() {
       const bar = $('#pseek')
@@ -1124,15 +1165,19 @@ function playView(seriesId, season, label) {
       $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('idle')) wake(); else { clearTimeout(idleT); pl.classList.add('idle') } })
       paint()
     }
-    /** The certificate beside the title in the top bar. */
-    async function loadRating() {
+    /** The certificate beside the title in the top bar -- and the same answer feeds the pause card: the show's
+        overview and cast come back with the rating, so pausing needs no second call. The rating lives on the
+        `series` object this endpoint returns, not on the envelope. */
+    async function loadMeta() {
       const s = await api(`/api/series/${seriesId}`).catch(() => null)
       if (!s || !alive) return
-      const el = $('#prate'), rate = s.rating && s.rating !== 'Unrated' ? s.rating : ''
+      const el = $('#prate'), rate = s.series?.rating && s.series.rating !== 'Unrated' ? s.series.rating : ''
       if (el) { el.hidden = !rate; el.textContent = rate }
+      meta = s
+      fillPause()
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
+    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); idleArt?.stop(); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
