@@ -62,9 +62,14 @@ test('source pick: 1080p first, then 720p, then the rest; 4K only as a last reso
   assert.equal(pickRelease([c(1, '2160p')]), undefined)
 })
 
-test('source pick tie-breaks: on-server, then H.264, then seeders', () => {
+test('source pick tie-breaks: on-server, then H.264, then the smaller file, then seeders', () => {
   assert.equal(pickRelease([c(1, '1080p', { seeders: 50 }), c(2, '1080p', { on_server: true, seeders: 1 })])!.torrent_id, 2)
   assert.equal(pickRelease([c(1, '1080p', { codec: 'H.265', seeders: 99 }), c(2, '1080p', { seeders: 5 })])!.torrent_id, 2)
+  // Always the sharpest release, but of two 1080p copies the smaller one wins even against more seeders: less to
+  // download is the point, and the box's line -- not the swarm -- is what stalls a play.
+  assert.equal(pickRelease([c(1, '1080p', { size: 8e9, seeders: 99 }), c(2, '1080p', { size: 3e9, seeders: 2 })])!.torrent_id, 2)
+  assert.equal(pickRelease([c(1, '720p', { size: 1e9 }), c(2, '1080p', { size: 9e9 })])!.torrent_id, 2) // 1080p still leads
+  // Identical size: seeders break the tie, as before.
   assert.equal(pickRelease([c(1, '1080p', { seeders: 5 }), c(2, '1080p', { seeders: 9 })])!.torrent_id, 2)
   assert.deepEqual(['1080p', '2160p', '1080i', 'SD'].map(qualityLabel), ['1080p', '4K', '1080p', 'SD'])
 })

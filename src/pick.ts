@@ -33,7 +33,8 @@ export const isAlive = (c: Cand) => c.on_server || (c.seeders ?? 0) > 0
 /**
  * Best source for one episode:
  * a living source beats a dead one; then 1080p beats 720p beats the rest, and 4K is only chosen when nothing else is alive;
- * then what we already have on disk (instant start); then H.264 (plays without heavy transcoding); then most seeders.
+ * then what we already have on disk (instant start); then H.264 (plays without heavy transcoding); then the smaller file
+ * of the same resolution, because there is nothing to wait for in the larger one; then most seeders.
  */
 export function pickRelease<T extends Cand>(cands: T[]): T | undefined {
   // In copy-only mode a release that would need the picture re-encoded is not a candidate at all: it is never
@@ -53,6 +54,9 @@ export function pickRelease<T extends Cand>(cands: T[]): T | undefined {
     tierOf(a.resolution) - tierOf(b.resolution) ||
     Number(!a.on_server) - Number(!b.on_server) ||
     (off ? 0 : convertCost(a) - convertCost(b)) ||
+    // Same resolution: the smaller file wins, because it is here sooner and this box's line is what stalls a play.
+    // Seeders only break a tie between two files of the same size.
+    (a.size ?? Infinity) - (b.size ?? Infinity) ||
     (b.seeders ?? 0) - (a.seeders ?? 0),
   )[0]
 }
