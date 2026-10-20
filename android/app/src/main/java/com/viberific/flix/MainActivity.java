@@ -83,6 +83,7 @@ public class MainActivity extends Activity {
             s.setMediaPlaybackRequiresUserGesture(false); // the intro chime and autoplay of the next episode
             s.setLoadWithOverviewMode(true);
             s.setUseWideViewPort(true);
+            web.setOverScrollMode(View.OVER_SCROLL_NEVER); // no glow at the ends of a long page
             // The page is drawn edge to edge (see the immersive flags further down), so on a phone it ran under the
             // status bar and the camera cutout and the search bar sat behind them. Padding the WebView itself does not
             // move its content -- a WebView lays the page out across its whole width whatever its padding -- so the
@@ -212,7 +213,14 @@ public class MainActivity extends Activity {
         go.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         go.setBackground(rounded(0xFFFF3D6E, 0));
         go.setPadding(dp(32), dp(12), dp(32), dp(12));
-        go.setOnFocusChangeListener((v, focused) -> v.setAlpha(focused ? 1f : 0.85f));
+        // On a television the remote's focus must be unmistakable: the button lifts and gains a white edge, not just a
+        // slight dimming.
+        go.setOnFocusChangeListener((v, focused) -> {
+            v.setAlpha(focused ? 1f : 0.85f);
+            v.setScaleX(focused ? 1.05f : 1f);
+            v.setScaleY(focused ? 1.05f : 1f);
+            v.setBackground(rounded(0xFFFF3D6E, focused ? 0xFFFFFFFF : 0));
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(20);
         box.addView(go, lp);

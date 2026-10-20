@@ -59,10 +59,12 @@ header#top > .search { flex: 1; }
 .search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--fg); font: inherit; outline: none; padding-right: 14px; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; display: grid; place-items: center; transition: transform .25s var(--ease); }
 .avatar:hover { transform: scale(1.07); } .avatar:active { transform: scale(.94); transition-duration: .1s; }
-/* A chosen creature replaces the initial in the header. */
-.avatar.has-art { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+/* A chosen creature replaces the initial in the header, filling the whole circle: every creature is drawn on a disc
+   that reaches the edge of its own viewBox, so at full size the colour runs to the button's rounded edge and no dark
+   ring of button background shows around it (a wide black border on a television, where the avatar is drawn large). */
+.avatar.has-art { background: var(--surface-2); }
 .avsvg { width: 100%; height: 100%; display: block; }
-.avatar .avsvg { width: 78%; height: 78%; }
+.avatar .avsvg { width: 100%; height: 100%; }
 /* Profile page */
 .prof { max-width: 620px; }
 .avgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 10px; }
