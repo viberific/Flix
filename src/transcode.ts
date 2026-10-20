@@ -18,8 +18,29 @@ export interface Probe {
   hdr: boolean; audio: AudioTrack[]; subs: SubTrack[]; chapters: Chapter[]
   /** More about the picture, so the encoder settings can be sized to it instead of one guess for every file. */
   hdrKind?: 'pq' | 'hlg'; fps?: number; srcBitrate?: number; tenBit?: boolean
+  /** The colour layout ffprobe reported. yuv420p is what every player takes; anything else needs a conversion. */
+  pixFmt?: string
 }
-const probes = new Map<string, Probe>()
+/** `complete` is whether the file had fully downloaded when it was probed: a probe taken while it was arriving can be
+ *  missing a stream or a height, and the decision it led to must not be kept for the life of the server because of it. */
+const probes = new Map<string, { p: Probe; complete: boolean }>()
+
+/** Drop what was learned about a file, so the next ask runs ffprobe again. */
+export function forgetProbe(torrentId: number, fileIndex: number) { probes.delete(`${torrentId}:${fileIndex}`) }
+
+/**
+ * Whether the player can be handed these bytes exactly as they are: a container it takes, a picture it decodes in the
+ * colour layout every player handles, and audio it can play. The picture's size is the player's business, not this box's
+ * — a 4K television plays a 4K file, and refusing it here is what told the viewer "this would need converting" about a
+ * file nothing had to be done to. `can` is the codecs the player itself said it decodes (asked in the browser, because
+ * only it knows whether the screen behind it has an HEVC decoder); the box's own list covers the rest.
+ */
+export function directPlay(p: Probe, can?: Set<string>) {
+  const codec = String(p.videoCodec ?? '')
+  const containerOk = /mp4|webm/.test(p.container ?? '')
+  const codecOk = DIRECT_VIDEO.has(codec) || !!can?.has(codec)
+  return containerOk && codecOk && (!p.pixFmt || p.pixFmt === 'yuv420p')
+}
 
 const DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1'])
 const DIRECT_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis'])
@@ -39,10 +60,14 @@ const langName = (code?: string) => (code ? LANG[code.toLowerCase()] ?? code : '
 const HDR_TRC = new Set(['smpte2084', 'arib-std-b67'])
 
 /** ffprobe the file through our own range endpoint, then decide: serve raw bytes or remux/transcode to HLS. */
-export async function probe(torrentId: number, fileIndex: number): Promise<Probe> {
+export async function probe(torrentId: number, fileIndex: number, opts: { complete?: boolean } = {}): Promise<Probe> {
   const key = `${torrentId}:${fileIndex}`
   const hit = probes.get(key)
-  if (hit) return hit
+  // A probe of a file that has finished downloading is the whole truth about it and is kept. One taken while it was still
+  // arriving is used for now, but is asked again the moment the caller knows the file is complete: a partial read can
+  // report no height (or no audio stream) and that answer was kept for ever before, which is what made a playable 4K file
+  // announce itself as needing converting.
+  if (hit && (hit.complete || !opts.complete)) return hit.p
   const { stdout } = await execFileP('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', rawUrl(torrentId, fileIndex)], { timeout: Number(process.env.PROBE_TIMEOUT_MS ?? 120_000), maxBuffer: 8 << 20 })
     .catch((e) => { throw new Error(`ffprobe failed (code=${e.code} signal=${e.signal} killed=${e.killed}): ${String(e.stderr || e.message).replace(config.internalKey, '***').trim().slice(0, 500)}`) })
   const j = JSON.parse(stdout)
@@ -52,7 +77,9 @@ export async function probe(torrentId: number, fileIndex: number): Promise<Probe
   const containerOk = /mp4|webm/.test(fmt)
   const pixOk = !v?.pix_fmt || v.pix_fmt === 'yuv420p'
   const height: number | undefined = v?.height
-  const vOk = !!v && DIRECT_VIDEO.has(v.codec_name) && pixOk && (height ?? 0) <= 1080 // 4K is always re-encoded down to 1080p
+  // What a repack into MP4 can carry with the picture copied. The height cap belongs to that copy (a second full file on
+  // the disk), not to direct play: handing the bytes over as they are costs this box nothing at any resolution.
+  const vOk = !!v && DIRECT_VIDEO.has(v.codec_name) && pixOk && (height ?? 0) <= 1080
   const aOk = !a || DIRECT_AUDIO.has(a.codec_name)
   const audio: AudioTrack[] = (j.streams ?? []).filter((s: any) => s.codec_type === 'audio').map((s: any, n: number) => ({
     n, lang: s.tags?.language ?? 'und', channels: s.channels, default: !!s.disposition?.default,
@@ -67,14 +94,18 @@ export async function probe(torrentId: number, fileIndex: number): Promise<Probe
   const fps = fn > 0 && fd > 0 ? Math.min(120, fn / fd) : undefined
   const chapters: Chapter[] = (j.chapters ?? []).map((c: any) => ({ start: Number(c.start_time), end: Number(c.end_time), title: String(c.tags?.title ?? '') })).filter((c: Chapter) => c.end > c.start)
   const p: Probe = {
-    direct: containerOk && vOk && aOk, videoCodec: v?.codec_name, audioCodec: a?.codec_name, container: fmt,
+    direct: false, videoCodec: v?.codec_name, audioCodec: a?.codec_name, container: fmt,
     duration: j.format?.duration ? Number(j.format.duration) : undefined, copyVideo: vOk, height,
     hdr: HDR_TRC.has(v?.color_transfer ?? ''), audio, subs, chapters,
     hdrKind: v?.color_transfer === 'arib-std-b67' ? 'hlg' : v?.color_transfer === 'smpte2084' ? 'pq' : undefined,
     fps, srcBitrate: v?.bit_rate ? Number(v.bit_rate) : undefined,
     tenBit: /10|12/.test(String(v?.pix_fmt ?? '')),
+    pixFmt: v?.pix_fmt,
   }
-  probes.set(key, p)
+  // The answer for a player that has said nothing about itself: the box's own list of what every player takes.
+  p.direct = directPlay(p) && aOk
+  // No picture at all means the read did not reach the streams: nothing worth remembering, so the next ask runs again.
+  if (v) probes.set(key, { p, complete: !!opts.complete })
   return p
 }
 

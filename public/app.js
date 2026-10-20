@@ -352,6 +352,14 @@ function flixSting() {
 // (a TV is the one place with no install button and no cast button: it is the thing a phone casts to).
 const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
 if (isTv) document.documentElement.classList.add('tv')
+// What this player can decode, asked once of the player itself. Only the device knows whether the screen behind it has an
+// HEVC or AV1 decoder, and the box used to assume nobody did above 1080p -- which refused 4K files that play perfectly as
+// they are and told the viewer they would need converting.
+const CAN_PLAY = (() => {
+  const el = document.createElement('video')
+  const t = { h264: 'video/mp4; codecs="avc1.640028"', hevc: 'video/mp4; codecs="hvc1.1.6.L153.B0"', av1: 'video/mp4; codecs="av01.0.08M.08"', vp9: 'video/mp4; codecs="vp09.00.10.08"', vp8: 'video/webm; codecs="vp8"' }
+  try { return Object.keys(t).filter((c) => !!el.canPlayType(t[c])) } catch { return [] }
+})()
 
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
 addEventListener('click', () => closeMenu($('.menu')))
@@ -902,7 +910,6 @@ function playView(seriesId, season, label) {
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-haspopup="true" hidden>CC</button></div>
-              <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Picture quality" aria-haspopup="true" hidden></button></div>
               <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
@@ -942,7 +949,25 @@ function playView(seriesId, season, label) {
     // playing?" -- so the artwork slid over a show that was playing and had simply not been touched for three seconds.
     // `started` keeps it away during the loading screen, and paint() (which wakes while paused) keeps re-arming this
     // timer for as long as the show is stopped, so the artwork still arrives on a paused show left alone.
-    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 30000) }
+    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 30000); armQuiet() }
+    // The bar goes away while the show plays: five seconds with no input and the top bar and the control bar fade out with
+    // the cursor, and any pointer move, tap, key or remote press brings them straight back and starts the five again.
+    // A class of its own -- NOT `idle`, whose timer arms the paused-state artwork slideshow: hiding the bar in the middle
+    // of an episode must never start that.
+    let quietT = null
+    const menuOpen = () => !!pl.querySelector('.p-menu .menu')
+    const armQuiet = () => {
+      clearTimeout(quietT)
+      pl.classList.remove('p-quiet')
+      quietT = setTimeout(() => {
+        // Paused is a menu to read, an open captions list is on the bar itself, and nothing fades before the picture has
+        // started: leave all three where they are.
+        if (!alive || !v || v.paused || castingOnly || !started || menuOpen()) return
+        // Nothing keeps the focus once the bar has gone: a remote's OK would otherwise press a button nobody can see.
+        if (pl.contains(document.activeElement) && document.activeElement !== document.body) document.activeElement.blur()
+        pl.classList.add('p-quiet')
+      }, 5000)
+    }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
     pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
     // Touching the bar itself only restarts the hide timer.
@@ -960,6 +985,16 @@ function playView(seriesId, season, label) {
     goLandscape()
     pl.addEventListener('pointerup', goLandscape)
 
+    // A list opened from the remote: the button opens it, then the focus is put on the entry already chosen (or the first),
+    // because a d-pad cannot point at anything that is not focused.
+    const openFromKey = (btn) => {
+      if (!btn || btn.hidden) return false
+      btn.click()
+      const m = btn.parentElement.querySelector('.menu')
+      const first = m?.querySelector('button[aria-current]') || m?.querySelector('button')
+      first?.focus()
+      return !!m
+    }
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
@@ -972,6 +1007,29 @@ function playView(seriesId, season, label) {
         if (b.length) b[(Math.max(0, i) + (k === 'ArrowRight' ? 1 : -1) + b.length) % b.length].focus()
         return
       }
+      // A remote with a captions list open walks the list rather than seeking the picture underneath it. Enter picks the
+      // focused entry on its own (it is a real button), and Escape or the back key closes the list again; left and right
+      // still skip 10 seconds, which is what a viewer expects from them whatever has the focus.
+      const open = pl.querySelector('.p-menu .menu')
+      if (open && k !== 'Enter') {
+        const items = [...open.querySelectorAll('button')]
+        if (items.length && (k === 'ArrowDown' || k === 'ArrowUp')) {
+          e.preventDefault()
+          const i = items.indexOf(document.activeElement)
+          const n = i < 0 ? (k === 'ArrowDown' ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, i + (k === 'ArrowDown' ? 1 : -1)))
+          items[n].focus()
+          wake()
+          return
+        }
+        if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') {
+          e.preventDefault()
+          const back = open.parentElement.querySelector('button')
+          closeMenu(open)
+          back?.focus()
+          wake()
+          return
+        }
+      }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
       else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
@@ -983,6 +1041,9 @@ function playView(seriesId, season, label) {
       else if (/^[0-9]$/.test(k) && !e.ctrlKey && !e.metaKey && !e.altKey && totalT()) { e.preventDefault(); setT(totalT() * Number(k) / 10) }
       else if (k === 'Home') { e.preventDefault(); setT(0) }
       else if (k === 'End') { e.preventDefault(); setT(Math.max(0, totalT() - 5)) }
+      // On a television the volume is the set's own, so up belongs to the captions list instead (up and down still walk it
+      // once it is open, above). Everywhere else both stay the volume, as they were.
+      else if (isTv && k === 'ArrowUp' && !$('#pcc').hidden) { e.preventDefault(); openFromKey($('#pcc')) }
       else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
       else if (k === 'ArrowDown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1) }
       else if (k === 'm') v.muted = !v.muted
@@ -1167,7 +1228,7 @@ function playView(seriesId, season, label) {
       $('#pvol').onclick = () => { if (remoteOn()) rem.c.muteOrUnmute(); else if (v) { v.muted = !v.muted; paint() } }
       $('#pfull').onclick = () => { setFill(!fill); paint() }
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
-      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('idle')) wake(); else { clearTimeout(idleT); pl.classList.add('idle') } })
+      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('p-quiet')) wake(); else { armQuiet(); pl.classList.add('p-quiet') } })
       paint()
     }
     /** The certificate beside the title in the top bar -- and the same answer feeds the pause card: the show's
@@ -1182,7 +1243,19 @@ function playView(seriesId, season, label) {
       fillPause()
     }
     addEventListener('keydown', key)
-    cleanup = () => { alive = false; if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(holdT); idleArt?.stop(); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
+    // The app was in the background and has been brought back to the front. Android keeps the page exactly as it was, and
+    // a source that stopped while it was away -- a TV link whose token ran out, a socket that dropped, the decoder released
+    // with the surface -- stays stopped: nothing in here ever asked for it again, so the only way back was force-closing
+    // the app. If the picture is in an error state, or has a source and no data at all, ask /info again and carry on from
+    // where the viewer was. A fresh answer also carries a fresh link.
+    const revive = () => {
+      if (!alive || !v || !info || castingOnly) return
+      if (!v.error && !(v.currentSrc && v.readyState === 0 && !v.paused)) return
+      fileRetry = false
+      loadInfo(info.audioIndex ?? 0, v.currentTime || 0).catch((e) => fail(e.message))
+    }
+    addEventListener('visibilitychange', () => { if (!document.hidden) revive() })
+    cleanup = () => { alive = false; removeEventListener('visibilitychange', revive); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); idleArt?.stop(); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
 
     function fail(msg) {
       if (!alive) return
@@ -1243,7 +1316,7 @@ function playView(seriesId, season, label) {
 
     async function loadInfo(a, startAt) {
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      const q = [a ? 'a=' + a : '', allowConvert ? 'convert=1' : ''].filter(Boolean).join('&')
+      const q = [a ? 'a=' + a : '', allowConvert ? 'convert=1' : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
       info = await api(`${base}/info${q ? '?' + q : ''}`)
       if (!alive) return
       // Flix is set never to re-encode the picture, and this file needs it. Ask once, in the player, rather than
@@ -1293,6 +1366,9 @@ function playView(seriesId, season, label) {
           const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
+        // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
+        // retry above was only ever allowed once, for the life of the element.
+        v.addEventListener('playing', () => { fileRetry = false })
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
         // A seek into a part of the file that has not arrived yet leaves the picture frozen with nothing to say why. The ring
@@ -1314,7 +1390,7 @@ function playView(seriesId, season, label) {
         // The picture coming back must always take the artwork with it: paint() runs on play and pause and wakes while
         // paused, but a play event that finds no pause in between (a resume after a stall, a source swap) would
         // otherwise leave the artwork sitting over a show that is playing again.
-        v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle') })
+        v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
         v.ontimeupdate = () => {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
@@ -1339,18 +1415,19 @@ function playView(seriesId, season, label) {
         v.onpause = report
         v.onended = onEnded
         // Attached once, for the whole player, and it must be able to fire more than once. Nothing else listens for an
-        // error on the <video>, so a "file" play the server refuses (409 while the remux is still being written, 404, a
-        // 5xx) gets one more ask of /info -- the remux has either finished or been given up on by then, so this time it
-        // answers with the HLS cut -- and plays that instead. With { once: true } a second failure called nothing at all
-        // and left a black screen with the loading mark turning over for ever, which is the very thing this stops. The
-        // error the unload below causes on purpose is skipped; attach() clears that again as soon as a source is set.
+        // error on the <video>, so any play the server refuses or the device drops (a 409 while the repack is still being
+        // written, a 404, a 5xx, a TV link whose token ran out, a socket that went nowhere) gets one more ask of /info --
+        // by then the repack has finished or been given up on, and the ask carries a fresh link -- and plays that instead.
+        // With { once: true } a second failure called nothing at all and left a black screen with the loading mark turning
+        // over for ever. A play that gets going clears the latch again, so a later failure retries too. The error the
+        // unload below causes on purpose is skipped; attach() clears that again as soon as a source is set.
         v.addEventListener('error', () => {
           if (!alive) return
           if (ignoreError) { ignoreError = false; return }
           if (!v.currentSrc && !v.getAttribute('src') && !v.srcObject) return // no source at all is not playback going wrong
-          if (info?.mode === 'file' && !fileRetry) {
+          if (!fileRetry) {
             fileRetry = true
-            $('#msg').textContent = 'Starting a little further back…'
+            $('#msg').textContent = 'Trying that again…'
             const at = v.currentTime || 0 // read first: emptying the element puts it back at zero
             v.removeAttribute('src')
             ignoreError = true

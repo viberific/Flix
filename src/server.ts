@@ -14,7 +14,7 @@ import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
 import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
-import { MP4_CARRY, SUBFILE, cleanHlsCache, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
+import { MP4_CARRY, SUBFILE, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, startOfflineSweeper } from './offline.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
@@ -457,12 +457,12 @@ async function warmNextEpisode(userId: number, seriesId: number, season: number 
   // The fetch itself, exactly as at 60% of the episode: idempotent, and held to the automatic-download limits.
   if (!(await autoFetch(userId, next, 'up next, warming the first piece'))) return
   const r = await startPlayback(userId, next.torrentId, undefined, { episodeLabel: next.isPack && next.episode === null ? undefined : next.label, auto: true })
-  const p = await probe(r.torrentId, r.fileIndex)
+  const fi = await fileInfo(r.torrentId, r.fileIndex).catch(() => null)
+  const p = await probe(r.torrentId, r.fileIndex, { complete: (fi?.file.progress ?? 0) >= 1 })
   // The same choice /info makes, in the same order. Bytes that can be served as they are need nothing done to them.
   if (p.direct) return
   // A complete file the player would rather have as one seekable MP4: a remux takes minutes, so building it ahead of the
   // handover is the only way it is ready in time. Worth starting even if it will not finish before the credits do.
-  const fi = await fileInfo(r.torrentId, r.fileIndex).catch(() => null)
   if (fi && fi.file.progress >= 1 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080) {
     await remuxPlayback(r.torrentId, r.fileIndex, p, () => false, 0)
   }
@@ -498,6 +498,8 @@ const CONVERT_OFF = 'This file would need converting, and converting is turned o
 const CONVERT_AUDIO = 'This file plays with its first audio track only. Switching tracks would need converting, and converting is turned off.'
 const STILL_ARRIVING = 'This episode is still downloading. It plays as soon as the download has finished, with nothing converted.'
 const CONVERT_OFF_VOD = 'This would have to be converted to play, and converting is turned off.'
+/** Said when the picture is fine and copying it into an MP4 is all it needs, but the copy is capped to 1080p. */
+const repackTooBig = (h: number) => `This file's picture has to be copied into an MP4 before it can play, and Flix only makes that copy up to 1080p. This one is ${h}p. Nothing is converting; the copy is the thing that is too big.`
 
 app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const { t, f } = req.params as any
@@ -505,24 +507,28 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // A cast is about to be handed to a TV, and a receiver keeps whatever timeline it was given when it loaded: it needs the
   // one file, not a stream still being made. So a cast waits longer for the repack, while an ordinary play starts at once.
   const cast = (req.query as any).cast === '1'
+  // What the player says it can decode ("cv", from canPlayType in the browser) and no guess from the box: only the device
+  // knows whether the screen behind it has an HEVC or AV1 decoder. Absent, the box's own list decides.
+  const can = new Set(String((req.query as any).cv ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
   // A remux this call starts may hold the play for a moment; a viewer who has closed the page must not hold it at all.
   let closed = false
   reply.raw.on('close', () => { closed = true })
-  const p = await probe(+t, +f)
-  const direct = p.direct && a === 0 // another audio track needs a repack, which is only done for the first one
+  const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
+  const p = await probe(+t, +f, { complete })
+  const direct = directPlay(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
   // Nothing on this box converts anything: Flix plays files as they are. A finished file whose container the player cannot
   // take (an MKV holding H.264, say) is repacked once into one MP4 with the picture copied untouched -- no decoder on the
   // stream, no encoder, just bytes moved -- and served by byte range, which is also what makes the whole episode seekable.
   // Everything else is refused below, plainly, instead of starting ffmpeg on a box the family is watching.
   const remux = !direct && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
-  const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
   if (!direct && !remux) {
     // The answer is the truth and nothing happens behind it: the player shows this line and offers nothing to tap,
     // because there is nothing the box will do about it.
     const repackable = a === 0 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080
+    const tooBig = a === 0 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) > 1080
     return {
       mode: 'convert', needsConvert: true, convertAvailable: false, duration: p.duration, audioIndex: a, chapters: p.chapters, audio: p.audio,
-      message: a !== 0 ? CONVERT_AUDIO : repackable && !complete ? STILL_ARRIVING : CONVERT_OFF,
+      message: a !== 0 ? CONVERT_AUDIO : repackable && !complete ? STILL_ARRIVING : tooBig ? repackTooBig(p.height ?? 0) : CONVERT_OFF,
     }
   }
   const path = direct ? 'raw' : 'offline/file'

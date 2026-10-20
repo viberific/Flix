@@ -224,9 +224,12 @@ img.fade.in { opacity: 1; }
    it, the episode's own description under that, then the people in it. No artwork behind it: the frame itself, dimmed,
    is always right (see the paused block above). */
 .p-info { position: absolute; z-index: 6; left: var(--gutter); top: 50%; transform: translateY(-50%); max-width: min(560px, 62vw); color: #fff; animation: rise .5s var(--ease); pointer-events: none; }
-.p-info-h { display: flex; align-items: center; gap: 12px; }
+.p-info-h { display: block; }
 .p-info-h b { font-size: clamp(20px, 2.6vw, 34px); font-weight: 700; letter-spacing: .01em; text-shadow: 0 2px 24px rgba(0,0,0,.7); }
-.p-info-rate { flex: none; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; border: 1px solid rgba(255,255,255,.45); }
+/* The certificate belongs to the words, not to the box. As a flex item beside a full-width title it was pushed to the
+   card's right edge and sat alone there across three lines of title; inline after the last word it stays with it, and a
+   long title that wraps takes it to the end of the last line rather than leaving it stranded. */
+.p-info-rate { display: inline-block; vertical-align: middle; margin-left: 10px; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; border: 1px solid rgba(255,255,255,.45); }
 .p-info-o { margin: 10px 0 0; font-size: 15px; line-height: 1.5; color: rgba(255,255,255,.85); max-width: 54ch; text-shadow: 0 1px 14px rgba(0,0,0,.8); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .p-info-c { display: flex; gap: 14px; margin-top: 18px; flex-wrap: wrap; }
 .p-cast { display: grid; justify-items: center; gap: 6px; width: 64px; font-size: 11px; color: rgba(255,255,255,.75); text-align: center; }
@@ -248,6 +251,19 @@ img.fade.in { opacity: 1; }
 .p-ctl { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; color: #fff; padding: 10px clamp(16px, 4vw, 44px) max(12px, env(safe-area-inset-bottom, 0px));
   background: linear-gradient(to top, rgba(0,0,0,.8), rgba(0,0,0,.34) 52%, transparent); transition: opacity .35s var(--ease), transform .35s var(--ease); }
 .player.idle .p-ctl { opacity: 0; transform: translateY(10px); pointer-events: none; }
+/* ---------- the bar that goes away while the show plays ----------
+   Five seconds without input and the top bar and the control bar fade out with the cursor (public/app.js, armQuiet).
+   `.p-quiet`, never `.idle`: idle arms the paused artwork slideshow, and hiding a playing show's bar must not start that.
+   Everything that unpauses, opens a list or takes the focus keeps them up. */
+.player.p-quiet .p-top, .player.p-quiet .p-ctl { opacity: 0; pointer-events: none; }
+.player.p-quiet .p-top { transform: translateY(-14px); }
+.player.p-quiet .p-ctl { transform: translateY(10px); }
+.player.p-quiet { cursor: none; }
+.player.p-quiet .p-top:has(.menu), .player.p-quiet .p-ctl:has(.menu),
+.player.p-quiet .p-top:focus-within, .player.p-quiet .p-ctl:focus-within { opacity: 1; transform: none; pointer-events: auto; }
+/* A television is always full screen already, so fill-the-screen is a phone's button. `html.tv` is the shared answer to
+   "is this a set?" -- the same `isTv` (public/app.js:353) that already hands the TV its focus ring at line 481. */
+html.tv .player #pfull { display: none; }
 .p-seek { position: relative; display: flex; align-items: center; height: 28px; cursor: pointer; touch-action: none; }
 .p-seek .p-rail { transition: height .15s var(--ease); } .p-seek:hover .p-rail, .p-seek.on .p-rail { height: 6px; }
 /* The frame picture shown above the bar while scrubbing (the seconds are labelled under it). */

@@ -773,13 +773,40 @@ test('nothing above 1080p is ever served or saved', async () => {
   const { tierOf } = await import('../src/pick.ts')
   assert.equal(tierOf('2160p'), 3, '4K is the last resort, never preferred')
   assert.equal(tierOf('1080p'), 0)
-  // The gates themselves: direct play and HDR passthrough both require <= 1080, and the encode clamps to 1080.
+  // The 1080 line is about the second full file the box writes (the HLS output and the saved MP4). It is NOT a rule about
+  // direct play: a 4K file this box hands over untouched costs it nothing, and refusing it produced the false "would need
+  // converting" message. See the directPlay tests below.
   const { readFileSync } = await import('node:fs')
   const t = readFileSync(new URL('../src/transcode.ts', import.meta.url), 'utf8')
-  assert.match(t, /\(height \?\? 0\) <= 1080/, 'direct play refuses above 1080p')
   assert.match(t, /Math\.min\(p\.height \?\? 720, 1080\)/, 'the HLS output is clamped to 1080p')
   const o = readFileSync(new URL('../src/offline.ts', import.meta.url), 'utf8')
   assert.match(o, /scale=-2:1080/, 'the saved MP4 is scaled to 1080p')
+})
+
+test('direct play is the container, the codec and the colour layout -- never the resolution', async () => {
+  const { directPlay } = await import('../src/transcode.ts')
+  const f = (o: Record<string, unknown>) => o as any
+  // The fault this fixed: a 4K H.264 MP4 is playable as it is on a 4K television, and said "would need converting" before.
+  assert.equal(directPlay(f({ container: 'mov,mp4,m4a,3gp,3g2,mj2', videoCodec: 'h264', height: 2160, pixFmt: 'yuv420p' })), true, 'a 4K H.264 MP4 plays as it is')
+  assert.equal(directPlay(f({ container: 'webm', videoCodec: 'vp9', height: 2160, pixFmt: 'yuv420p' })), true, 'a 4K VP9 WebM plays as it is')
+  // ffprobe reports an MKV as "matroska,webm": the container check matches webm, and Chromium demuxes matroska, so an MKV
+  // whose picture it can decode is handed over untouched rather than being push through a multi-gigabyte repack.
+  assert.equal(directPlay(f({ container: 'matroska,webm', videoCodec: 'h264', height: 2160, pixFmt: 'yuv420p' })), true, 'an MKV the player demuxes plays as it is')
+  // Codecs outside the box's own list need the player to say it decodes them: only the device knows about its decoder.
+  assert.equal(directPlay(f({ container: 'mov,mp4', videoCodec: 'hevc', height: 1080, pixFmt: 'yuv420p' })), false, 'HEVC is not assumed')
+  assert.equal(directPlay(f({ container: 'mov,mp4', videoCodec: 'hevc', height: 2160, pixFmt: 'yuv420p' }), new Set(['hevc'])), true, 'a player with an HEVC decoder gets the 4K HEVC file as it is')
+  // A picture that is not 4:2:0 8-bit needs a conversion, which is turned off -- and saying so is the truth.
+  assert.equal(directPlay(f({ container: 'mov,mp4', videoCodec: 'h264', height: 1080, pixFmt: 'yuv420p10le' })), false, '10-bit H.264 cannot be played as it is')
+  assert.equal(directPlay(f({ container: 'avi', videoCodec: 'h264', height: 1080, pixFmt: 'yuv420p' })), false, 'an AVI is not a container a browser takes')
+})
+
+test('a probe taken while the file was still arriving is asked again once it is complete', async () => {
+  const { readFileSync } = await import('node:fs')
+  const t = readFileSync(new URL('../src/transcode.ts', import.meta.url), 'utf8')
+  // The cache used to keep the first answer for the life of the process, so a probe that ran against a half-downloaded file
+  // (no height, no audio stream) decided how that episode played for ever.
+  assert.match(t, /hit\.complete \|\| !opts\.complete/, 'a partial probe is not trusted once the file is complete')
+  assert.match(t, /if \(v\) probes\.set\(key, \{ p, complete: !!opts\.complete \}\)/, 'a probe with no picture at all is not cached')
 })
 
 test('a file is only converted when it has to be, and never in no-encode mode', async () => {
