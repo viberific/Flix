@@ -7,16 +7,19 @@ import { engineFiles } from './wanted.ts'
  *
  * Timing this by percentage was wrong for a pack: 60% of the playback position says nothing about how much of the file
  * is on disk, and it is the download that is slow (a 6.25 GB episode at 443 KB/s is nearly four hours). So the trigger is
- * TIME the current file can already cover: once enough of it is downloaded to play for 40 minutes, or it is complete,
+ * TIME the current file can already cover: once enough of it is downloaded to play for 20 minutes, or it is complete,
  * the next episode's file is enabled inside the same torrent. Only that one file -- the rest of the pack stays skipped,
- * and the current file keeps its priority.
+ * and the current file keeps its priority, so the next one only takes bandwidth the watched episode is not using.
  *
  * The bitrate comes from the file itself (size / duration), so it holds whatever the episode, and a shorter episode
- * (3.2 GB) reaches the same 40 minutes of cover sooner than a longer one (6.25 GB) instead of both waiting for the same
+ * (3.2 GB) reaches the same 20 minutes of cover sooner than a longer one (6.25 GB) instead of both waiting for the same
  * percentage. Duration is whatever is already known: the player's own reported length, the credits marker, or the
  * episode's runtime from the show's metadata. When no length is known, the file has to be complete.
  */
-const COVER_SEC = 40 * 60
+// Was 40 minutes (about 93% of a normal episode): the next one arrived only after the current one was nearly all here.
+// 20 minutes is roughly half an episode, so the next file starts with real time in hand. Raise it for a faster current
+// episode, lower it for a warmer next one.
+const COVER_SEC = 20 * 60
 
 /** How long the file being watched is, in seconds, from the cheapest source that has it. */
 function durationOf(torrentId: number, fileIndex: number): number | null {

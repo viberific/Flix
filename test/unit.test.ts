@@ -899,12 +899,12 @@ test('a tile that cannot play says why, instead of going dead', async () => {
 
 test('the next pack file is enabled on TIME covered, so a 6.25 GB and a 3.2 GB episode both fire sensibly', () => {
   const GB = 1073741824
-  // 40 minutes of a 43-minute episode: nearly all of it (5.81 of 6.25 GB), because at that bitrate 40 minutes IS most of the file.
-  assert.ok(Math.abs(coverBytes(6.25 * GB, 2580) / GB - 5.813) < 0.01)
+  // 20 minutes of a 43-minute episode: a bit under half the file (2.91 of 6.25 GB), so the next one starts with time in hand.
+  assert.ok(Math.abs(coverBytes(6.25 * GB, 2580) / GB - 2.907) < 0.01)
   // The same 43 minutes in a smaller file needs proportionally fewer bytes, which is the point of measuring time and not percent.
-  assert.ok(Math.abs(coverBytes(3.2 * GB, 2580) / GB - 2.977) < 0.01)
+  assert.ok(Math.abs(coverBytes(3.2 * GB, 2580) / GB - 1.488) < 0.01)
   // An episode shorter than the cover window is covered by the whole file, never more than it.
-  assert.equal(coverBytes(0.8 * GB, 1500), 0.8 * GB)
+  assert.equal(coverBytes(0.8 * GB, 900), 0.8 * GB)
   // Nothing known about the length: the file has to be complete.
   assert.equal(coverBytes(6.25 * GB, null), 6.25 * GB)
   assert.equal(coverBytes(6.25 * GB, 0), 6.25 * GB)
