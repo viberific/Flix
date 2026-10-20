@@ -937,7 +937,12 @@ function playView(seriesId, season, label) {
       idleArt = artSlideshow([...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])], { manual: true, parent: pl })
       if (run === artRun) idleArt?.start()
     }
-    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && !v.paused && !castingOnly) { pl.classList.add('idle'); startIdleArt() } }, 3000) }
+    // The idle timer is for the show being stopped, not merely untouched: the artwork only belongs up while nothing is
+    // playing (paused, or cast to the TV with the phone just the remote). The old check asked the opposite -- "is it
+    // playing?" -- so the artwork slid over a show that was playing and had simply not been touched for three seconds.
+    // `started` keeps it away during the loading screen, and paint() (which wakes while paused) keeps re-arming this
+    // timer for as long as the show is stopped, so the artwork still arrives on a paused show left alone.
+    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 30000) }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
     pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
     // Touching the bar itself only restarts the hide timer.
@@ -1306,6 +1311,10 @@ function playView(seriesId, season, label) {
         // What the player itself felt: a stall, a seek, a picture that dropped to a lower resolution. The server only sees its
         // side of a gap, and the two timestamps together say which end was slow.
         watchStalls(v, () => play)
+        // The picture coming back must always take the artwork with it: paint() runs on play and pause and wakes while
+        // paused, but a play event that finds no pause in between (a resume after a stall, a source swap) would
+        // otherwise leave the artwork sitting over a show that is playing again.
+        v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle') })
         v.ontimeupdate = () => {
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
