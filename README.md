@@ -15,6 +15,8 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 
 4K is always re-encoded down to 1080p for the browser. HDR sources are tone-mapped to normal colours during that re-encode (needs ffmpeg's `zscale` filter, which Flix checks for at startup of the first transcode; if the container's ffmpeg lacks it, HDR is passed through unchanged).
 
+Conversions use the GPU's encoder (Intel Quick Sync, through VAAPI) when the container is given `/dev/dri` — on Umbrel the app asks for the GPU permission, which does this — and fall back to libx264 on the CPU otherwise. The encoder is tested once with ffmpeg at the first conversion, and Settings shows which one is in use. `TRANSCODE_HARDWARE=false` keeps everything on the CPU.
+
 ## "Just works" for the family
 
 - **One login, no typing.** Sessions last 180 days and renew while a device is in use. The admin can create a one-time **sign-in link** for each person (Family → *Sign-in link*); opening it signs that device in with no password. Devices remember every profile used on them and ask **Who's watching?** when the app opens. To drop Umbrel's own login in front of Flix, see `docs/umbrel-single-login.md`.

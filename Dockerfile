@@ -7,7 +7,12 @@ FROM node:24-alpine
 # ffmpeg/ffprobe: probe and remux/transcode to HLS.
 # qbittorrent-nox: the torrent engine.
 # tini: reap qBittorrent's children; node stays PID 1's exec.
-RUN apk add --no-cache ffmpeg qbittorrent-nox tini
+# intel-media-driver (amd64 only): the iHD VAAPI driver, so ffmpeg can reach Quick Sync when the container
+# is given /dev/dri. Alpine has no oneVPL GPU runtime, so on Gen12 parts (the N95) h264_vaapi is the one
+# expected to open, not h264_qsv -- the same encoder block either way. Without /dev/dri nothing changes:
+# encode.ts probes and uses x264.
+RUN apk add --no-cache ffmpeg qbittorrent-nox tini \
+ && if [ "$(apk --print-arch)" = x86_64 ]; then apk add --no-cache intel-media-driver; fi
 
 WORKDIR /app
 

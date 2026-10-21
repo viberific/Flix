@@ -860,8 +860,9 @@ test('a file is only converted when it has to be, and then it simply is, on the 
   const src = (await import('node:fs')).readFileSync(new URL('../src/offline.ts', import.meta.url), 'utf8')
   assert.doesNotMatch(src, /Flix is set never to convert the picture/, 'the saved copy no longer refuses to convert')
   const enc = (await import('node:fs')).readFileSync(new URL('../src/encode.ts', import.meta.url), 'utf8')
-  assert.match(enc, /if \(process\.env\.TRANSCODE_GPU !== 'true'\) return 'libx264'/, 'conversion is on the CPU')
-  assert.equal(await (await import('../src/encode.ts')).pickEncoder(true), 'libx264')
+  assert.doesNotMatch(enc, /TRANSCODE_GPU/, 'the GPU is used when the container has one, with no extra switch')
+  const { pickEncoder, gpuPresent } = await import('../src/encode.ts')
+  if (!gpuPresent()) assert.equal(await pickEncoder(true), 'libx264', 'no /dev/dri: x264 on the CPU')
 })
 
 test('nothing above 1080p is chosen: 4K is never picked while anything else is alive', async () => {

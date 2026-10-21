@@ -74,15 +74,15 @@ function tryEncoder(name: Encoder): Promise<boolean> {
 
 let chosen: Encoder | null | undefined
 /**
- * The encoder to use. 0.3.56: always libx264, on the CPU. A conversion is now rare -- only a copy the player cannot
- * take is ever converted, because only copies that play as they are get downloaded -- and when one is needed it should
- * simply happen, the same way every time, rather than depend on whether the container was handed a GPU. The hardware
- * paths below are kept for TRANSCODE_GPU=true, which nothing sets by default.
+ * The encoder to use: Quick Sync, else VAAPI, else libx264. Tested once per process (or again when the admin
+ * asks), because the answer depends on the container's devices and is the same for every job afterwards.
+ * 0.3.57: on again by default (0.3.56 kept it behind an opt-in switch). The image now carries the iHD driver and the
+ * Umbrel compose passes /dev/dri; an encoder that cannot open a session is never chosen, so x264 is still the floor.
+ * TRANSCODE_HARDWARE=false keeps everything on the CPU.
  */
 export async function pickEncoder(force = false): Promise<Encoder> {
   if (chosen !== undefined && !force) return chosen ?? 'libx264'
   chosen = null
-  if (process.env.TRANSCODE_GPU !== 'true') return 'libx264'
   if (config.transcode.hardware && gpuPresent()) {
     for (const name of ['h264_qsv', 'h264_vaapi'] as const) {
       if (await tryEncoder(name)) {
@@ -92,6 +92,8 @@ export async function pickEncoder(force = false): Promise<Encoder> {
       }
     }
     if (!chosen) hitch('encode', 'GPU is present but its encoder did not open a session; using the CPU', { device: GPU_DEVICE })
+  } else if (config.transcode.hardware) {
+    hitch('encode', 'no /dev/dri in this container, so transcoding is on the CPU', { hint: 'pass /dev/dri in docker-compose.yml to use Quick Sync' })
   }
   return chosen ?? 'libx264'
 }
