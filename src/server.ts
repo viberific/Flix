@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { createReadStream } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
@@ -18,6 +18,7 @@ import { enableNextFile } from './ahead.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, startOfflineSweeper } from './offline.ts'
+import { copyPictureOnly, ensureHls, jobDir, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
@@ -541,8 +542,29 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // take (an MKV holding H.264, say) is repacked once into one MP4 with the picture copied untouched -- no decoder on the
   // stream, no encoder, just bytes moved -- and served by byte range, which is also what makes the whole episode seekable.
   // Everything else is refused below, plainly, instead of starting ffmpeg on a box the family is watching.
+  const base = `/api/stream/${t}/${f}`
+  const token = tvToken(req.user!.id)
+  const subsList = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))]
   const remux = !direct && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
   if (!direct && !remux) {
+    // 0.3.55: the picture is the part that can be passed through; the SOUND is what the player cannot decode (an E-AC-3
+    // track, which is every AMZN WEB-DL there is). 0.3.54 sent that to the whole-file MP4 repack, which is capped at 1080p,
+    // needs the episode complete, and answers "this file would need converting" until the copy is ready -- so a file that
+    // had played for months was refused. Instead remux it to HLS with the picture COPIED and only the audio encoded to
+    // AAC: it plays at once, at whatever height it is, and no second copy of the episode is left on the disk. Nothing is
+    // re-encoded but the sound, which cannot be avoided: no browser decodes E-AC-3. A picture that would have to be
+    // re-encoded is still refused, plainly.
+    if (a === 0 && copyPictureOnly(p)) {
+      const hb = `${base}/hls`
+      const ht = `/api/tv/${token}/${t}/${f}/hls`
+      const mt = 'application/vnd.apple.mpegurl'
+      return {
+        mode: 'hls', url: `${hb}/index.m3u8`, tvUrl: `${ht}/index.m3u8`, tvType: mt, seekable: true,
+        castUrl: config.lanUrl ? config.lanUrl + `${ht}/index.m3u8` : null, castType: mt, castFallbackUrl: null,
+        duration: p.duration, audioIndex: a, hdr: p.hdr, hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
+        creditsAt: measuredCredits(+t, +f, p.duration ?? 0), audio: p.audio, chapters: p.chapters, subs: subsList,
+      }
+    }
     // The answer is the truth and nothing happens behind it: the player shows this line and offers nothing to tap,
     // because there is nothing the box will do about it.
     const repackable = a === 0 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080
@@ -553,8 +575,6 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     }
   }
   const path = direct ? 'raw' : 'offline/file'
-  const base = `/api/stream/${t}/${f}`
-  const token = tvToken(req.user!.id)
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
   // to it as one file served by byte range -- the plain MP4 as it is, anything else as the repacked MP4 -- because only a
   // file carries its whole length at once. There is no playlist any more: a picture that went through HLS needed ffmpeg
@@ -572,7 +592,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     // no marker (nothing measures them any more) and the player then estimates from the runtime, which needs no ffmpeg.
     creditsAt: measuredCredits(+t, +f, p.duration ?? 0),
     audio: p.audio, chapters: p.chapters,
-    subs: [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))],
+    subs: subsList,
   }
 })
 
@@ -746,14 +766,34 @@ async function rawHandler(req: any, reply: any) {
 }
 
 /**
- * The converted-playlist routes: they exist so an old player, a bookmark or a cast receiver gets a plain answer instead of a
- * 404, and they never start a conversion. Nothing on this server encodes any more -- a picture that came through HLS needed
- * ffmpeg working for as long as it played, which is exactly what Flix must not do on a box the family watches.
+ * The playlist routes. Until 0.3.55 these only answered, because nothing on this box re-encoded a picture. 0.3.55 brings
+ * back the one case that has to exist: a file whose picture can be COPIED but whose sound the player cannot decode (an
+ * E-AC-3 track, every AMZN WEB-DL there is). ffmpeg then runs with -c:v copy and an AAC audio track, which costs a few
+ * percent of one core and moves bytes rather than re-encoding them -- the thing 0.3.45 removed was re-encoding the
+ * PICTURE for as long as it played. An HDR cut is still refused: that one needs an encode.
  */
 async function hlsHandler(req: any, reply: any, hdr = false) {
-  const { file } = req.params as any
+  const { t, f, file } = req.params as any
+  const a = audioIdx(req.params.a ?? req.query?.a)
   if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
-  return reply.code(409).send({ error: hdr ? CONVERT_OFF : CONVERT_OFF_VOD })
+  if (hdr) return reply.code(409).send({ error: CONVERT_OFF })
+  if (file === 'index.m3u8' || !touchHls(+t, +f, a, false)) {
+    const p = await probe(+t, +f)
+    try { await ensureHls(+t, +f, p, a, false) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+  }
+  const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
+  // A picture that has to be re-encoded gets a complete playlist and pieces made where the viewer is. A copied picture
+  // plays from the start, and its pieces arrive far faster than they are watched.
+  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, false) : null
+  if (list) return reply.type(type).header('cache-control', 'no-store').send(list)
+  const ac = new AbortController()
+  req.raw.on('close', () => ac.abort())
+  let path: string | null | undefined
+  try { path = await vodSegment(+t, +f, file, ac.signal, a, false) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+  if (path === null) return reply.code(404).send({ error: 'no such segment' })
+  path ??= join(jobDir(+t, +f, a, false), file)
+  if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
+  return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
 }
 
 /** The same video routes twice: with the login cookie, and with a signed token in the path for TVs and cast devices. */

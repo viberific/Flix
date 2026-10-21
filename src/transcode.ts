@@ -64,6 +64,12 @@ const DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1'])
 const DIRECT_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis'])
 /** Codecs an MP4 can hold with the picture copied. server.ts remuxes to MP4, so it uses this same set. */
 export const MP4_CARRY = new Set(['h264', 'hevc', 'av1'])
+/**
+ * Whether the picture can be passed through untouched at ANY height: an MP4 or TS holds the codec and the player decodes
+ * the colour layout. The 1080p cap belongs to the MP4 repack (a whole second file on disk), not to a stream: 0.3.55 uses
+ * this so a file whose only fault is its sound is remuxed with the picture copied, at whatever resolution it is.
+ */
+export const copyPictureOnly = (p: Probe) => MP4_CARRY.has(String(p.videoCodec ?? '')) && (!p.pixFmt || p.pixFmt === 'yuv420p')
 /** Playing this file needs a libx264 encode: not playable as it is, not HDR (which is copied), and its picture cannot be copied. */
 export const needsEncode = (p: Probe) => !p.direct && !p.hdr && !p.copyVideo
 /** Whether the picture may be re-encoded at all. In 'off' mode it never is: copy or refuse. */
@@ -305,7 +311,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
   if (!j) {
     const dir = jobDir(torrentId, fileIndex, audio, hdr)
     const tonemap = p.hdr && (await canToneMap())
-    const copy = !hdr && p.copyVideo
+    const copy = !hdr && (p.copyVideo || copyPictureOnly(p))
     if (!copy && !hdr && !mayEncode()) throw new Error('needs-convert: this file would have to be converted, and Flix is set never to convert the picture')
     const outH = Math.min(p.height ?? 720, 1080)
     const filters = [...((p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []), ...(tonemap ? [TONEMAP] : [])]
