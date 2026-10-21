@@ -806,6 +806,34 @@ test('direct play is the container, the codec and the colour layout -- never the
   assert.equal(directPlay(f({ container: 'avi', videoCodec: 'h264', height: 1080, pixFmt: 'yuv420p' })), false, 'an AVI is not a container a browser takes')
 })
 
+test('the sound decides too: an E-AC-3 MKV is repacked, never handed over silent', async () => {
+  const { directPlay, audioDirect } = await import('../src/transcode.ts')
+  const f = (o: Record<string, unknown>) => o as any
+  // 0.3.48 began asking directPlay() alone for play info, dropping the audio test that used to sit on p.direct. Every
+  // AMZN WEB-DL on this box is an MKV (container reads "matroska,webm", which passes) of H.264 with E-AC-3 sound, which no
+  // browser decodes: the episode played with a picture and no sound at all. This is that fault, pinned.
+  const eac3Mkv = f({ container: 'matroska,webm', videoCodec: 'h264', height: 1080, pixFmt: 'yuv420p', audioCodec: 'eac3' })
+  assert.equal(directPlay(eac3Mkv), true, 'the picture and container of that file are fine on their own')
+  assert.equal(audioDirect(eac3Mkv), false, 'but its sound is not, so the two together are not a direct play')
+  assert.equal(directPlay(eac3Mkv) && audioDirect(eac3Mkv), false, 'the eac3 MKV must go to the MP4 repack, which carries AAC')
+  // Every codec a page does not decode, not just the one that was reported.
+  for (const codec of ['eac3', 'ac3', 'dts', 'truehd', 'flac', 'mlp']) {
+    assert.equal(audioDirect(f({ audioCodec: codec })), false, `${codec} is not decoded in the page, so it cannot be served raw`)
+  }
+  // What is decoded stays as it is: these are the codecs every browser plays.
+  for (const codec of ['aac', 'mp3', 'opus', 'vorbis']) {
+    assert.equal(audioDirect(f({ audioCodec: codec })), true, `${codec} plays as it is`)
+  }
+  assert.equal(audioDirect(f({})), true, 'a file with no audio track is not a reason to repack')
+  // The exception that matters for a television: a device that says it decodes E-AC-3 (Android TV passes it through) keeps
+  // the untouched file instead of being given a stereo downmix it did not need.
+  assert.equal(audioDirect(f({ audioCodec: 'eac3' }), new Set(['eac3'])), true, 'a player that reports E-AC-3 gets the file as it is')
+  assert.equal(directPlay(eac3Mkv, new Set(['eac3'])) && audioDirect(eac3Mkv, new Set(['eac3'])), true, 'and that one is a direct play')
+  // The regression itself: server.ts must ask both, not directPlay alone.
+  const s = (await import('node:fs')).readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')
+  assert.match(s, /directPlay\(p, can\) && audioDirect\(p, can\)/, 'the play-info decision asks the sound as well as the picture')
+})
+
 test('a probe taken while the file was still arriving is asked again once it is complete', async () => {
   const { readFileSync } = await import('node:fs')
   const t = readFileSync(new URL('../src/transcode.ts', import.meta.url), 'utf8')

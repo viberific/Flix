@@ -16,7 +16,7 @@ import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { enableNextFile } from './ahead.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
-import { MP4_CARRY, SUBFILE, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
+import { MP4_CARRY, SUBFILE, audioDirect, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, startOfflineSweeper } from './offline.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
@@ -534,7 +534,9 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   reply.raw.on('close', () => { closed = true })
   const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
   const p = await probe(+t, +f, { complete })
-  const direct = directPlay(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
+  // The picture and container it takes, AND sound it can decode. Dropping the second half in 0.3.48 served raw bytes for
+  // any MKV whose audio was E-AC-3 — the commonest WEB-DL there is — and the episode played silently.
+  const direct = directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
   // Nothing on this box converts anything: Flix plays files as they are. A finished file whose container the player cannot
   // take (an MKV holding H.264, say) is repacked once into one MP4 with the picture copied untouched -- no decoder on the
   // stream, no encoder, just bytes moved -- and served by byte range, which is also what makes the whole episode seekable.

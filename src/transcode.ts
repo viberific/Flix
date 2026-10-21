@@ -29,17 +29,35 @@ const probes = new Map<string, { p: Probe; complete: boolean }>()
 export function forgetProbe(torrentId: number, fileIndex: number) { probes.delete(`${torrentId}:${fileIndex}`) }
 
 /**
- * Whether the player can be handed these bytes exactly as they are: a container it takes, a picture it decodes in the
- * colour layout every player handles, and audio it can play. The picture's size is the player's business, not this box's
- * — a 4K television plays a 4K file, and refusing it here is what told the viewer "this would need converting" about a
- * file nothing had to be done to. `can` is the codecs the player itself said it decodes (asked in the browser, because
+ * Whether the player can be handed the PICTURE and container of these bytes exactly as they are: a container it takes, a
+ * picture it decodes in the colour layout every player handles. The picture's size is the player's business, not this
+ * box's — a 4K television plays a 4K file, and refusing it here is what told the viewer "this would need converting" about
+ * a file nothing had to be done to. `can` is the codecs the player itself said it decodes (asked in the browser, because
  * only it knows whether the screen behind it has an HEVC decoder); the box's own list covers the rest.
+ *
+ * Sound is NOT decided here: a container and picture a player takes says nothing about the audio track inside it, and
+ * an E-AC-3 track (every AMZN WEB-DL on this box) hands the viewer a picture with no sound at all. Every caller must
+ * also ask audioDirect() — see the 0.3.54 note on that function.
  */
 export function directPlay(p: Probe, can?: Set<string>) {
   const codec = String(p.videoCodec ?? '')
   const containerOk = /mp4|webm/.test(p.container ?? '')
   const codecOk = DIRECT_VIDEO.has(codec) || !!can?.has(codec)
   return containerOk && codecOk && (!p.pixFmt || p.pixFmt === 'yuv420p')
+}
+
+/**
+ * Whether the player decodes this file's first audio track as it is. No audio track at all is fine.
+ *
+ * 0.3.54: this is a fix for a regression in 0.3.48, where the /info decision began reading directPlay() alone. That
+ * dropped the audio test which used to live on p.direct, so a file whose picture and container were fine was served as
+ * raw bytes whatever its sound was. An MKV reports its container as "matroska,webm", so it passed the container test;
+ * its audio was E-AC-3, which no browser decodes — the episode played with a picture and no sound. A file that fails
+ * this goes to the MP4 repack, which carries AAC.
+ */
+export function audioDirect(p: Probe, can?: Set<string>) {
+  const codec = String(p.audioCodec ?? '')
+  return !codec || DIRECT_AUDIO.has(codec) || !!can?.has(codec)
 }
 
 const DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1'])
@@ -80,7 +98,6 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
   // What a repack into MP4 can carry with the picture copied. The height cap belongs to that copy (a second full file on
   // the disk), not to direct play: handing the bytes over as they are costs this box nothing at any resolution.
   const vOk = !!v && DIRECT_VIDEO.has(v.codec_name) && pixOk && (height ?? 0) <= 1080
-  const aOk = !a || DIRECT_AUDIO.has(a.codec_name)
   const audio: AudioTrack[] = (j.streams ?? []).filter((s: any) => s.codec_type === 'audio').map((s: any, n: number) => ({
     n, lang: s.tags?.language ?? 'und', channels: s.channels, default: !!s.disposition?.default,
     label: [langName(s.tags?.language), s.tags?.title && !/^(stereo|surround|\d\.\d)/i.test(s.tags.title) ? s.tags.title : '', s.channels > 2 ? `${s.channels - 1}.1` : ''].filter(Boolean).join(' · '),
@@ -103,7 +120,7 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
     pixFmt: v?.pix_fmt,
   }
   // The answer for a player that has said nothing about itself: the box's own list of what every player takes.
-  p.direct = directPlay(p) && aOk
+  p.direct = directPlay(p) && audioDirect(p)
   // No picture at all means the read did not reach the streams: nothing worth remembering, so the next ask runs again.
   if (v) probes.set(key, { p, complete: !!opts.complete })
   return p
