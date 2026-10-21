@@ -17,6 +17,8 @@ Behind the tap, Flix picks the source automatically (`src/pick.ts`):
 
 Conversions use the GPU's encoder (Intel Quick Sync, through VAAPI) when the container is given `/dev/dri` — on Umbrel the app asks for the GPU permission, which does this — and fall back to libx264 on the CPU otherwise. The encoder is tested once with ffmpeg at the first conversion, and Settings shows which one is in use. `TRANSCODE_HARDWARE=false` keeps everything on the CPU.
 
+**Quality for slow connections.** The player's quality button offers *Auto*, *Original*, and smaller sizes below the picture's own (720p at about 3.5 Mbit/s, 480p at about 1.8 Mbit/s). A size is converted on the fly into a whole, seekable playlist, one piece at a time from wherever the viewer is, so it costs the GPU (or the CPU) only while someone watches it. *Auto* plays the original and steps down a size when the picture stalls three times in a minute and a half, or once for ten seconds, while nobody is seeking; it never steps back up mid-episode, and the size it reached is kept until the app is closed. The choice is saved per device, so the TV can stay on Original while a phone uses Auto. Casting always gets the original.
+
 ## "Just works" for the family
 
 - **One login, no typing.** Sessions last 180 days and renew while a device is in use. The admin can create a one-time **sign-in link** for each person (Family → *Sign-in link*); opening it signs that device in with no password. Devices remember every profile used on them and ask **Who's watching?** when the app opens. To drop Umbrel's own login in front of Flix, see `docs/umbrel-single-login.md`.

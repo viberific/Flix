@@ -18,7 +18,7 @@ import { enableNextFile } from './ahead.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
-import { copyPictureFor, ensureHls, jobDir, keyframes, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
+import { copyPictureFor, ensureHls, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
@@ -537,16 +537,21 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const complete = (fi?.file.progress ?? 0) >= 1
   const source = fi ? join(fi.layout.savePath, fi.file.name) : undefined
   const p = await probe(+t, +f, { complete })
+  // The smaller sizes worth offering (only ones below the picture's own), and the one the player asked for ("q"): a phone on
+  // a slow connection, by its own choice or because its Auto setting saw the picture keep stalling. A size is a conversion,
+  // so it skips the direct play and the repack below.
+  const qualities = Object.keys(QUALITIES).map(Number).filter((h) => (p.height ?? 0) > h).sort((x, y) => y - x)
+  const q = qualities.includes(qualityOf((req.query as any).q)) ? qualityOf((req.query as any).q) : 0
   // The picture and container it takes, AND sound it can decode. Dropping the second half in 0.3.48 served raw bytes for
   // any MKV whose audio was E-AC-3 — the commonest WEB-DL there is — and the episode played silently.
-  const direct = directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
+  const direct = !q && directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
   const subsList = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))]
   const copyFor = copyPictureFor(p, can)
   // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
   // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
-  const remux = !direct && a === 0 && copyFor
+  const remux = !direct && !q && a === 0 && copyFor
     ? (cast ? await remuxPlayback(+t, +f, p, () => closed, CAST_WAIT_MS) : !!offlineReadyPath(+t, +f))
     : false
   if (!direct && !remux) {
@@ -555,18 +560,18 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     // converted -- E-AC-3, every AMZN WEB-DL there is) and converted on the CPU where it does not (HEVC on a player
     // without a decoder, 10-bit H.264). Either way the playlist is whole from the start, so the episode can be seeked
     // anywhere at once: a copied picture is cut on the file's own keyframes once the file is complete.
-    const encode = !copyFor
-    const seg = encode ? `hls-x/${a}` : a ? `hls-a/${a}` : 'hls'
+    const encode = !copyFor || q > 0
+    const seg = q ? `hls-q/${q}/${a}` : encode ? `hls-x/${a}` : a ? `hls-a/${a}` : 'hls'
     // Made here, not on the playlist's first request, so the keyframe read (a few seconds, once per file) happens while
     // the player shows its wait, rather than inside a request the player gives up on after ten.
-    try { await ensureHls(+t, +f, p, a, false, { complete, source, encode }) } catch (e: any) { throw Object.assign(new Error(e.message), { statusCode: 503 }) }
+    try { await ensureHls(+t, +f, p, a, false, { complete, source, encode, maxHeight: q }) } catch (e: any) { throw Object.assign(new Error(e.message), { statusCode: 503 }) }
     const ht = `/api/tv/${token}/${t}/${f}/${seg}`
     const mt = 'application/vnd.apple.mpegurl'
     return {
       mode: 'hls', url: `${base}/${seg}/index.m3u8`, tvUrl: `${ht}/index.m3u8`, tvType: mt, seekable: complete || encode, converting: encode,
       castUrl: config.lanUrl ? config.lanUrl + `${ht}/index.m3u8` : null, castType: mt, castFallbackUrl: null,
       duration: p.duration, audioIndex: a, hdr: p.hdr, hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
-      creditsAt: measuredCredits(+t, +f, p.duration ?? 0), audio: p.audio, chapters: p.chapters, subs: subsList,
+      creditsAt: measuredCredits(+t, +f, p.duration ?? 0), audio: p.audio, chapters: p.chapters, subs: subsList, quality: q || null, qualities,
     }
   }
   const path = direct ? 'raw' : 'offline/file'
@@ -586,7 +591,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     // null when there is no marker yet, and the player then estimates from the runtime.
     creditsAt: measuredCredits(+t, +f, p.duration ?? 0),
     audio: p.audio, chapters: p.chapters,
-    subs: subsList,
+    subs: subsList, quality: null, qualities,
   }
 })
 
@@ -762,28 +767,31 @@ async function rawHandler(req: any, reply: any) {
 /**
  * The playlist routes: a picture copied with its sound converted, or (rarely) a picture converted on the CPU. Both are
  * complete playlists whose pieces are made where the viewer is, so nothing runs ahead of the viewer for long and a seek
- * costs one piece. `encode` is the converted cut asked for by a player that cannot decode the picture as it is.
+ * costs one piece. `encode` is the converted cut asked for by a player that cannot decode the picture as it is, and a
+ * height in the path (hls-q) the smaller cut asked for on a slow connection.
  */
 async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
   const { t, f, file } = req.params as any
   const a = audioIdx(req.params.a ?? req.query?.a)
+  const maxH = qualityOf(req.params.h)
+  if (req.params.h !== undefined && !maxH) return reply.code(400).send({ error: 'bad quality' })
   if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
   if (hdr) return reply.code(409).send({ error: CONVERT_OFF })
-  if (file === 'index.m3u8' || !touchHls(+t, +f, a, false, encode)) {
+  if (file === 'index.m3u8' || !touchHls(+t, +f, a, false, encode, maxH)) {
     const fi = await fileInfo(+t, +f)
     const complete = (fi?.file.progress ?? 0) >= 1
     const p = await probe(+t, +f, { complete })
-    try { await ensureHls(+t, +f, p, a, false, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, encode }) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+    try { await ensureHls(+t, +f, p, a, false, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, encode, maxHeight: maxH }) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   }
   const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
-  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, false, encode) : null
+  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, false, encode, maxH) : null
   if (list) return reply.type(type).header('cache-control', 'no-store').send(list)
   const ac = new AbortController()
   req.raw.on('close', () => ac.abort())
   let path: string | null | undefined
-  try { path = await vodSegment(+t, +f, file, ac.signal, a, false, encode) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+  try { path = await vodSegment(+t, +f, file, ac.signal, a, false, encode, maxH) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   if (path === null) return reply.code(404).send({ error: 'no such segment' })
-  path ??= join(jobDir(+t, +f, a, false, encode), file)
+  path ??= join(jobDir(+t, +f, a, false, encode, maxH), file)
   if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
   return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
 }
@@ -808,6 +816,7 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
   app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)
   app.get(`${prefix}/:t/:f/hls-a/:a/:file`, { preHandler: pre as any }, hlsHandler)
   app.get(`${prefix}/:t/:f/hls-x/:a/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, false, true))
+  app.get(`${prefix}/:t/:f/hls-q/:h/:a/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, false, true))
   app.get(`${prefix}/:t/:f/hdr/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, true))
 }
 

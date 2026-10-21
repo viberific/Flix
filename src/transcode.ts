@@ -161,12 +161,17 @@ const hlsRoot = () => join(config.dataDir, 'hls')
 /**
  * One job (and folder) per file and chosen audio track, so switching language doesn't disturb anyone else watching.
  * `encode` is the converted cut of a picture that is otherwise copied: a player that cannot decode HEVC gets that one,
- * while a player that can keeps the copy, and the two never share pieces.
+ * while a player that can keeps the copy, and the two never share pieces. `maxH` is a smaller cut asked for by a viewer
+ * on a slow connection (720 or 480); each size is a job of its own, so a phone on 480p never disturbs the TV.
  */
-export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false) {
-  return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}${hdr ? '-hdr' : ''}${encode ? '-x' : ''}`)
+export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0) {
+  return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}${hdr ? '-hdr' : ''}${encode ? '-x' : ''}${maxH ? `-h${maxH}` : ''}`)
 }
-const jobKey = (t: number, f: number, a = 0, hdr = false, encode = false) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}${encode ? ':x' : ''}`
+const jobKey = (t: number, f: number, a = 0, hdr = false, encode = false, maxH = 0) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}${encode ? ':x' : ''}${maxH ? `:h${maxH}` : ''}`
+
+/** The sizes a viewer can ask for, as the box each fits inside: "720p" is 1280x720 whatever the shape of the picture. */
+export const QUALITIES: Record<number, [number, number]> = { 720: [1280, 720], 480: [854, 480] }
+export const qualityOf = (v: unknown) => { const n = Number(v); return n in QUALITIES ? n : 0 }
 
 /** A job touched this recently is being watched right now, and is never closed to make room for another. */
 const ACTIVE_MS = 90_000
@@ -285,8 +290,8 @@ function startRun(j: Job, n: number) {
  * (a seek, a resume, a TV jumping ahead), not always from the start, so jumping anywhere costs about a second.
  * undefined: this job has no on-demand playlist (the caller serves the file from disk); null: no such segment.
  */
-export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false, encode = false): Promise<string | null | undefined> {
-  const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode))
+export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false, encode = false, maxH = 0): Promise<string | null | undefined> {
+  const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode, maxH))
   const v = j?.vod
   if (!j || !v) return undefined
   const m = /^seg(\d{5})\.ts$/.exec(file)
@@ -316,8 +321,8 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
 }
 
 /** The complete playlist of a job made by ensureHls, or null when that job plays from disk as it is written. */
-export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false): string | null {
-  const v = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode))?.vod
+export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0): string | null {
+  const v = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode, maxH))?.vod
   if (!v) return null
   const len = (n: number) => Math.max(0.001, v.bounds[n + 1] - v.bounds[n])
   let longest = SEG
@@ -395,25 +400,31 @@ export function copyBounds(kf: number[], end: number, seg = SEG): number[] | nul
  * Only a copied picture still arriving is remuxed from the start as it grows, because its keyframes are not all there yet.
  *
  * `encode` asks for the converted cut even where the picture could be copied: the player cannot decode it (HEVC).
+ * `maxHeight` asks for a smaller converted cut (720 or 480, see QUALITIES), with its bitrate capped, for a slow connection.
  */
-export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false, opts: { complete?: boolean; source?: string; encode?: boolean } = {}): Promise<string> {
-  const encodeAsked = !!opts.encode && !hdr
-  const key = jobKey(torrentId, fileIndex, audio, hdr, encodeAsked)
+export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false, opts: { complete?: boolean; source?: string; encode?: boolean; maxHeight?: number } = {}): Promise<string> {
+  const maxH = hdr ? 0 : qualityOf(opts.maxHeight)
+  const encodeAsked = (!!opts.encode || maxH > 0) && !hdr
+  const key = jobKey(torrentId, fileIndex, audio, hdr, encodeAsked, maxH)
   let j = jobs.get(key)
   if (!j) {
-    const dir = jobDir(torrentId, fileIndex, audio, hdr, encodeAsked)
+    const dir = jobDir(torrentId, fileIndex, audio, hdr, encodeAsked, maxH)
     const tonemap = p.hdr && (await canToneMap())
     const copy = !hdr && !encodeAsked && copyIntoTs(p)
-    const outH = Math.min(p.height ?? 720, 1080)
-    const filters = [...((p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []), ...(tonemap ? [TONEMAP] : [])]
+    const outH = Math.min(p.height ?? 720, 1080, maxH || 1080)
+    const box = maxH ? QUALITIES[maxH] : null
+    // A chosen size fits the picture inside its box (a 2.40:1 film at "720p" is 1280 wide, not 1728), never larger than the source.
+    const scale = box ? [`scale=w='min(iw,${box[0]})':h='min(ih,${box[1]})':force_original_aspect_ratio=decrease:force_divisible_by=2`]
+      : (p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []
+    const filters = [...scale, ...(tonemap ? [TONEMAP] : [])]
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
     const input = ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = ['-c:a', 'aac', '-ac', '2', '-b:a', '160k']
-    // Decided once per file: the profile does not change while it plays. Always the CPU (see pickEncoder).
-    const enc = !hdr && !copy ? await videoEncode(outH, p.fps, filters, SEG) : null
-    if (enc) diag('encode', `converting with ${enc.encoder} at ${enc.profile}`, { torrentId, fileIndex, height: outH })
+    // Decided once per file: the profile does not change while it plays. The GPU when the container has one (see pickEncoder).
+    const enc = !hdr && !copy ? await videoEncode(outH, p.fps, filters, SEG, { capped: maxH > 0 }) : null
+    if (enc) diag('encode', `converting with ${enc.encoder} at ${enc.profile}`, { torrentId, fileIndex, height: outH, ...(maxH ? { quality: maxH } : {}) })
     // A copied picture of a whole file: its keyframes, read once, are where the pieces are cut. Waited for a while, since
     // a playlist that can be seeked is worth a few seconds; a read that takes longer carries on behind and the old
     // forwards-only remux is used this once.
@@ -496,8 +507,8 @@ export function releaseHls(torrentId: number, fileIndex: number) {
   }
 }
 
-export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false) {
-  const key = jobKey(torrentId, fileIndex, audio, hdr, encode)
+export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0) {
+  const key = jobKey(torrentId, fileIndex, audio, hdr, encode, maxH)
   const j = jobs.get(key)
   if (!j) return false
   clearTimeout(j.idle)

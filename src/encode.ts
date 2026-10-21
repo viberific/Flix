@@ -45,11 +45,11 @@ const GPU_DEVICE = '/dev/dri/renderD128'
 export const gpuPresent = () => existsSync(GPU_DEVICE) || existsSync('/dev/dri/card0')
 
 /** Probe with ffmpeg itself, once: an encoder that is advertised but cannot open a session is worse than none. */
-function tryEncoder(name: Encoder): Promise<boolean> {
+function tryEncoder(name: Encoder, rated = false): Promise<boolean> {
   return new Promise((resolve) => {
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24', '-frames:v', '12']
     if (name === 'h264_qsv') args.push('-c:v', 'h264_qsv', '-global_quality', '26')
-    else if (name === 'h264_vaapi') args.push('-vaapi_device', GPU_DEVICE, '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-qp', '26')
+    else if (name === 'h264_vaapi') args.push('-vaapi_device', GPU_DEVICE, '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', ...(rated ? VAAPI_VBR('1000k', '2000k') : ['-qp', '26']))
     else args.push('-c:v', 'libx264', '-preset', 'ultrafast')
     args.push('-f', 'null', '-')
     let done = false
@@ -72,6 +72,14 @@ function tryEncoder(name: Encoder): Promise<boolean> {
   })
 }
 
+/**
+ * A bitrate the GPU holds to, for the smaller cuts a slow connection asks for. Gen12 VAAPI does rate control on the HuC
+ * firmware, which a box may not load, so whether it works is probed rather than assumed (vaapiRated); without it those
+ * cuts fall back to a fixed quantiser one notch coarser, which is smaller but not capped.
+ */
+const VAAPI_VBR = (rate: string, buf: string) => ['-rc_mode', 'VBR', '-b:v', rate, '-maxrate', rate, '-bufsize', buf]
+let vaapiRated = false
+
 let chosen: Encoder | null | undefined
 /**
  * The encoder to use: Quick Sync, else VAAPI, else libx264. Tested once per process (or again when the admin
@@ -87,7 +95,8 @@ export async function pickEncoder(force = false): Promise<Encoder> {
     for (const name of ['h264_qsv', 'h264_vaapi'] as const) {
       if (await tryEncoder(name)) {
         chosen = name
-        diag('encode', `using hardware encoder ${name}`, { device: GPU_DEVICE })
+        vaapiRated = name === 'h264_vaapi' && (await tryEncoder(name, true))
+        diag('encode', `using hardware encoder ${name}`, { device: GPU_DEVICE, ...(name === 'h264_vaapi' ? { rateControl: vaapiRated } : {}) })
         break
       }
     }
@@ -111,20 +120,24 @@ export interface VideoEncode {
 
 /**
  * The video side of an encode: the GPU when there is one, otherwise x264 at the current profile, threaded so
- * two jobs at once do not each try to use all four cores and fight.
+ * two jobs at once do not each try to use all four cores and fight. `capped` is a smaller cut for a slow connection:
+ * its point is the bitrate, so the GPU is held to the profile's rate for that size instead of a quality level
+ * (x264 is capped either way).
  */
-export async function videoEncode(height: number | undefined, fps: number | undefined, filters: string[], seg = 4): Promise<VideoEncode> {
+export async function videoEncode(height: number | undefined, fps: number | undefined, filters: string[], seg = 4, opts: { capped?: boolean } = {}): Promise<VideoEncode> {
   const h = bucket(height)
   const encoder = await pickEncoder()
   const profile = profileName()
   const keyframes = ['-force_key_frames', `expr:gte(t,n_forced*${seg})`]
+  const rate = PROFILES[profile].rate[h], buf = PROFILES[profile].buf[h]
   if (encoder === 'h264_qsv') {
     // Hardware ignores the software preset; global_quality is its CRF. Frames are uploaded for it when needed.
     const q = PROFILES[profile].crf[h] + 1
     return {
       encoder, profile, inputArgs: [],
       filterArgs: filters.length ? ['-vf', [...filters, 'format=nv12'].join(',')] : ['-vf', 'format=nv12'],
-      codecArgs: ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', String(q), '-look_ahead', '0',
+      codecArgs: ['-c:v', 'h264_qsv', '-preset', 'veryfast',
+        ...(opts.capped ? ['-b:v', rate, '-maxrate', rate, '-bufsize', buf] : ['-global_quality', String(q)]), '-look_ahead', '0',
         '-profile:v', 'high', '-pix_fmt', 'nv12', ...keyframes],
     }
   }
@@ -133,7 +146,8 @@ export async function videoEncode(height: number | undefined, fps: number | unde
     return {
       encoder, profile, inputArgs: ['-vaapi_device', GPU_DEVICE],
       filterArgs: ['-vf', [...filters, 'format=nv12', 'hwupload'].join(',')],
-      codecArgs: ['-c:v', 'h264_vaapi', '-qp', String(q), '-profile:v', 'high', ...keyframes],
+      codecArgs: ['-c:v', 'h264_vaapi', ...(opts.capped ? (vaapiRated ? VAAPI_VBR(rate, buf) : ['-qp', String(q + 3)]) : ['-qp', String(q)]),
+        '-profile:v', 'high', ...keyframes],
     }
   }
   const P = PROFILES[profile]

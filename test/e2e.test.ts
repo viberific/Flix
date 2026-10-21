@@ -265,6 +265,11 @@ test('direct play: ranged reads of a partly-downloaded file match the original b
   const play = await playAndFetch(1000)
   const info = await jget(`/api/stream/1000/${play.fileIndex}/info`)
   assert.equal(info.mode, 'direct')
+  // A 360p picture has no smaller size to offer, and asking for one anyway still plays it as it is.
+  assert.deepEqual(info.qualities, [])
+  const asked = await jget(`/api/stream/1000/${play.fileIndex}/info?q=480`)
+  assert.equal(asked.mode, 'direct')
+  assert.equal(asked.quality, null)
   const m = media['direct.mp4']
   const res = await api(`/api/stream/1000/${play.fileIndex}/raw`, { headers: { range: 'bytes=0-1023' } })
   assert.equal(res.status, 206)

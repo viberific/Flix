@@ -891,6 +891,15 @@ function flashNote(text) {
 
 let pendingSeriesNote = null
 
+/**
+ * Picture size. Saved per device: 'auto', 'orig', or a height (720, 480) the server converts to on the fly. Auto plays the
+ * original and steps down a size when the picture keeps stalling (see watchQuality); the size it stepped to is kept while
+ * the app stays open, so the next episode on the same slow connection does not start by stalling all over again.
+ */
+const qSetting = () => store.get('quality', 'auto')
+let autoQuality = 0
+const qAsk = () => { const s = qSetting(); return s === 'auto' ? autoQuality : s === 'orig' ? 0 : Number(s) || 0 }
+
 /** "S01E03" reads as "E03" in a short note, the way it is said out loud; anything else is left alone. */
 const shortEp = (label) => { const m = /^S\d+\s*E(\d+)/i.exec(String(label ?? '')); return m ? `E${m[1]}` : String(label ?? '') }
 const ICON = {
@@ -923,6 +932,7 @@ function playView(seriesId, season, label) {
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
+              <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Quality" aria-haspopup="true" hidden></button></div>
               <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-haspopup="true" hidden>CC</button></div>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
@@ -1462,7 +1472,7 @@ function playView(seriesId, season, label) {
 
     async function loadInfo(a, startAt) {
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      const q = [a ? 'a=' + a : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
       info = await api(`${base}/info${q ? '?' + q : ''}`)
       if (!alive) return
       // A saved audio-language choice (on this device) wins over the file's default track.
@@ -1477,7 +1487,7 @@ function playView(seriesId, season, label) {
       if (!alive) return
       if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
-      wireSubs(); wireSubMenu(); wireAudio(); wireExtras()
+      wireSubs(); wireSubMenu(); wireAudio(); wireQuality(); wireExtras()
     }
 
     function attach(startAt) {
@@ -1502,6 +1512,7 @@ function playView(seriesId, season, label) {
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
         // retry above was only ever allowed once, for the life of the element.
         v.addEventListener('playing', () => { fileRetry = false })
+        watchQuality(v)
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
         // A seek into a part of the file that has not arrived yet leaves the picture frozen with nothing to say why. The ring
@@ -1804,6 +1815,69 @@ function playView(seriesId, season, label) {
           try { await loadInfo(n, at) } catch (err) { fail(err.message) }
         })
       }
+    }
+
+    /* picture size: Auto, the original, or a smaller converted cut for a slow connection. Picking one carries on at the same spot. */
+    function wireQuality() {
+      const btn = $('#pq')
+      const sizes = info.qualities || []
+      btn.hidden = !sizes.length
+      btn.textContent = info.quality ? info.quality + 'p' : qSetting() === 'auto' ? 'AUTO' : 'HD'
+      btn.onclick = (e) => {
+        e.stopPropagation()
+        const old = btn.parentElement.querySelector('.menu'); if (old) return closePlayerMenu(old, btn)
+        const pick = qSetting()
+        const row = (val, label) => {
+          const on = String(pick) === String(val)
+          return `<button role="menuitemradio" aria-checked="${on}" data-q="${val}"${on ? ' aria-current="true"' : ''}>${on ? '\u2713 ' : ''}${esc(label)}</button>`
+        }
+        const m = document.createElement('div'); m.className = 'menu'; m.setAttribute('role', 'menu')
+        m.innerHTML = `<div class="who">Quality</div>` + row('auto', 'Auto' + (pick === 'auto' && info.quality ? ` (${info.quality}p now)` : '')) + row('orig', 'Original') +
+          sizes.map((h) => row(h, `${h}p \u00b7 slow connection`)).join('')
+        btn.parentElement.appendChild(m)
+        m.querySelectorAll('button[data-q]').forEach((b) => b.onclick = async (ev) => {
+          ev.stopPropagation(); closePlayerMenu(m, btn)
+          const val = b.dataset.q === 'auto' || b.dataset.q === 'orig' ? b.dataset.q : Number(b.dataset.q)
+          if (val === 'auto') autoQuality = 0 // a fresh start: the original first, stepping down again only if it stalls
+          store.set('quality', val)
+          if (qAsk() === (info.quality || 0)) { btn.textContent = info.quality ? info.quality + 'p' : val === 'auto' ? 'AUTO' : 'HD'; return }
+          switchQuality()
+        })
+      }
+    }
+    /** Load the size qAsk() names at the spot the viewer is at. Stalls right after the switch are the new stream starting. */
+    let qQuietUntil = 0
+    async function switchQuality() {
+      qQuietUntil = Date.now() + 15_000
+      const at = v?.currentTime || 0
+      try { await loadInfo(info.audioIndex ?? 0, at) } catch (err) { fail(err.message) }
+    }
+    /**
+     * Auto: the picture ran dry three times in a minute and a half, or once for ten seconds, while nobody was seeking. That
+     * is a connection slower than the file -- what the logs showed on a 10.8 Mbit/s episode over Tailscale -- so the next
+     * size down is asked for. Never stepped back up mid-episode: a size that flips back and forth stalls more than either.
+     */
+    function watchQuality(v) {
+      let stalls = [], longT = null
+      const stepDown = () => {
+        clearTimeout(longT); stalls = []
+        if (qSetting() !== 'auto' || castingOnly || !alive) return
+        const next = (info.qualities || []).find((h) => h < (info.quality || Infinity))
+        if (!next) return
+        autoQuality = next
+        flashNote(`Slow connection: switched to ${next}p`)
+        switchQuality()
+      }
+      v.addEventListener('seeking', () => { qQuietUntil = Math.max(qQuietUntil, Date.now() + 4000) })
+      v.addEventListener('waiting', () => {
+        if (!started || v.paused || Date.now() < qQuietUntil || qSetting() !== 'auto') return
+        const now = Date.now()
+        stalls = stalls.filter((t) => now - t < 90_000).concat(now)
+        if (stalls.length >= 3) return stepDown()
+        clearTimeout(longT)
+        longT = setTimeout(() => { if (v.readyState < 3 && !v.paused && Date.now() >= qQuietUntil) stepDown() }, 10_000)
+      })
+      for (const ev of ['playing', 'emptied']) v.addEventListener(ev, () => clearTimeout(longT))
     }
 
     /* captions: a menu of our own, because the bar is ours now and the TV's WebView draws no CC button. A list where one

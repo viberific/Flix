@@ -19,9 +19,14 @@ const copySrc = join(dir, 'copy.mkv')
 if (hasFfmpeg) execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=duration=40:size=640x360:rate=24', '-f', 'lavfi', '-i', 'sine=duration=40',
   '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '60', '-force_key_frames', '13', '-c:a', 'ac3', '-y', copySrc])
 
+// A wide film (2.40:1) at 1080p width, for the smaller cuts a slow connection asks for.
+const wideSrc = join(dir, 'wide.mkv')
+if (hasFfmpeg) execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=duration=12:size=1920x800:rate=24', '-f', 'lavfi', '-i', 'sine=duration=12',
+  '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'ac3', '-y', wideSrc])
+
 // Stands in for Flix's own /raw endpoint, which ffprobe and ffmpeg read the torrent file through.
 const raw = createServer((req, res) => {
-  const file = /\/stream\/9\//.test(req.url ?? '') ? copySrc : src
+  const file = /\/stream\/9\//.test(req.url ?? '') ? copySrc : /\/stream\/11\//.test(req.url ?? '') ? wideSrc : src
   const size = statSync(file).size
   const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '')
   const start = m ? Number(m[1] || 0) : 0, end = m && m[2] ? Math.min(size - 1, Number(m[2])) : size - 1
@@ -39,7 +44,7 @@ const tc = await import('../src/transcode.ts')
 const { config } = await import('../src/config.ts')
 config.transcode.mode = 'auto'
 
-after(() => { raw.close(); tc.stopJobsFor(7); tc.stopJobsFor(9) })
+after(() => { raw.close(); tc.stopJobsFor(7); tc.stopJobsFor(9); tc.stopJobsFor(11) })
 
 const start = (f: string) => execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=start_time', '-of', 'csv=p=0', f]).toString().trim().split(/\s+/)[0]
 
@@ -112,4 +117,20 @@ test('keyframes are read once and kept on disk', { skip: !hasFfmpeg }, async () 
   assert.equal(b[0], k![0])
   assert.equal(b[b.length - 1], 40)
   for (let i = 1; i < b.length - 1; i++) assert.ok(b[i] - b[i - 1] >= tc.SEG, 'every piece is at least SEG long')
+})
+
+test('a smaller cut for a slow connection fits its box, is its own job, and leaves the copy alone', { skip: !hasFfmpeg }, async () => {
+  const p = await tc.probe(11, 0, { complete: true })
+  assert.equal(p.copyVideo, true, 'H.264 that would otherwise be copied')
+  await tc.ensureHls(11, 0, p, 0, false, { complete: true, maxHeight: 720 })
+  assert.match(tc.jobDir(11, 0, 0, false, true, 720), /-x-h720$/)
+  assert.ok(tc.vodPlaylist(11, 0, 0, false, true, 720), 'a whole playlist, so it seeks')
+  assert.equal(tc.vodPlaylist(11, 0), null, 'the copied cut was not made for it')
+  const seg = await tc.vodSegment(11, 0, 'seg00001.ts', new AbortController().signal, 0, false, true, 720)
+  assert.ok(seg)
+  const [w, h] = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', seg!]).toString().trim().split(/\s+/)[0].split(',').map(Number)
+  assert.equal(w, 1280, 'a 2.40:1 film at 720p is 1280 wide, not 1728')
+  assert.ok(h <= 720 && h % 2 === 0, `height ${h}`)
+  assert.equal(tc.qualityOf('480'), 480)
+  assert.equal(tc.qualityOf('1080'), 0, 'only the listed sizes')
 })
