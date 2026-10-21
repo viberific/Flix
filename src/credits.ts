@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { db, now } from './db.ts'
+import { lowPriority } from './sprites.ts'
 
 /**
  * Where the end credits start, measured once per finished file.
@@ -101,7 +102,7 @@ export function pickCreditsAt(black: Run[], silence: Run[], duration: number): n
 /** Run one ffmpeg pass over the tail of the file and give back its stderr, or null when it did not finish cleanly. */
 function stderrOf(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    const proc = spawn(...lowPriority(args), { stdio: ['ignore', 'ignore', 'pipe'] })
     const chunks: Buffer[] = []
     let bytes = 0
     let done = false
@@ -123,9 +124,13 @@ function stderrOf(args: string[]): Promise<string | null> {
 export async function measureCredits(source: string, duration: number): Promise<number | null> {
   if (!existsSync(source) || !Number.isFinite(duration) || duration < 60) return null
   const offset = Math.floor(duration * LOOK_FROM)
-  const tail = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-ss', String(offset), '-i', source]
+  const tail = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-threads', THREADS, '-ss', String(offset), '-i', source]
   const out = ['-threads', THREADS, '-f', 'null', '-']
-  const [vlog, alog] = [await stderrOf([...tail, '-map', '0:v:0', '-an', '-vf', 'blackdetect=d=2:pix_th=0.10', ...out]),
+  // The picture is read from its keyframes alone. A cut to a credit card is a scene change, which an encoder starts with
+  // a keyframe, so the start of the black is still found to within a frame or two; what is lost is only precision about
+  // where it ends, which nothing here needs. That is what keeps this pass to a sliver of one core: 0.3.44 decoded every
+  // frame of the last quarter and was measured at 3.46 of the box's 4 cores. The sound is cheap to decode as it is.
+  const [vlog, alog] = [await stderrOf(['-skip_frame', 'nokey', ...tail, '-map', '0:v:0', '-an', '-vf', 'blackdetect=d=2:pix_th=0.10', ...out]),
     await stderrOf([...tail, '-map', '0:a:0', '-vn', '-af', 'silencedetect=n=-35dB:d=2', ...out])]
   // One process at a time, not two: this runs on the same box the family is watching, and the pass is in no hurry.
   if (vlog == null) return null // nothing to say without the picture

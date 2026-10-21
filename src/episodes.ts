@@ -6,6 +6,7 @@ import { parseEpisodeTag } from './btn/parse.ts'
 import { candidatesFor, type Row } from './candidates.ts'
 import { seasonsOf } from './seasons.ts'
 import { packEpisodes, packFor } from './packs.ts'
+import { STARTED_AT } from './gate.ts'
 
 export { candidatesFor }
 export interface Episode {
@@ -17,6 +18,8 @@ export interface Episode {
    *  file's), and for a pack whose .torrent could not be read yet. */
   fileIndex: number | null
   watched: boolean; position: number; duration: number
+  /** When this person last played any of it (unix seconds), 0 never: what "the episode they were on" is decided by. */
+  lastAt: number
 }
 
 /** An interest on a pack is keyed by the episode its file holds, not by the pack's own "Season N" label. */
@@ -39,11 +42,11 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
     JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND r.series_id = ? AND i.released_at IS NULL ORDER BY i.updated_at DESC`).all(userId, seriesId) as any[])
     .map((p) => ({ ...p, ...episodeKey(p) }))
   const out: Episode[] = []
-  const add = (e: Omit<Episode, 'watched' | 'position' | 'duration'>) => {
+  const add = (e: Omit<Episode, 'watched' | 'position' | 'duration' | 'lastAt'>) => {
     // Progress is keyed by label, so it carries over whichever release (single or pack) the episode came from.
     const mine = prog.filter((p) => p.season === e.season && p.label === e.label)
     const cur = mine.find((p) => !p.watched_at)
-    out.push({ ...e, watched: mine.some((p) => p.watched_at), position: cur?.position ?? 0, duration: cur?.duration ?? 0 })
+    out.push({ ...e, watched: mine.some((p) => p.watched_at), position: cur?.position ?? 0, duration: cur?.duration ?? 0, lastAt: Number(mine[0]?.updated_at ?? 0) })
   }
   for (const [season, source] of seasons) {
     if (source === 'episodes') {
@@ -75,28 +78,39 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
   return out.sort((a, b) => (a.season ?? 1e9) - (b.season ?? 1e9) || (a.episode ?? 1e9) - (b.episode ?? 1e9) || a.label.localeCompare(b.label))
 }
 
-export function continueWatching(user: User) {
-  const f = ratingClause(user)
-  const rows = (db.prepare(`SELECT r.series_id AS seriesId, r.series, '/api/art/' || r.series_id || '/poster' AS poster, r.season, r.label, r.is_pack, i.file_name, i.position, i.duration
-    FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id ${META_JOIN}r.series_id
-    WHERE i.user_id = ? AND i.watched_at IS NULL AND i.released_at IS NULL AND i.position > 30 AND ${f.sql} ORDER BY i.updated_at DESC LIMIT 40`).all(user.id, ...f.params) as any[])
-    .map(({ is_pack, file_name, ...r }) => ({ ...r, ...episodeKey({ season: r.season, label: r.label, is_pack, file_name }) }))
-  const seen = new Set<string>()
-  const started = rows.filter((r) => (seen.has(r.seriesId + r.label) ? false : (seen.add(r.seriesId + r.label), true))).slice(0, 12)
-  return [...started, ...nextUp(user, new Set(started.map((r) => r.seriesId)))].slice(0, 12)
+/**
+ * The episode this person is on: the one they played last. Still partway through, it is resumed; finished, the next
+ * available one they have not watched is. -1 when they have not started the show.
+ *
+ * "Last played", never "first in the list with some progress": that rule resumed an episode left two minutes from its end
+ * weeks ago, after the three that followed it had been watched, and a show whose next episode had been started showed
+ * the old one under Continue Watching with the new one nowhere.
+ */
+export function currentEpisode(eps: Pick<Episode, 'watched' | 'position' | 'available' | 'lastAt'>[]): number {
+  let last = -1
+  eps.forEach((e, i) => { if ((e.watched || e.position > STARTED_AT) && (last < 0 || e.lastAt >= eps[last].lastAt)) last = i })
+  if (last < 0) return -1
+  const e = eps[last]
+  if (!e.watched) return last
+  return eps.findIndex((x, j) => j > last && x.available && !x.watched)
 }
 
-/** For shows the viewer finished an episode of recently and has not carried on with: the next episode, ready to press. */
-function nextUp(user: User, skip: Set<number>) {
-  const recent = db.prepare(`SELECT r.series_id AS id, r.series AS name, MAX(i.watched_at) AS w FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
-    WHERE i.user_id = ? AND i.watched_at IS NOT NULL AND i.watched_at > ? GROUP BY r.series_id ORDER BY w DESC LIMIT 8`).all(user.id, now() - 60 * 86400) as { id: number; name: string }[]
+/** One entry per show, newest first: the episode that show is on (see currentEpisode), with where it was left. */
+export function continueWatching(user: User) {
+  const f = ratingClause(user)
+  const shows = db.prepare(`SELECT r.series_id AS id, r.series AS name, MAX(i.updated_at) AS u FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id ${META_JOIN}r.series_id
+    WHERE i.user_id = ? AND i.released_at IS NULL AND ((i.watched_at IS NULL AND i.position > ?) OR i.watched_at > ?) AND ${f.sql}
+    GROUP BY r.series_id ORDER BY u DESC LIMIT 20`).all(user.id, STARTED_AT, now() - 60 * 86400, ...f.params) as { id: number; name: string }[]
   const out: any[] = []
-  for (const s of recent) {
-    if (skip.has(s.id) || !seasonsOf(s.id) || !canViewSeries(user, s.id)) continue
+  for (const s of shows) {
+    if (out.length >= 12) break
+    if (!seasonsOf(s.id) || !canViewSeries(user, s.id)) continue
     const eps = buildEpisodes(s.id, user.id)
-    const last = eps.map((e) => e.watched).lastIndexOf(true)
-    const next = last < 0 ? undefined : eps.slice(last + 1).find((e) => e.available && !e.watched)
-    if (next) out.push({ seriesId: s.id, series: s.name, poster: `/api/art/${s.id}/poster`, season: next.season, label: next.label, position: 0, duration: 0, next: true })
+    const k = currentEpisode(eps)
+    if (k < 0) continue
+    const e = eps[k]
+    const started = !e.watched && e.position > STARTED_AT
+    out.push({ seriesId: s.id, series: s.name, poster: `/api/art/${s.id}/poster`, season: e.season, label: e.label, position: started ? e.position : 0, duration: started ? e.duration : 0, ...(started ? {} : { next: true }) })
   }
   return out
 }

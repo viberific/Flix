@@ -84,10 +84,13 @@ export async function buildSprite(t: number, f: number, source: string, duration
   // A tile is scaled to fit and padded, so a 4:3 episode and a 2.39:1 film both give full 160x90 tiles with no stretch.
   const vf = `fps=1/${interval},scale=${TILE_W}:${TILE_H}:force_original_aspect_ratio=decrease,` +
     `pad=${TILE_W}:${TILE_H}:(ow-iw)/2:(oh-ih)/2:color=black,tile=${COLS}x${ROWS}`
-  const args = ['-hide_banner', '-loglevel', 'error', '-ss', '0', '-i', source,
-    '-vf', vf, '-frames:v', '1', '-q:v', '5', '-f', 'mjpeg', 'pipe:1']
+  // Keyframes only: the decoder skips every other frame, which is nearly all of the work. A tile is the keyframe nearest
+  // its moment, a second or two off at most, and the whole sheet costs a fraction of a core for a short while instead of
+  // the full decode that took 0.3.44 over three of the box's four cores. One thread, at the lowest priority there is.
+  const args = ['-hide_banner', '-loglevel', 'error', '-threads', '1', '-skip_frame', 'nokey', '-ss', '0', '-i', source,
+    '-vf', vf, '-threads', '1', '-frames:v', '1', '-q:v', '5', '-f', 'mjpeg', 'pipe:1']
   const buf = await new Promise<Buffer | null>((resolve) => {
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] })
+    const proc = spawn(...lowPriority(args), { stdio: ['ignore', 'pipe', 'ignore'] })
     const chunks: Buffer[] = []
     let done = false
     const finish = (b: Buffer | null) => { if (done) return; done = true; clearTimeout(timer); try { proc.kill('SIGKILL') } catch { /* gone */ } resolve(b) }
@@ -113,6 +116,14 @@ export async function buildSprite(t: number, f: number, source: string, duration
     }
   } catch { return null }
   return meta
+}
+
+/** ffmpeg at the lowest CPU and disk priority the box has, so a background cut never takes time from a stream. */
+export function lowPriority(args: string[]): [string, string[]] {
+  const nice = ['/usr/bin/nice', '/bin/nice'].find((p) => existsSync(p))
+  const ionice = ['/usr/bin/ionice', '/bin/ionice'].find((p) => existsSync(p))
+  if (!nice) return ['ffmpeg', args]
+  return ionice ? [ionice, ['-c3', nice, '-n', '19', 'ffmpeg', ...args]] : [nice, ['-n', '19', 'ffmpeg', ...args]]
 }
 
 function touch(path: string) { const t = new Date(); try { utimesSync(path, t, t) } catch { /* gone */ } }

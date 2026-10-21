@@ -343,21 +343,32 @@ test('casting: a finished episode goes to the TV as one seekable file, not a pla
   assert.equal(Number(/(\d+)$/.exec(cr)![1]), s.size)
 })
 
-test('a file that would have to be converted is refused, and nothing is encoded', async () => {
-  // Torrent 1002: its own show, and a picture no repack can put in an MP4. The server says so and stops there: no encoder
-  // is started, and the playlist routes answer with the same line instead of cutting segments on demand.
-  const play = await playAndFetch(1002)
+test('a file that has to be converted simply plays: a whole playlist, converted on the CPU where the viewer is', async () => {
+  // Torrent 1002: its own show, and a picture no player decodes as it is (MPEG-4 part 2). 0.3.45-0.3.55 refused it with
+  // "converting is turned off"; now it plays. Only copies that play as they are are ever downloaded, so this is rare.
+  // Copy-only mode (the default) never downloads such a release in the first place; one that is on the box anyway (taken
+  // over from the Downloads folder, or fetched before) is what this is about, so let this one download.
+  const { config } = await import('../src/config.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'auto'
+  let play: any
+  try { play = await playAndFetch(1002) } finally { config.transcode.mode = was }
   const info: any = await jget(`/api/stream/1002/${play.fileIndex}/info`)
-  assert.equal(info.mode, 'convert')
-  assert.equal(info.needsConvert, true)
-  assert.equal(info.convertAvailable, false, 'nothing may be offered that would start a conversion')
-  assert.match(String(info.message), /converting is turned off/)
-  // The player gets one clear line, not a playlist that would put every core of the box to work.
-  for (const path of ['hls/index.m3u8', 'hdr/index.m3u8']) {
-    const r = await api(`/api/stream/1002/${play.fileIndex}/${path}`)
-    assert.equal(r.status, 409, path)
-    assert.match(String((await r.json() as any).error), /converting is turned off/, path)
-  }
+  assert.equal(info.mode, 'hls')
+  assert.equal(info.converting, true)
+  assert.equal(info.seekable, true)
+  assert.match(info.url, /\/hls-x\/0\/index\.m3u8$/)
+  const list = await (await api(info.url)).text()
+  assert.match(list, /PLAYLIST-TYPE:VOD/, 'the whole episode is in the playlist from the start, so it can be seeked anywhere')
+  assert.match(list, /ENDLIST/)
+  // A piece from the middle, first: made on request, picture converted to H.264.
+  const seg = await api(info.url.replace('index.m3u8', 'seg00002.ts'))
+  assert.equal(seg.status, 200)
+  assert.equal(seg.headers.get('content-type'), 'video/mp2t')
+  assert.ok((await seg.arrayBuffer()).byteLength > 1000)
+  // The HDR cut is still not offered.
+  const r = await api(`/api/stream/1002/${play.fileIndex}/hdr/index.m3u8`)
+  assert.equal(r.status, 409)
 })
 
 test('retention: kept until watched AND seeded; force-remove refused; removed once both hold', async () => {

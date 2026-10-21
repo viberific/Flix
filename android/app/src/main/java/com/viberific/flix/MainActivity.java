@@ -299,9 +299,23 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (fullscreenView != null) { leaveFullscreen(); return; }
         if (setup != null && web != null && prefs().getString(KEY_URL, null) != null) { root.removeView(setup); setup = null; web.requestFocus(); return; }
-        if (web != null && web.canGoBack()) { web.goBack(); return; }
+        if (web != null) {
+            // The page gets Back first. A WebView never hands the Back key to the page as a key press, so with the
+            // captions list open Back went straight past it and out of the episode, leaving the player's bar to be
+            // cleared by opening the episode again. The player answers true when it used the press (it closed a list,
+            // or left for the show's page); anything else is the browser's ordinary back.
+            web.evaluateJavascript("(function(){try{return !!(window.__flixBack&&window.__flixBack())}catch(e){return false}})()", result -> {
+                if ("true".equals(result)) return;
+                if (web != null && web.canGoBack()) web.goBack();
+                else defaultBack();
+            });
+            return;
+        }
         super.onBackPressed();
     }
+
+    @SuppressWarnings("deprecation")
+    private void defaultBack() { super.onBackPressed(); }
 
     @Override
     protected void onSaveInstanceState(Bundle out) {
