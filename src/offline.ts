@@ -38,12 +38,9 @@ export async function offlineCopy(t: number, f: number, p: Probe, source: string
   }
   if (existsSync(out)) { touch(out); return { state: 'ready', path: out, size: statSync(out).size, type: 'video/mp4' } }
   mkdirSync(root(), { recursive: true })
-  // In 'off' mode the picture is never re-encoded: a codec MP4 can carry is copied, and anything else is refused
-  // rather than quietly spending the CPU this mode exists to save.
+  // A codec MP4 can carry is copied. Anything else is converted, on the CPU: only copies that play as they are get
+  // downloaded in the first place, so this is rare, and when it is needed it simply happens.
   const copies = p.copyVideo || (config.transcode.mode === 'off' && MP4_CARRY.has(String(p.videoCodec ?? '')))
-  if (!copies && config.transcode.mode === 'off') {
-    return { state: 'error', message: 'This copy would have to be converted, and Flix is set never to convert the picture. Allow one conversion to play it.' }
-  }
   const tone = p.hdr && (await canToneMap())
   const filters = [...((p.height ?? 0) > 1080 ? ['scale=-2:1080'] : []), ...(tone ? [TONEMAP] : [])]
   const part = out + '.part.mp4'

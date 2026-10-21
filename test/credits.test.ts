@@ -140,7 +140,7 @@ test('the gate: no probe duration, but the player knows one -> there is a moment
   // This is the bug. /info came back with no duration (HLS, some direct plays) and there were no chapters, so the moment
   // was never worked out and nothing but the `ended` event could raise the box.
   const m = creditMoment({ chapters: [] }, { duration: 2700 })
-  assert.equal(m.at, 2700 - 150)
+  assert.equal(m.at, 2700 - 60)
   assert.equal(m.from, 'estimate')
   assert.equal(knownDuration({}, { duration: 2700 }), 2700)
 })
@@ -163,10 +163,20 @@ test('a marker past the end of the episode is ignored in favour of the estimate'
   assert.equal(creditMoment({ duration: 2700, creditsAt: 0 }, { duration: 2700 }).from, 'estimate')
 })
 
-test('the estimate is 8% of the runtime, held between 45 seconds and two and a half minutes', () => {
-  assert.equal(creditMoment({ duration: 1800 }, null).at, 1800 - 144) // 8% is inside the clamp
-  assert.equal(creditMoment({ duration: 2700 }, null).at, 2700 - 150) // clamped down to 150
-  assert.equal(creditMoment({ duration: 10800 }, null).at, 10800 - 150) // a film: same two and a half minutes
-  assert.equal(creditMoment({ duration: 400 }, null).at, 400 - 45) // clamped up to 45
-  assert.equal(creditMoment({ duration: 30 }, null).at, 0) // never a negative second
+test('the estimate is the closing 3.5% of the runtime, held between 25 seconds and a minute', () => {
+  // The old 8% (45 s to 2.5 min) brought "Up next" up over the last scene of most episodes, before any credits.
+  assert.equal(creditMoment({ duration: 1320 }, null).at, 1320 - 46.2) // a 22-minute sitcom: 3.5% is inside the clamp
+  assert.equal(creditMoment({ duration: 2700 }, null).at, 2700 - 60) // clamped down to a minute
+  assert.equal(creditMoment({ duration: 10800 }, null).at, 10800 - 60) // a film: the same minute
+  assert.equal(creditMoment({ duration: 400 }, null).at, 400 - 25) // clamped up to 25
+  assert.equal(creditMoment({ duration: 20 }, null).at, 0) // never a negative second
+})
+
+test('the credits pass decodes keyframes only, on one thread, at the lowest priority', () => {
+  const src = readFileSync(new URL('../src/credits.ts', import.meta.url), 'utf8')
+  assert.match(src, /'-skip_frame', 'nokey'/, 'the picture is read from its keyframes alone')
+  assert.match(src, /spawn\(\.\.\.lowPriority\(args\)/, 'run under nice/ionice')
+  const sprites = readFileSync(new URL('../src/sprites.ts', import.meta.url), 'utf8')
+  assert.match(sprites, /'-skip_frame', 'nokey'/, 'the seek pictures are keyframes too')
+  assert.match(sprites, /spawn\(\.\.\.lowPriority\(args\)/)
 })

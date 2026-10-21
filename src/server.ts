@@ -17,14 +17,15 @@ import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from 
 import { enableNextFile } from './ahead.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
-import { offlineCopy, startOfflineSweeper } from './offline.ts'
-import { copyPictureOnly, ensureHls, jobDir, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
+import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
+import { copyPictureFor, ensureHls, jobDir, keyframes, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
+import { startExtrasPlanner } from './extras.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
-import { buildEpisodes, continueWatching } from './episodes.ts'
+import { buildEpisodes, continueWatching, currentEpisode } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { unplayableSeries } from './candidates.ts'
 import { ensurePackFiles } from './packs.ts'
@@ -32,7 +33,7 @@ import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.
 import { ROW_SIZE, curateHome } from './home.ts'
 import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoFirst, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
-import { gatesFor, gatedNote } from './gate.ts'
+import { STARTED_AT, gatesFor, gatedNote } from './gate.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
@@ -233,7 +234,10 @@ app.get('/api/series/:id', auth, async (req) => {
   // Only episodes are exposed: sources are chosen server-side, and torrent_link (passkey!) never leaves the server.
   // Per-file progress: "ready to watch" means THIS episode's file is on disk in full, not that its release exists.
   const episodes = await withFileProgress(buildEpisodes(id, req.user!.id))
+  const cur = currentEpisode(episodes)
   return {
+    // The episode this person is on (the one they played last, or the next once it is finished), for Resume.
+    current: cur < 0 ? null : { season: episodes[cur].season, label: episodes[cur].label },
     // The soonest of this show's downloads that is leaving and that this person has not finished, for a note on the show page.
     leavesAt: leavingSoonFor(req.user!).filter((l) => l.seriesId === id).map((l) => l.leavesAt as number).sort((a, b) => a - b)[0] ?? null,
     series: { ...rest, genres, inList: !!db.prepare('SELECT 1 FROM my_list WHERE user_id = ? AND series_id = ?').get(req.user!.id, id), vote: (db.prepare('SELECT vote FROM votes WHERE user_id = ? AND series_id = ?').get(req.user!.id, id) as any)?.vote ?? 0, year: d?.year ?? null, overview: d?.overview ?? null, cast: (d?.cast ?? []).map((c, n) => ({ name: c.name, role: c.role, photo: c.photo ? `/api/cast/${id}/${n}` : null })), trailerId, trailerIds, trailerThumb: trailerId ? `/api/art/${id}/trailer` : null, ...getRating(id) },
@@ -431,8 +435,12 @@ app.post('/api/watch', auth, async (req) => {
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
   const ni = eps.findIndex((e, j) => j > i && e.available)
   const next = ni < 0 ? undefined : eps[ni]
-  // The box offered at the credits must itself be allowed: it is, unless this episode was never counted as started.
-  const nextOpen = ni >= 0 && !gates[ni].locked
+  // The box offered at the credits must itself be allowed. The gates above were worked out before this play counted, so
+  // an episode opened from the start had not been "started" yet and the one after it read as locked: the up-next box never
+  // came, and the end of the episode went back to the show page however much of the season was on disk. By the time the
+  // next one is asked for, this one is being watched -- so it counts as started here.
+  const nowGates = gatesFor(eps.map((e, j) => (j === i ? { ...e, position: Math.max(e.position, STARTED_AT + 1) } : e)))
+  const nextOpen = ni >= 0 && !nowGates[ni].locked
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
   const titles = episodeInfoFor(Number(seriesId))
   const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
@@ -477,11 +485,9 @@ async function warmNextEpisode(userId: number, seriesId: number, season: number 
   const p = await probe(r.torrentId, r.fileIndex, { complete: (fi?.file.progress ?? 0) >= 1 })
   // The same choice /info makes, in the same order. Bytes that can be served as they are need nothing done to them.
   if (p.direct) return
-  // A complete file the player would rather have as one seekable MP4: a remux takes minutes, so building it ahead of the
-  // handover is the only way it is ready in time. Worth starting even if it will not finish before the credits do.
-  if (fi && fi.file.progress >= 1 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080) {
-    await remuxPlayback(r.torrentId, r.fileIndex, p, () => false, 0)
-  }
+  // A finished file that will play as a playlist: read where its keyframes are now (a read of the file, no decoding), so
+  // the playlist is whole and seekable the moment the countdown ends instead of after that read.
+  if (fi && fi.file.progress >= 1) await keyframes(r.torrentId, r.fileIndex, join(fi.layout.savePath, fi.file.name))
 }
 
 app.post('/api/warm', auth, async (req) => {
@@ -515,12 +521,6 @@ const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInt
  * working on a play: a conversion here would take every core the player needs to serve the bytes.
  */
 const CONVERT_OFF = 'This file would need converting, and converting is turned off. Flix plays files as they are.'
-const CONVERT_AUDIO = 'This file plays with its first audio track only. Switching tracks would need converting, and converting is turned off.'
-const STILL_ARRIVING = 'This episode is still downloading. It plays as soon as the download has finished, with nothing converted.'
-const CONVERT_OFF_VOD = 'This would have to be converted to play, and converting is turned off.'
-/** Said when the picture is fine and copying it into an MP4 is all it needs, but the copy is capped to 1080p. */
-const repackTooBig = (h: number) => `This file's picture has to be copied into an MP4 before it can play, and Flix only makes that copy up to 1080p. This one is ${h}p. Nothing is converting; the copy is the thing that is too big.`
-
 app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const { t, f } = req.params as any
   const a = audioIdx((req.query as any).a)
@@ -533,63 +533,57 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // A remux this call starts may hold the play for a moment; a viewer who has closed the page must not hold it at all.
   let closed = false
   reply.raw.on('close', () => { closed = true })
-  const complete = ((await fileInfo(+t, +f))?.file.progress ?? 0) >= 1
+  const fi = await fileInfo(+t, +f)
+  const complete = (fi?.file.progress ?? 0) >= 1
+  const source = fi ? join(fi.layout.savePath, fi.file.name) : undefined
   const p = await probe(+t, +f, { complete })
   // The picture and container it takes, AND sound it can decode. Dropping the second half in 0.3.48 served raw bytes for
   // any MKV whose audio was E-AC-3 — the commonest WEB-DL there is — and the episode played silently.
   const direct = directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
-  // Nothing on this box converts anything: Flix plays files as they are. A finished file whose container the player cannot
-  // take (an MKV holding H.264, say) is repacked once into one MP4 with the picture copied untouched -- no decoder on the
-  // stream, no encoder, just bytes moved -- and served by byte range, which is also what makes the whole episode seekable.
-  // Everything else is refused below, plainly, instead of starting ffmpeg on a box the family is watching.
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
   const subsList = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))]
-  const remux = !direct && a === 0 ? await remuxPlayback(+t, +f, p, () => closed, cast ? CAST_WAIT_MS : REMUX_WAIT_MS) : null
+  const copyFor = copyPictureFor(p, can)
+  // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
+  // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
+  const remux = !direct && a === 0 && copyFor
+    ? (cast ? await remuxPlayback(+t, +f, p, () => closed, CAST_WAIT_MS) : !!offlineReadyPath(+t, +f))
+    : false
   if (!direct && !remux) {
-    // 0.3.55: the picture is the part that can be passed through; the SOUND is what the player cannot decode (an E-AC-3
-    // track, which is every AMZN WEB-DL there is). 0.3.54 sent that to the whole-file MP4 repack, which is capped at 1080p,
-    // needs the episode complete, and answers "this file would need converting" until the copy is ready -- so a file that
-    // had played for months was refused. Instead remux it to HLS with the picture COPIED and only the audio encoded to
-    // AAC: it plays at once, at whatever height it is, and no second copy of the episode is left on the disk. Nothing is
-    // re-encoded but the sound, which cannot be avoided: no browser decodes E-AC-3. A picture that would have to be
-    // re-encoded is still refused, plainly.
-    if (a === 0 && copyPictureOnly(p)) {
-      const hb = `${base}/hls`
-      const ht = `/api/tv/${token}/${t}/${f}/hls`
-      const mt = 'application/vnd.apple.mpegurl'
-      return {
-        mode: 'hls', url: `${hb}/index.m3u8`, tvUrl: `${ht}/index.m3u8`, tvType: mt, seekable: true,
-        castUrl: config.lanUrl ? config.lanUrl + `${ht}/index.m3u8` : null, castType: mt, castFallbackUrl: null,
-        duration: p.duration, audioIndex: a, hdr: p.hdr, hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
-        creditsAt: measuredCredits(+t, +f, p.duration ?? 0), audio: p.audio, chapters: p.chapters, subs: subsList,
-      }
-    }
-    // The answer is the truth and nothing happens behind it: the player shows this line and offers nothing to tap,
-    // because there is nothing the box will do about it.
-    const repackable = a === 0 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) <= 1080
-    const tooBig = a === 0 && REMUX_VIDEO.has(String(p.videoCodec ?? '')) && (p.height ?? 0) > 1080
+    // 0.3.56: nothing is refused any more. Only copies that play as they are get downloaded, so this is the exception, and
+    // when it happens it simply plays: the picture COPIED where this player decodes it (the sound is all that is
+    // converted -- E-AC-3, every AMZN WEB-DL there is) and converted on the CPU where it does not (HEVC on a player
+    // without a decoder, 10-bit H.264). Either way the playlist is whole from the start, so the episode can be seeked
+    // anywhere at once: a copied picture is cut on the file's own keyframes once the file is complete.
+    const encode = !copyFor
+    const seg = encode ? `hls-x/${a}` : a ? `hls-a/${a}` : 'hls'
+    // Made here, not on the playlist's first request, so the keyframe read (a few seconds, once per file) happens while
+    // the player shows its wait, rather than inside a request the player gives up on after ten.
+    try { await ensureHls(+t, +f, p, a, false, { complete, source, encode }) } catch (e: any) { throw Object.assign(new Error(e.message), { statusCode: 503 }) }
+    const ht = `/api/tv/${token}/${t}/${f}/${seg}`
+    const mt = 'application/vnd.apple.mpegurl'
     return {
-      mode: 'convert', needsConvert: true, convertAvailable: false, duration: p.duration, audioIndex: a, chapters: p.chapters, audio: p.audio,
-      message: a !== 0 ? CONVERT_AUDIO : repackable && !complete ? STILL_ARRIVING : tooBig ? repackTooBig(p.height ?? 0) : CONVERT_OFF,
+      mode: 'hls', url: `${base}/${seg}/index.m3u8`, tvUrl: `${ht}/index.m3u8`, tvType: mt, seekable: complete || encode, converting: encode,
+      castUrl: config.lanUrl ? config.lanUrl + `${ht}/index.m3u8` : null, castType: mt, castFallbackUrl: null,
+      duration: p.duration, audioIndex: a, hdr: p.hdr, hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
+      creditsAt: measuredCredits(+t, +f, p.duration ?? 0), audio: p.audio, chapters: p.chapters, subs: subsList,
     }
   }
   const path = direct ? 'raw' : 'offline/file'
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
   // to it as one file served by byte range -- the plain MP4 as it is, anything else as the repacked MP4 -- because only a
-  // file carries its whole length at once. There is no playlist any more: a picture that went through HLS needed ffmpeg
-  // working for as long as it played, which is the thing this release exists to stop. A direct file still arriving is served as raw bytes as it always was.
+  // file carries its whole length at once. A direct file still arriving is served as raw bytes as it always was.
   const tv = `/api/tv/${token}/${t}/${f}/${path}`
   // What the receiver must be told the link is, since it decides how to play it from this alone.
   const tvType = direct ? await rawType(+t, +f) : 'video/mp4'
   return {
-    mode: direct ? 'direct' : 'file', url: remux ? `${base}/offline/file` : `${base}/${path}`, tvUrl: tv, tvType, seekable: true,
+    mode: direct ? 'direct' : 'file', url: `${base}/${path}`, tvUrl: tv, tvType, seekable: true,
     castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: null, duration: p.duration, audioIndex: a, hdr: p.hdr,
     // The HDR playlist went with the other conversions. An HDR episode is repacked with its picture copied and its colour
     // tags kept, and the player falls back to that file when there is no hdrUrl.
     hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
-    // Where the credits begin, from a marker measured by an older version while the file downloaded; null when there is
-    // no marker (nothing measures them any more) and the player then estimates from the runtime, which needs no ffmpeg.
+    // Where the credits begin, measured once in the background after the file finished downloading (see planExtras);
+    // null when there is no marker yet, and the player then estimates from the runtime.
     creditsAt: measuredCredits(+t, +f, p.duration ?? 0),
     audio: p.audio, chapters: p.chapters,
     subs: subsList,
@@ -766,32 +760,30 @@ async function rawHandler(req: any, reply: any) {
 }
 
 /**
- * The playlist routes. Until 0.3.55 these only answered, because nothing on this box re-encoded a picture. 0.3.55 brings
- * back the one case that has to exist: a file whose picture can be COPIED but whose sound the player cannot decode (an
- * E-AC-3 track, every AMZN WEB-DL there is). ffmpeg then runs with -c:v copy and an AAC audio track, which costs a few
- * percent of one core and moves bytes rather than re-encoding them -- the thing 0.3.45 removed was re-encoding the
- * PICTURE for as long as it played. An HDR cut is still refused: that one needs an encode.
+ * The playlist routes: a picture copied with its sound converted, or (rarely) a picture converted on the CPU. Both are
+ * complete playlists whose pieces are made where the viewer is, so nothing runs ahead of the viewer for long and a seek
+ * costs one piece. `encode` is the converted cut asked for by a player that cannot decode the picture as it is.
  */
-async function hlsHandler(req: any, reply: any, hdr = false) {
+async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
   const { t, f, file } = req.params as any
   const a = audioIdx(req.params.a ?? req.query?.a)
   if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
   if (hdr) return reply.code(409).send({ error: CONVERT_OFF })
-  if (file === 'index.m3u8' || !touchHls(+t, +f, a, false)) {
-    const p = await probe(+t, +f)
-    try { await ensureHls(+t, +f, p, a, false) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+  if (file === 'index.m3u8' || !touchHls(+t, +f, a, false, encode)) {
+    const fi = await fileInfo(+t, +f)
+    const complete = (fi?.file.progress ?? 0) >= 1
+    const p = await probe(+t, +f, { complete })
+    try { await ensureHls(+t, +f, p, a, false, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, encode }) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   }
   const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
-  // A picture that has to be re-encoded gets a complete playlist and pieces made where the viewer is. A copied picture
-  // plays from the start, and its pieces arrive far faster than they are watched.
-  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, false) : null
+  const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, false, encode) : null
   if (list) return reply.type(type).header('cache-control', 'no-store').send(list)
   const ac = new AbortController()
   req.raw.on('close', () => ac.abort())
   let path: string | null | undefined
-  try { path = await vodSegment(+t, +f, file, ac.signal, a, false) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+  try { path = await vodSegment(+t, +f, file, ac.signal, a, false, encode) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   if (path === null) return reply.code(404).send({ error: 'no such segment' })
-  path ??= join(jobDir(+t, +f, a, false), file)
+  path ??= join(jobDir(+t, +f, a, false, encode), file)
   if (!existsSync(path)) return reply.code(404).send({ error: 'segment not ready' })
   return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
 }
@@ -815,6 +807,7 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
   app.get(`${prefix}/:t/:f/offline/file`, { preHandler: pre as any }, offlineFileHandler)
   app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)
   app.get(`${prefix}/:t/:f/hls-a/:a/:file`, { preHandler: pre as any }, hlsHandler)
+  app.get(`${prefix}/:t/:f/hls-x/:a/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, false, true))
   app.get(`${prefix}/:t/:f/hdr/:file`, { preHandler: pre as any }, (req, reply) => hlsHandler(req, reply, true))
 }
 
@@ -1100,6 +1093,7 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
 cleanHlsCache()
 startOfflineSweeper()
 startSpriteSweeper()
+startExtrasPlanner()
 const runSweep = startSweeper()
 
 let btnSyncStarted = false

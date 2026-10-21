@@ -843,20 +843,25 @@ test('a probe taken while the file was still arriving is asked again once it is 
   assert.match(t, /if \(v\) probes\.set\(key, \{ p, complete: !!opts\.complete \}\)/, 'a probe with no picture at all is not cached')
 })
 
-test('a file is only converted when it has to be, and never in no-encode mode', async () => {
-  const { needsEncode, mayEncode, MP4_CARRY } = await import('../src/transcode.ts')
+test('a file is only converted when it has to be, and then it simply is, on the CPU', async () => {
+  const { needsEncode, MP4_CARRY, copyPictureFor, copyIntoTs } = await import('../src/transcode.ts')
   const base = { copyVideo: false, direct: false, hdr: false } as any
   assert.equal(needsEncode({ ...base, videoCodec: 'hevc' }), true, 'HEVC that cannot be copied needs an encode')
   assert.equal(needsEncode({ ...base, videoCodec: 'h264', copyVideo: true }), false, 'H.264 is copied, not encoded')
   assert.equal(needsEncode({ ...base, direct: true, videoCodec: 'h264' }), false, 'direct play needs nothing')
   assert.equal(needsEncode({ ...base, hdr: true, videoCodec: 'hevc' }), false, 'HDR is passed through, not encoded')
   assert.equal(MP4_CARRY.has('hevc'), true, 'HEVC can be carried in MP4 by a copy')
-  // The setting is what decides, and 'off' means the picture is never re-encoded.
-  assert.equal(mayEncode(), config.transcode.mode !== 'off')
-  const off = await import('../src/offline.ts')
+  // The picture is copied only for a player that decodes it: HEVC only when the device said so.
+  assert.equal(copyPictureFor({ ...base, videoCodec: 'h264', pixFmt: 'yuv420p' }), true)
+  assert.equal(copyPictureFor({ ...base, videoCodec: 'hevc', pixFmt: 'yuv420p' }), false, 'a player that cannot decode HEVC gets it converted')
+  assert.equal(copyPictureFor({ ...base, videoCodec: 'hevc', pixFmt: 'yuv420p' }, new Set(['hevc'])), true)
+  assert.equal(copyPictureFor({ ...base, videoCodec: 'h264', pixFmt: 'yuv420p10le' }), false, '10-bit H.264 is converted')
+  assert.equal(copyIntoTs({ ...base, videoCodec: 'av1' }), false, 'AV1 does not go into a TS piece copied')
   const src = (await import('node:fs')).readFileSync(new URL('../src/offline.ts', import.meta.url), 'utf8')
-  assert.match(src, /config\.transcode\.mode === 'off'/, 'the saved copy refuses to encode in this mode')
-  assert.ok(off, 'offline module loads')
+  assert.doesNotMatch(src, /Flix is set never to convert the picture/, 'the saved copy no longer refuses to convert')
+  const enc = (await import('node:fs')).readFileSync(new URL('../src/encode.ts', import.meta.url), 'utf8')
+  assert.match(enc, /if \(process\.env\.TRANSCODE_GPU !== 'true'\) return 'libx264'/, 'conversion is on the CPU')
+  assert.equal(await (await import('../src/encode.ts')).pickEncoder(true), 'libx264')
 })
 
 test('nothing above 1080p is chosen: 4K is never picked while anything else is alive', async () => {
@@ -909,25 +914,16 @@ test('an episode with no copy-playable release is left out, not crashed on', asy
   } finally { config.transcode.mode = was }
 })
 
-test('a tile that cannot play says why, instead of going dead', async () => {
-  const { config } = await import('../src/config.ts')
-  const { needsEncode } = await import('../src/transcode.ts')
+test('a file that needs converting is converted, never refused with a line to read', async () => {
   const { readFileSync } = await import('node:fs')
-  const was = config.transcode.mode
-  config.transcode.mode = 'off'
-  try {
-    // A picture that would have to be re-encoded, in a mode whose whole point is not to.
-    assert.equal(needsEncode({ direct: false, hdr: false, copyVideo: false } as any), true)
-    // And one that only needs its container changed still plays: that is a copy, not a conversion.
-    assert.equal(needsEncode({ direct: false, hdr: false, copyVideo: true } as any), false)
-  } finally { config.transcode.mode = was }
-  // The server answers 'convert' rather than an error, and the player turns that into a line the viewer can tap.
-  // Both halves are asserted because either one alone leaves a dead screen: a reason nobody renders.
+  // 0.3.45-0.3.55 answered 'convert' with "converting is turned off" and the player showed it over a dead screen. The
+  // download side still only fetches copies that play as they are (pick.ts); a file that needs it anyway just plays.
   const server = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')
-  assert.match(server, /mode: 'convert', needsConvert: true/)
+  assert.doesNotMatch(server, /mode: 'convert'/)
+  assert.match(server, /const encode = !copyFor/)
+  assert.match(server, /hls-x\/:a\/:file/, 'the converted cut has a route of its own')
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
-  assert.match(app, /info\.mode === 'convert'/)
-  assert.match(app, /allow it for this episode/)
+  assert.doesNotMatch(app, /info\.mode === 'convert'/)
 })
 
 test('the next pack file is enabled on TIME covered, so a 6.25 GB and a 3.2 GB episode both fire sensibly', () => {

@@ -583,8 +583,9 @@ async function homeView(q, local = false) {
 const bigScreen = () => isTv || matchMedia('(min-width: 1100px)').matches
 /** Long enough that nobody reading the page sees it appear under them. */
 const ART_IDLE_MS = 45_000
-/** How long one picture stays up before the next fades over it. */
-const ART_HOLD_MS = 12_000
+/** How long one picture stays up before the next fades over it: fifteen seconds, then a slow cross-fade (ART_FADE_S in
+    style.css, 4 s) -- a picture you can look at, not a carousel. */
+const ART_HOLD_MS = 15_000
 let artShow = null
 
 /**
@@ -702,10 +703,13 @@ const ytApi = () => ytLoading ??= new Promise((ok, no) => {
   document.head.append(sc)
 })
 async function seriesView(id) {
-  const { series, episodes, leavesAt } = await api('/api/series/' + id)
+  const { series, episodes, leavesAt, current } = await api('/api/series/' + id)
   const seasons = new Map()
   for (const e of episodes) { const k = e.season ?? 'x'; if (!seasons.has(k)) seasons.set(k, []); seasons.get(k).push(e) }
-  const resume = episodes.find((e) => e.position > 30 && !e.watched)
+  // The episode this person is on, as the server worked it out: the one played last, or the one after it once that is
+  // finished. Not "the first episode with some progress", which brought back an episode abandoned in its credits weeks
+  // ago after the ones that followed it had been watched.
+  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available && (!e.locked || e.position > 30)) : null
   // The hero never offers something the order rule forbids. A resume is always allowed (that episode was started);
   // otherwise it is the first episode that may be started and has not been watched, so Play Now cannot dead-end.
   const hero = resume ?? episodes.find((e) => !e.watched && e.available && !e.locked)
@@ -858,10 +862,16 @@ const store = {
   set(k, v) { try { localStorage.setItem('flix.' + k, JSON.stringify(v)) } catch { /* private mode */ } },
 }
 
-/** Say what the family needs to hear; the technical text is kept for the admin. */
-function friendly(msg) {
+/**
+ * Say what the family needs to hear; the technical text is kept for the admin. "Isn't ready yet" is only ever said about
+ * an episode that really is still on its way: it used to be the answer to every failure, the picture dropping on an
+ * episode that had been on the disk for a week included, which sent people off to wait for something already there.
+ */
+function friendly(msg, onDisk = false) {
   if (/out of storage|low on storage/i.test(msg)) return 'The server is out of storage right now. Ask whoever runs Flix to free up some space.'
-  if (/nobody is sharing|no other source|timed out|seeders|metadata|ffmpeg|ffprobe|transcode|playing this|not available|not downloading|swarm/i.test(msg)) return 'This episode isn’t ready to play yet. Try again in a little while, or pick something else.'
+  if (/went wrong playing this/i.test(msg)) return 'This episode stopped playing. Try again and it carries on from where it stopped.'
+  if (!onDisk && /nobody is sharing|no other source|timed out|seeders|metadata|swarm|not downloading/i.test(msg)) return 'This episode isn’t ready to play yet. Try again in a little while, or pick something else.'
+  if (/ffmpeg|ffprobe|transcode|timed out|not downloading|did not answer|took too long|segment/i.test(msg)) return 'Flix couldn’t open this episode just now. Try again.'
   return msg
 }
 
@@ -891,8 +901,6 @@ const ICON = {
   cast: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/><path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5M3 20h.01"/></svg>',
   play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6a.9.9 0 0 0 1.37.77l10.6-6.8a.9.9 0 0 0 0-1.54L9.37 4.43A.9.9 0 0 0 8 5.2Z"/></svg>',
   pause: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.4" y="4.8" width="4" height="14.4" rx="1.5"/><rect x="13.6" y="4.8" width="4" height="14.4" rx="1.5"/></svg>',
-  vol: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 4.5 6.6 8.6H3.2v6.8h3.4l4.9 4.1V4.5Z" fill="currentColor" stroke="none"/><path d="M15.6 8.6a4.9 4.9 0 0 1 0 6.8"/><path d="M18.6 6a8.6 8.6 0 0 1 0 12"/></svg>',
-  volOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 4.5 6.6 8.6H3.2v6.8h3.4l4.9 4.1V4.5Z" fill="currentColor" stroke="none"/><path d="m16.2 9.4 5 5.2M21.2 9.4l-5 5.2"/></svg>',
   fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
 }
 
@@ -900,7 +908,7 @@ function playView(seriesId, season, label) {
   label = decodeURIComponent(label)
   return () => {
     app.innerHTML = `<div class="player" id="pl">
-      <div class="p-top"><a class="icon-btn" href="#/series/${seriesId}" aria-label="Back">${I.back}</a>
+      <div class="p-top"><button class="icon-btn" id="pback" aria-label="Back">${I.back}</button>
         <span class="p-mark" aria-hidden="true">${I.logo}</span><span class="p-rate" id="prate" hidden></span>
         <div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span>
         <div class="p-menu"><button class="icon-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
@@ -916,7 +924,6 @@ function playView(seriesId, season, label) {
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-haspopup="true" hidden>CC</button></div>
-              <button class="p-btn" id="pvol" aria-label="Mute">${ICON.vol}</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div>`
@@ -931,8 +938,8 @@ function playView(seriesId, season, label) {
     let meta = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
-    // The viewer's one-off yes to converting this episode, when Settings says never to convert the picture.
-    let allowConvert = false
+    // A play that never starts on a file that is all here: asked again once (see attach).
+    let stuckT = null, stuckRetried = false
     // An element whose source is taken away on purpose reports an error for it: that one is ours, not playback's.
     let ignoreError = false
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
@@ -961,18 +968,42 @@ function playView(seriesId, season, label) {
     // A class of its own -- NOT `idle`, whose timer arms the paused-state artwork slideshow: hiding the bar in the middle
     // of an episode must never start that.
     let quietT = null
-    const menuOpen = () => !!pl.querySelector('.p-menu .menu')
+    const menuOpen = () => !!pl.querySelector('.p-menu .menu:not(.out)')
+    /** Nothing in the bar keeps the focus once it should be gone: the bar stays up for as long as something in it has the
+        focus (so a remote can see what it is on), which used to leave it stuck on screen after a tap on CC or a pick from
+        the captions list, until the viewer left the episode and came back. */
+    const dropFocus = () => { const a = document.activeElement; if (a && a !== document.body && pl.contains(a)) a.blur() }
+    const hideBar = () => { dropFocus(); pl.classList.add('p-quiet') }
     const armQuiet = () => {
       clearTimeout(quietT)
       pl.classList.remove('p-quiet')
-      quietT = setTimeout(() => {
-        // Paused is a menu to read, an open captions list is on the bar itself, and nothing fades before the picture has
-        // started: leave all three where they are.
-        if (!alive || !v || v.paused || castingOnly || !started || menuOpen()) return
-        // Nothing keeps the focus once the bar has gone: a remote's OK would otherwise press a button nobody can see.
-        if (pl.contains(document.activeElement) && document.activeElement !== document.body) document.activeElement.blur()
-        pl.classList.add('p-quiet')
+      quietT = setTimeout(function fade() {
+        if (!alive) return
+        // Paused is a menu to read, and nothing fades before the picture has started: leave the bar where it is (play
+        // arms this again). An open list is waited out rather than given up on: the old check simply stopped here, and
+        // nothing armed it again once the list closed, so the bar stayed up over the episode.
+        if (!v || v.paused || castingOnly || !started) return
+        if (menuOpen()) { quietT = setTimeout(fade, 1500); return }
+        hideBar()
       }, 5000)
+    }
+    /** A list in the bar (captions, audio) closes: the bar starts its five seconds again, and nothing in it keeps the focus
+        on a touch screen, where a tapped button holds it and with it the whole bar. A remote is put back on the button that
+        opened the list, so the next press goes somewhere visible. */
+    const closePlayerMenu = (m, refocus) => {
+      if (!m) return
+      closeMenu(m)
+      if (refocus && isTv) refocus.focus({ preventScroll: true }); else dropFocus()
+      armQuiet()
+    }
+    /** Leave the player for the show's page. Replaced, not pushed: Back from the show must not reopen the episode, and an
+        episode reached through "Up next" must not leave the one before it in the history for Back to start playing again. */
+    const leavePlayer = () => {
+      const show = `#/series/${seriesId}`
+      // Came from this show's page: step back to it, so the history is just as it was before the episode opened (one
+      // episode replaces the next through Up next, so this is the same step however many have played).
+      if (playerOrigin === show && history.length > 1) history.back()
+      else location.replace(show)
     }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
     pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
@@ -1029,10 +1060,7 @@ function playView(seriesId, season, label) {
         }
         if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') {
           e.preventDefault()
-          const back = open.parentElement.querySelector('button')
-          closeMenu(open)
-          back?.focus()
-          wake()
+          closePlayerMenu(open, open.parentElement.querySelector('button'))
           return
         }
       }
@@ -1040,22 +1068,19 @@ function playView(seriesId, season, label) {
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
       else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
       else if (k === 'MediaPause') { e.preventDefault(); v.pause() }
-      else if (k === 'MediaRewind') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
-      else if (k === 'MediaFastForward') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
-      else if (k === 'ArrowLeft' || k === 'j') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
-      else if (k === 'ArrowRight' || k === 'l') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+      // Held or pressed again and again, a skip key moves a marker along the bar with the picture for that moment over it,
+      // and the picture itself jumps once, where the presses stop: one seek, not one per press.
+      else if (k === 'MediaRewind' || k === 'ArrowLeft' || k === 'j') { e.preventDefault(); nudge(-10) }
+      else if (k === 'MediaFastForward' || k === 'ArrowRight' || k === 'l') { e.preventDefault(); nudge(10) }
       else if (/^[0-9]$/.test(k) && !e.ctrlKey && !e.metaKey && !e.altKey && totalT()) { e.preventDefault(); setT(totalT() * Number(k) / 10) }
       else if (k === 'Home') { e.preventDefault(); setT(0) }
       else if (k === 'End') { e.preventDefault(); setT(Math.max(0, totalT() - 5)) }
-      // On a television the volume is the set's own, so up belongs to the captions list instead (up and down still walk it
-      // once it is open, above). Everywhere else both stay the volume, as they were.
+      // The volume is the phone's or the television's own, from its buttons or its remote: Flix has no volume of its own.
+      // On a television, up opens the captions list instead (up and down walk it once it is open, above).
       else if (isTv && k === 'ArrowUp' && !$('#pcc').hidden) { e.preventDefault(); openFromKey($('#pcc')) }
-      else if (k === 'ArrowUp') { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1) }
-      else if (k === 'ArrowDown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1) }
-      else if (k === 'm') v.muted = !v.muted
       else if (k === 'z') setFill(!fill)
       else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : pl.requestFullscreen?.()
-      else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') go(`#/series/${seriesId}`)
+      else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); return leavePlayer() }
       wake()
     }
     // Pinch out to fill the screen (the edges are cropped a little), pinch in to fit it again; Z does the same on a keyboard. Remembered on this device.
@@ -1080,16 +1105,27 @@ function playView(seriesId, season, label) {
     // While the TV has the show, the phone is only its remote: the bar shows and drives the TV's player (see enterCastMode).
     let rem = null, haveFrac = 0
     const remoteOn = () => castingOnly && !!rem
-    const totalT = () => (remoteOn() && rem.p.duration > 0 ? rem.p.duration : v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
+    // A playlist's own length can be only the part made so far (a copy still being remuxed as it downloads), so the
+    // episode's length as the server probed it wins there: the bar is the whole episode, and half of it is half of it.
+    const totalT = () => (remoteOn() && rem.p.duration > 0 ? rem.p.duration
+      : info?.mode === 'hls' && Number(info?.duration) > 0 ? Number(info.duration)
+      : v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
     const nowT = () => (remoteOn() ? rem.p.currentTime || 0 : v?.currentTime || 0)
+    // The viewer moved the picture on purpose: from here on its position is theirs, resume point or not (see report()).
+    let userSeeked = false
     const setT = (t) => {
       t = Math.max(0, Math.min(totalT() || 1e9, t))
+      userSeeked = true
       if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) v.currentTime = t
     }
+    // Skip presses not yet sent to the picture (see wirePlayer, where the picture over the bar is drawn for them).
+    let pendingT = null
+    let nudge = (d) => setT(nowT() + d)
     function syncBar() {
       // While a finger is down the bar shows where the finger is, not where the film is: without this the timeupdate tick
-      // would drag the bar back to the playback position under the finger four times a second.
-      if ($('#pseek')?.classList.contains('on')) return
+      // would drag the bar back to the playback position under the finger four times a second. The same while skip
+      // presses are being gathered.
+      if ($('#pseek')?.classList.contains('on') || pendingT != null) return
       const d = totalT(), t = nowT(), pct = d ? Math.min(100, (t / d) * 100) : 0
       if (!$('#pprog')) return
       $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
@@ -1111,9 +1147,6 @@ function playView(seriesId, season, label) {
       pl.classList.toggle('casting', castingOnly)
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
-      const muted = remoteOn() ? rem.p.isMuted : v?.muted
-      $('#pvol').innerHTML = muted ? ICON.volOff : ICON.vol
-      $('#pvol').setAttribute('aria-label', muted ? 'Unmute' : 'Mute')
       $('#pfull').setAttribute('aria-pressed', String(fill))
       if (paused || castingOnly) wake()
       fillPause()
@@ -1153,7 +1186,10 @@ function playView(seriesId, season, label) {
       async function loadSheet(forWhat) {
         if (!play) return
         const m = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/sprite/meta`).catch(() => null)
-        if (!m || !m.cols || !m.tileW || !alive || forWhat !== `${play.torrentId}:${play.fileIndex}`) return
+        // Not cut yet (the file finished a moment ago, and the sheet is made in the background): ask again in a minute
+        // rather than never again for the rest of the episode.
+        if (!m || !m.cols || !m.tileW) { setTimeout(() => { if (shotFor === forWhat && !shot) shotAsked = false }, 60_000); return }
+        if (!alive || forWhat !== `${play.torrentId}:${play.fileIndex}`) return
         shot = m
         tipShot.style.backgroundImage = `url("/api/stream/${play.torrentId}/${play.fileIndex}/sprite")`
         tipShot.classList.add('has')
@@ -1184,10 +1220,18 @@ function playView(seriesId, season, label) {
         tipShot.style.backgroundSize = `${shot.cols * shot.tileW}px ${shot.rows * shot.tileH}px`
         tipShot.style.backgroundPosition = `${-((i % shot.cols) * shot.tileW)}px ${-(Math.floor(i / shot.cols) * shot.tileH)}px`
       }
-      // Dragging paints the bar and the picture and nothing else. It used to set video.currentTime on every pointermove, so
-      // one drag across an episode was a hundred seeks in flight, each interrupting the last, and the picture spent the
-      // drag catching up. The seek happens once, where the finger lets go.
-      let dragT = 0
+      // Dragging paints the bar and the picture over it. A source that is all here (a finished file, or its single-file
+      // copy) also moves the picture itself as the finger goes -- one seek at a time, the next only once the last has
+      // landed, so a drag is never a hundred seeks in flight each interrupting the last. A playlist does not: every jump
+      // there is a piece fetched (and, for a converted picture, made), so it gets the picture over the bar and one seek
+      // where the finger lets go.
+      let dragT = 0, liveAt = 0
+      const liveSeek = (t) => {
+        if (!v || remoteOn() || v.seeking || Date.now() - liveAt < 120) return
+        if (!(info?.mode === 'file' || (info?.mode === 'direct' && haveFrac >= 1))) return
+        liveAt = Date.now()
+        if (typeof v.fastSeek === 'function') v.fastSeek(t); else v.currentTime = t
+      }
       const at = (e) => {
         const d = totalT() || 0, r = bar.getBoundingClientRect()
         return Math.min(Math.max(0, d - 0.4), ((e.clientX - r.left) / Math.max(1, r.width)) * d)
@@ -1199,7 +1243,7 @@ function playView(seriesId, season, label) {
         $('#ptime').textContent = fmtT(dragT)
         bar.setAttribute('aria-valuenow', String(Math.round(pct)))
       }
-      const onMove = (e) => { dragT = at(e); showTip(dragT); paintDrag() }
+      const onMove = (e) => { dragT = at(e); showTip(dragT); paintDrag(); if (bar.classList.contains('on')) liveSeek(dragT) }
       const endDrag = (commit) => {
         const was = bar.classList.contains('on')
         bar.classList.remove('on')
@@ -1220,21 +1264,34 @@ function playView(seriesId, season, label) {
       bar.addEventListener('pointerleave', () => { if (!bar.classList.contains('on')) hideTip() })
       bar.addEventListener('pointerup', () => endDrag(true))
       bar.addEventListener('pointercancel', () => endDrag(false))
+      // Skips gathered while the presses keep coming: the marker and the picture over the bar move at once, and the seek is
+      // made 450 ms after the last press. A remote held on right walks the bar like a scrubber instead of firing a seek
+      // (and, on a playlist, a fetch) for every repeat.
+      let nudgeT = 0
+      nudge = (d) => {
+        if (!v && !remoteOn()) return
+        const d0 = totalT() || 1e9
+        pendingT = Math.max(0, Math.min(d0 - 0.4, (pendingT ?? nowT()) + d))
+        dragT = pendingT
+        paintDrag()
+        showTip(pendingT, true)
+        clearTimeout(nudgeT)
+        nudgeT = setTimeout(() => { const t = pendingT; pendingT = null; if (t != null) setT(t); syncBar() }, 450)
+      }
       bar.addEventListener('keydown', (e) => {
         if ((!v && !remoteOn()) || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
-        e.preventDefault(); e.stopPropagation() // the window handler would move the same 10 s twice
-        const t = Math.max(0, Math.min((totalT() || 1e9) - 0.4, nowT() + (e.key === 'ArrowRight' ? 15 : -15)))
-        setT(t)
-        syncBar()
-        showTip(t, true)
+        e.preventDefault(); e.stopPropagation() // the window handler would move the same skip twice
+        nudge(e.key === 'ArrowRight' ? 15 : -15)
+        wake()
       })
       $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) v.play().catch(() => {}); else v.pause() }; wake() }
-      $('#pbw').onclick = () => { if (v || remoteOn()) { setT(nowT() - 10); wake() } }
-      $('#pfw').onclick = () => { if (v || remoteOn()) { setT(nowT() + 10); wake() } }
-      $('#pvol').onclick = () => { if (remoteOn()) rem.c.muteOrUnmute(); else if (v) { v.muted = !v.muted; paint() } }
+      $('#pbw').onclick = () => { nudge(-10); wake() }
+      $('#pfw').onclick = () => { nudge(10); wake() }
       $('#pfull').onclick = () => { setFill(!fill); paint() }
+      $('#pback').onclick = leavePlayer
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
-      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('p-quiet')) wake(); else { armQuiet(); pl.classList.add('p-quiet') } })
+      // Hiding takes the focus off whatever was last tapped in the bar: a focused button keeps the bar on screen.
+      $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('p-quiet') || menuOpen()) wake(); else { armQuiet(); hideBar() } })
       paint()
     }
     /** The certificate beside the title in the top bar -- and the same answer feeds the pause card: the show's
@@ -1260,17 +1317,49 @@ function playView(seriesId, season, label) {
       fileRetry = false
       loadInfo(info.audioIndex ?? 0, v.currentTime || 0).catch((e) => fail(e.message))
     }
-    addEventListener('visibilitychange', () => { if (!document.hidden) revive() })
-    cleanup = () => { alive = false; removeEventListener('visibilitychange', revive); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); idleArt?.stop(); stopOff?.(); hls?.destroy(); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.() }
+    // Named, so leaving the player really removes it: the old arrow function could never be taken off again, and every
+    // episode ever opened left one more listener behind.
+    const onVisible = () => { if (!document.hidden) revive() }
+    addEventListener('visibilitychange', onVisible)
+    /**
+     * Let go of the picture for good. Taking a <video> off the page does NOT stop it: it keeps its decoder and its open
+     * request to the server until the browser gets round to collecting it, and an Android WebView has only a handful of
+     * each. A few episodes opened and left that way and the next one would not play at all -- its request queued behind
+     * the dead ones, or no decoder left to give it -- until the app was force-closed, which is what freed them. Emptying
+     * the source and calling load() releases both at once.
+     */
+    const releaseVideo = (el) => {
+      if (!el) return
+      ignoreError = true
+      try { el.pause(); el.querySelectorAll('track').forEach((t) => t.remove()); el.removeAttribute('src'); el.load() } catch { /* already gone */ }
+    }
+    cleanup = () => {
+      // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
+      // credits, the episode is finished, and the show moves on to the next one.
+      if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
+      alive = false; removeEventListener('visibilitychange', onVisible); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      if (window.__flixBack === onBack) window.__flixBack = null
+    }
+    /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
+    const onBack = () => {
+      const open = pl.querySelector('.p-menu .menu:not(.out)')
+      if (open) { closePlayerMenu(open, open.parentElement.querySelector('button')); return true }
+      leavePlayer()
+      return true
+    }
+    window.__flixBack = onBack
 
     function fail(msg) {
       if (!alive) return
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
       $('.mark')?.remove(); $('#wait').classList.remove('gone')
-      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(friendly(msg))}</div>${me?.is_admin && friendly(msg) !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
-        <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><a class="btn" href="#/series/${seriesId}">Back</a></div>`
+      const said = friendly(msg, haveFrac >= 1)
+      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><button class="btn" id="fback">Back</button></div>`
       $('#again').onclick = () => route()
+      $('#fback').onclick = leavePlayer
+      $('#again').focus({ preventScroll: true })
     }
 
     const sendReport = (kind, message) => api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind, message }).catch(() => {})
@@ -1280,7 +1369,7 @@ function playView(seriesId, season, label) {
       sendReport('auto', why)
       report()
       avoid.push(play.torrentId); tries++; started = false
-      clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null; if (v) { v.remove(); v = null }
+      clearInterval(timer); clearInterval(subT); clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
       // A new source is a new file, so the box goes and its countdown with it: leaving the interval running would send the
       // viewer to the next episode while the episode they are watching is still being fetched.
       clearInterval(cdT); upNextBox = null
@@ -1343,7 +1432,7 @@ function playView(seriesId, season, label) {
       $('#cnc').hidden = waited < 20000
     }
     // Leaving while it downloads is allowed and is not a fault: the download carries on and the episode is here next time.
-    $('#cnc').onclick = () => { clearInterval(timer); go(`#/series/${seriesId}`) }
+    $('#cnc').onclick = () => { clearInterval(timer); leavePlayer() }
 
     async function begin() {
       try {
@@ -1353,7 +1442,11 @@ function playView(seriesId, season, label) {
         $('#rep').hidden = false
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
+        // The wait screen's numbers, once a second until the picture starts -- and then no more: this used to keep asking
+        // every second for the whole episode, a request (and a call into qBittorrent) a second spent on a screen nobody
+        // could see any more.
         timer = setInterval(async () => {
+          if (started) { clearInterval(timer); return }
           const s = await api(base + '/status').catch(() => null)
           if (!alive || !s || s.error || started) return
           showWaiting(s, Date.now() - t0)
@@ -1369,25 +1462,9 @@ function playView(seriesId, season, label) {
 
     async function loadInfo(a, startAt) {
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      const q = [a ? 'a=' + a : '', allowConvert ? 'convert=1' : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const q = [a ? 'a=' + a : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
       info = await api(`${base}/info${q ? '?' + q : ''}`)
       if (!alive) return
-      // Flix is set never to re-encode the picture, and this file needs it. Ask once, in the player, rather than
-      // leaving a dead screen: the viewer decides whether this episode is worth the CPU.
-      if (info.mode === 'convert') {
-        // Nothing on the box converts anything any more: it plays files as they are. Say so, and offer nothing to tap --
-        // asking again would only come back with the same line.
-        allowConvert = false
-        const el = $('#msg')
-        if (el) {
-          el.textContent = info.convertAvailable ? `${info.message} Tap here to allow it for this episode.` : info.message
-          if (info.convertAvailable) {
-            el.style.cursor = 'pointer'
-            el.onclick = () => { el.onclick = null; el.style.cursor = ''; allowConvert = true; loadInfo(a, startAt).catch((e) => fail(e.message)) }
-          }
-        }
-        return
-      }
       // A saved audio-language choice (on this device) wins over the file's default track.
       if (!a) {
         const want = store.get('audio', null)
@@ -1410,10 +1487,13 @@ function playView(seriesId, season, label) {
         $('#vw').innerHTML = '<video autoplay playsinline></video>'
         v = $('video')
         if (fill) v.style.objectFit = 'cover'
-        const sv = store.get('vol', null); if (sv) { v.volume = sv.v; v.muted = !!sv.m }
-        v.addEventListener('volumechange', () => store.set('vol', { v: v.volume, m: v.muted }))
+        // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
+        // always, which also undoes a level an older version saved on this device (a muted episode reads as broken).
+        v.volume = 1; v.muted = false
         v.addEventListener('playing', () => {
           started = true
+          startedAt = Date.now()
+          clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
           const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
@@ -1503,25 +1583,53 @@ function playView(seriesId, season, label) {
       // signed path in a cast link stands in for: it gets the same URL as everyone else.
       const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       ignoreError = false // a source is about to be set: from here on an error is a real one
+      resumeAt = startAt > 5 ? startAt : 0
       if (viaHls) {
         // startPosition: open straight at the resume point instead of loading the first piece and jumping.
-        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, ...(startAt > 5 ? { startPosition: startAt } : {}) })
+        // No CEA-608 captions from inside the picture: they arrived as a second, unlabelled captions track of their own,
+        // which is how the CC list ended up with two entries ticked at once.
+        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true, ...(startAt > 5 ? { startPosition: startAt } : {}) })
         hls.loadSource(url); hls.attachMedia(v)
+        let mediaFixes = 0
         hls.on(Hls.Events.ERROR, (_, d) => {
           if (!d.fatal) return
-          hls?.destroy()
+          // A dropped request or a decoder hiccup is not the end of the episode: hls.js can pick up from both, which is
+          // what it is asked to do (twice) before anything is said to the viewer.
+          if (d.type === Hls.ErrorTypes.NETWORK_ERROR && mediaFixes < 2) { mediaFixes++; hls.startLoad(); return }
+          if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaFixes < 2) { mediaFixes++; hls.recoverMediaError(); return }
+          hls?.destroy(); hls = null
           // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(v.currentTime || startAt) } else fail('Something went wrong playing this. Go back and try again.')
         })
       } else v.src = url
       if (startAt > 5 && !(viaHls)) v.addEventListener('loadedmetadata', () => { v.currentTime = startAt }, { once: true })
       v.play?.().catch(() => {})
+      // A finished file that has not started playing half a minute after it was handed over is stuck, not slow: nothing
+      // is being waited for. Ask /info once more (a fresh link, and the box's fresh view of the file) and play that.
+      clearTimeout(stuckT)
+      stuckT = setTimeout(() => {
+        if (!alive || started || castingOnly || stuckRetried || !v || haveFrac < 1) return
+        stuckRetried = true
+        hls?.destroy(); hls = null
+        releaseVideo(v)
+        loadInfo(info.audioIndex ?? 0, startAt).catch((e) => fail(e.message))
+      }, 30_000)
     }
 
+    /**
+     * Where the viewer is, written to the server. Not before the picture has reached the place it was resumed from: the
+     * first tick of a resumed episode reports 0:00 -- the element is still at the start while the jump to the resume
+     * point is under way -- and that 0:00 overwrote the real place, so the next open began from the start or the show
+     * looked like it was on another episode altogether.
+     */
+    let resumeAt = 0
+    let startedAt = 0
+    const canReport = () => started && !!v && (userSeeked || !resumeAt || Math.abs(v.currentTime - resumeAt) < 30 || v.currentTime > resumeAt || Date.now() - startedAt > 120_000)
     function report(ended) {
       if (!v || !play) return
       if (!isFinite(v.duration) && !info?.duration) return
-      api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: v.currentTime, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
+      if (ended !== true && !canReport()) return
+      return api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: ended === true ? (Number(info?.duration) || v.currentTime) : v.currentTime, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
     }
 
     /* ---------- up next ----------
@@ -1555,9 +1663,10 @@ function playView(seriesId, season, label) {
       if (ch) return { at: ch.start, dur, from: 'chapter' }
       const m = info?.creditsAt
       if (m > 0 && (!dur || m < dur - 3)) return { at: m, dur, from: 'marker' }
-      // 8% of the runtime, held between 45 seconds and two and a half minutes: a half-hour sitcom gets its last 144
-      // seconds, an hour-long drama 150, and a film 150.
-      return { at: dur > 0 ? Math.max(0, dur - Math.min(150, Math.max(45, dur * 0.08))) : null, dur, from: 'estimate' }
+      // With nothing measured yet, the closing 3.5% of the runtime, held between 25 seconds and a minute: a half-hour
+      // sitcom gets its last 46 seconds, an hour-long drama its last minute. The old 8% (45 s to 2.5 min) put the box up
+      // over the last scene of most episodes; arriving a little after the credits begin is the lesser mistake.
+      return { at: dur > 0 ? Math.max(0, dur - Math.min(60, Math.max(25, dur * 0.035))) : null, dur, from: 'estimate' }
     }
     /* credits-end */
 
@@ -1589,9 +1698,20 @@ function playView(seriesId, season, label) {
       let left = LEFT
       bar.style.transition = 'none'; bar.style.transform = 'scaleX(0)'
       requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }))
-      cdT = setInterval(() => { if (--left <= 0) { clearInterval(cdT); go(target) } }, 1000)
+      // On to the next one: this episode is finished (the credits are all that is left), so it is written as watched before
+      // the next one opens -- otherwise the show stayed "on" this episode at 97% and Resume brought the viewer back to its
+      // credits. The move replaces this episode in the history, so Back goes to the show, not into the episode before.
+      let moving = false
+      const onward = async () => {
+        if (moving) return
+        moving = true
+        clearInterval(cdT)
+        await Promise.race([report(true), new Promise((r) => setTimeout(r, 1500))])
+        location.replace(target)
+      }
+      cdT = setInterval(() => { if (--left <= 0) onward() }, 1000)
       const dismiss = () => { upNextMuted = true; clearInterval(cdT); upNextBox = null; box.classList.add('out'); setTimeout(() => box.remove(), 350) }
-      $('#nn').onclick = () => go(target)
+      $('#nn').onclick = onward
       $('#nc').onclick = dismiss
       // A remote needs something to land on, so on a television Play now takes the focus. A computer keeps what it was
       // doing: taking the focus off the seek bar, a field being typed into or a button already pressed would drop it.
@@ -1601,47 +1721,69 @@ function playView(seriesId, season, label) {
 
     function onEnded() {
       report(true)
-      if (!play.next || play.next.locked) return go(`#/series/${seriesId}`)
+      if (!play.next || play.next.locked) return leavePlayer()
       showUpNext()
     }
 
-    /* subtitles: the browser's own CC menu lists them; we add the tracks, pick a sensible one and remember changes */
+    /* captions: ONE choice at a time, held here by the subtitle's own number, never read back from the browser's tracks.
+       The old menu was built from the element's text tracks and matched them up again by label: two subtitles with the
+       same label (two "English" tracks), a refresh that swapped the wrong one back in, or a captions track hls.js added
+       for itself could each leave two ticked and two drawn at once. Now every track that is not the choice is switched
+       off -- including any the player or the browser adds on its own -- whenever anything changes. */
+    let subPick = null // the chosen subtitle's `n`, or null for off
+    const trackEls = () => [...v.querySelectorAll('track[data-n]')]
+    function applySubs() {
+      if (!v) return
+      for (const t of v.textTracks) {
+        const el = trackEls().find((x) => x.track === t)
+        const want = el && subPick != null && el.dataset.n === String(subPick) ? 'showing' : 'disabled'
+        if (t.mode !== want) t.mode = want
+      }
+      const btn = $('#pcc')
+      if (btn) { btn.hidden = !info?.subs?.length; btn.classList.toggle('on', subPick != null) }
+    }
+    function setSubs(n) {
+      subPick = n
+      const s = n == null ? null : info.subs.find((x) => String(x.n) === String(n))
+      store.set('subs', s ? { lang: s.lang } : 'off')
+      applySubs()
+    }
     function wireSubs() {
       v.querySelectorAll('track').forEach((t) => t.remove())
-      if (!info.subs.length) return
+      clearInterval(subT)
+      subPick = null
       const pref = store.get('subs', null) // 'off' | { lang } | null (never chosen)
       const audioLang = info.audio[info.audioIndex]?.lang
       let pick = null
-      if (pref === 'off') pick = null
+      if (!info.subs.length || pref === 'off') pick = null
       else if (pref?.lang) pick = info.subs.find((s) => s.lang === pref.lang && !s.forced) ?? info.subs.find((s) => s.lang === pref.lang)
       else if (audioLang && audioLang !== 'eng' && audioLang !== 'und') pick = info.subs.find((s) => s.lang === 'eng' && !s.forced) // foreign audio: English subtitles
       else pick = info.subs.find((s) => s.forced && s.lang === audioLang) ?? null
-      for (const s of info.subs) mountTrack(s, s === pick)
-      let busy = false
-      v.textTracks.onchange = () => {
-        if (busy) return
-        const on = [...v.textTracks].find((t) => t.mode === 'showing')
-        store.set('subs', on ? { lang: on.language || info.subs.find((s) => s.label === on.label)?.lang } : 'off')
-      }
-      // The file is still arriving, so a track only covers what has downloaded; refresh the shown one as it grows.
-      clearInterval(subT)
+      subPick = pick ? pick.n : null
+      for (const s of info.subs) mountTrack(s)
+      // Whatever adds a track of its own, or turns one on, is put back to the one choice. Idempotent, so it cannot loop.
+      v.textTracks.onaddtrack = applySubs
+      v.textTracks.onchange = applySubs
+      applySubs()
+      if (!info.subs.length) return
+      // The file is still arriving, so a track only covers what has downloaded; refresh the chosen one as it grows.
       subT = setInterval(async () => {
-        const on = [...v.textTracks].find((t) => t.mode === 'showing')
-        if (!on) return
-        const s = info.subs.find((x) => x.label === on.label)
+        if (subPick == null) return
+        const s = info.subs.find((x) => String(x.n) === String(subPick))
         const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
-        if (!s || !st) return
-        busy = true; mountTrack(s, true); setTimeout(() => { busy = false }, 500)
+        if (!s || !st || !alive) return
+        mountTrack(s)
+        applySubs()
         if (st.fileProgress >= 1) clearInterval(subT)
       }, 90000)
     }
-    function mountTrack(s, show) {
+    function mountTrack(s) {
       v.querySelector(`track[data-n="${s.n}"]`)?.remove()
       const t = document.createElement('track')
       t.kind = 'subtitles'; t.label = s.label; t.dataset.n = s.n; t.src = s.url + '?r=' + Date.now()
       if (s.lang && s.lang !== 'und') t.srclang = s.lang.length === 2 ? s.lang : ''
       v.appendChild(t)
-      t.track.mode = show ? 'showing' : 'disabled'
+      t.track.mode = 'disabled' // applySubs turns on the one that is chosen
     }
 
     /* audio language: more than one track means a small menu; picking one restarts the picture at the same spot */
@@ -1650,12 +1792,12 @@ function playView(seriesId, season, label) {
       btn.hidden = info.audio.length < 2
       btn.onclick = (e) => {
         e.stopPropagation()
-        const old = $('.p-menu .menu'); if (old) return closeMenu(old)
+        const old = $('.p-menu .menu'); if (old) return closePlayerMenu(old, btn)
         const m = document.createElement('div'); m.className = 'menu'
         m.innerHTML = `<div class="who">Audio</div>${info.audio.map((t) => `<button data-n="${t.n}" ${t.n === info.audioIndex ? 'aria-current="true"' : ''}>${t.n === info.audioIndex ? '✓ ' : ''}${esc(t.label || 'Track ' + (t.n + 1))}</button>`).join('')}`
         $('.p-menu').appendChild(m)
         m.querySelectorAll('button[data-n]').forEach((b) => b.onclick = async () => {
-          const n = +b.dataset.n; closeMenu(m)
+          const n = +b.dataset.n; closePlayerMenu(m, btn)
           if (n === info.audioIndex) return
           store.set('audio', info.audio[n].lang)
           const at = v.currentTime
@@ -1664,33 +1806,30 @@ function playView(seriesId, season, label) {
       }
     }
 
-    /* captions: a menu of our own, because the bar is ours now and the TV's WebView draws no CC button */
+    /* captions: a menu of our own, because the bar is ours now and the TV's WebView draws no CC button. A list where one
+       entry is ticked: picking one unticks the rest, and Off is one of them. */
     function wireSubMenu() {
       const btn = $('#pcc')
-      const tracks = () => [...v.textTracks].filter((t) => t.kind === 'subtitles' || t.kind === 'captions' || t.kind === 'forced')
-      const mark = () => {
-        const list = tracks()
-        btn.hidden = !list.length
-        btn.classList.toggle('on', list.some((t) => t.mode === 'showing'))
-      }
-      mark()
+      applySubs()
       btn.onclick = (e) => {
         e.stopPropagation()
-        const old = btn.parentElement.querySelector('.menu'); if (old) return closeMenu(old)
-        const list = tracks()
-        if (!list.length) return
-        const on = list.find((t) => t.mode === 'showing')
-        const m = document.createElement('div'); m.className = 'menu'
-        m.innerHTML = `<div class="who">Captions</div>` +
-          `<button data-i="-1"${on ? '' : ' aria-current="true"'}>${on ? '' : '\u2713 '}Off</button>` +
-          list.map((t, i) => `<button data-i="${i}"${t.mode === 'showing' ? ' aria-current="true"' : ''}>${t.mode === 'showing' ? '\u2713 ' : ''}${esc(t.label || 'Track ' + (i + 1))}</button>`).join('')
+        const old = btn.parentElement.querySelector('.menu'); if (old) return closePlayerMenu(old, btn)
+        if (!info.subs.length) return
+        // Two subtitles with the same name are told apart by number rather than shown as two identical lines.
+        const seen = new Map()
+        const names = info.subs.map((s) => { const base = s.label || 'Subtitles'; const k = (seen.get(base) ?? 0) + 1; seen.set(base, k); return k > 1 ? `${base} (${k})` : base })
+        const row = (n, label) => {
+          const on = n === null ? subPick == null : String(subPick) === String(n)
+          return `<button role="menuitemradio" aria-checked="${on}" data-n="${n === null ? '' : esc(String(n))}"${on ? ' aria-current="true"' : ''}>${on ? '\u2713 ' : ''}${esc(label)}</button>`
+        }
+        const m = document.createElement('div'); m.className = 'menu'; m.setAttribute('role', 'menu')
+        m.innerHTML = `<div class="who">Captions</div>` + row(null, 'Off') + info.subs.map((s, i) => row(s.n, names[i])).join('')
         btn.parentElement.appendChild(m)
-        m.querySelectorAll('button[data-i]').forEach((b) => b.onclick = () => {
-          const i = +b.dataset.i; closeMenu(m)
-          list.forEach((t, j) => { t.mode = j === i ? 'showing' : 'disabled' })
-          const picked = i < 0 ? null : list[i]
-          store.set('subs', picked ? { lang: picked.language || info.subs.find((s) => s.label === picked.label)?.lang } : 'off')
-          mark()
+        m.querySelectorAll('button[role="menuitemradio"]').forEach((b) => b.onclick = (ev) => {
+          ev.stopPropagation()
+          const n = b.dataset.n === '' ? null : info.subs.find((s) => String(s.n) === b.dataset.n)?.n ?? null
+          setSubs(n)
+          closePlayerMenu(m, btn)
         })
       }
     }
@@ -2087,19 +2226,18 @@ function familyPanel(data, root) {
 function playbackSection(tc) {
   if (!tc) return ''
   const enc = tc.encoder === 'libx264' ? 'this CPU (libx264)' : `${tc.encoder} on the GPU`
+  // Conversion is on the CPU and simply happens when a file needs it; the switch below decides what is downloaded.
   const rows = [
     ['economy', 'Economy', 'holds two streams at once on this box (4.8x real time at 1080p)'],
     ['balanced', 'Balanced', 'the best picture that still holds one stream (3.6x)'],
     ['best', 'Best', 'needs a faster machine: falls behind real time here (2.2x)'],
   ]
   return `<div id="s-playback" class="ssec"><h2 class="stitle2">Playback</h2>
-      <p class="dim" style="max-width:66ch">How hard the box works to convert a file the player cannot take as it is. A file it can play directly is not converted at all, so this only applies to those that are.</p>
-      <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.gpuDevice ? '' : ' — no <code>/dev/dri</code> in this container, so the GPU cannot be used'}${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
+      <p class="dim" style="max-width:66ch">How hard the box works to convert a file the player cannot take as it is. A file it can play directly is not converted at all, and when only the sound needs it the picture is copied, so this only applies to the rare file whose picture has to be converted. That happens on its own, with nothing to allow.</p>
+      <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
       <form id="tf" class="person"><label class="dim" for="tprofile">Quality</label>
         <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
-        <label class="dim"><input type="checkbox" id="thw"${tc.hardwareAllowed ? ' checked' : ''}> Use the GPU's encoder when one is available</label>
-        <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Never convert the picture (no CPU: play it as it is, or repack it)</label>
-        <div class="row-form"><button type="button" class="btn" id="ttest">Test encoder</button></div>
+        <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Only download copies that play as they are (H.264), so nothing has to be converted</label>
         <div class="dim" id="tm2" role="status"></div></form></div>`
 }
 
@@ -2148,18 +2286,8 @@ function settingsPanel(data, root) {
       pmsg('Saving…')
       try {
         tc = (await api('/api/admin/settings/transcode', { mode: off ? 'off' : 'auto' }, 'PUT')).transcode; paint()
-        $('#tm2').textContent = off ? 'Saved. The picture is never re-encoded from now on: a file is played as it is or repacked, and one that needs converting says so.' : 'Saved. A file that needs converting is converted again.'
+        $('#tm2').textContent = off ? 'Saved. Only copies that play as they are are downloaded from now on.' : 'Saved. Any copy may be downloaded; one that needs it is converted on the CPU.'
       } catch (err) { pmsg(err.message) }
-    }
-    const hw = $('#thw')
-    if (hw) hw.onchange = async () => {
-      pmsg('Saving…')
-      try { tc = (await api('/api/admin/settings/transcode', { hardware: hw.checked }, 'PUT')).transcode; paint(); $('#tm2').textContent = 'Saved.' } catch (err) { pmsg(err.message) }
-    }
-    const tt = $('#ttest')
-    if (tt) tt.onclick = async () => {
-      pmsg('Testing…')
-      try { const r = await api('/api/admin/settings/transcode/test', {}); pmsg(r.hardware ? `Using ${r.encoder} on ${r.gpuDevice}.` : 'No usable GPU encoder: converting on the CPU.') } catch (err) { pmsg(err.message) }
     }
     const msg = (t) => { $('#bm').textContent = t }
     $('#bf').onsubmit = async (e) => {
@@ -2490,9 +2618,15 @@ addEventListener('keydown', (e) => {
 })
 
 /* ---------- router ---------- */
+// The page the player was opened from, kept across one episode handing over to the next, so leaving the player can step
+// back to it instead of stacking another copy of the show page on the history.
+let lastHash = null, playerOrigin = null
 async function route() {
   cleanup?.(); cleanup = null
   clearTimeout(retryT)
+  const fromHash = lastHash
+  lastHash = location.hash
+  if (location.hash.startsWith('#/play/') && !fromHash?.startsWith('#/play/')) playerOrigin = fromHash
   const token = ++navToken
   let st
   try { st = await api('/api/me', null, 'GET', 15000) } catch (e) {

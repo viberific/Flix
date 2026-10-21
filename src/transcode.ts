@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
-import { mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs'
+import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -20,6 +20,8 @@ export interface Probe {
   hdrKind?: 'pq' | 'hlg'; fps?: number; srcBitrate?: number; tenBit?: boolean
   /** The colour layout ffprobe reported. yuv420p is what every player takes; anything else needs a conversion. */
   pixFmt?: string
+  /** The container's first timestamp, in seconds. A segment plan cut on keyframes ends at startTime + duration. */
+  startTime?: number
 }
 /** `complete` is whether the file had fully downloaded when it was probed: a probe taken while it was arriving can be
  *  missing a stream or a height, and the decision it led to must not be kept for the life of the server because of it. */
@@ -70,10 +72,21 @@ export const MP4_CARRY = new Set(['h264', 'hevc', 'av1'])
  * this so a file whose only fault is its sound is remuxed with the picture copied, at whatever resolution it is.
  */
 export const copyPictureOnly = (p: Probe) => MP4_CARRY.has(String(p.videoCodec ?? '')) && (!p.pixFmt || p.pixFmt === 'yuv420p')
+/** Pictures an MPEG-TS segment carries with the picture copied. AV1 and VP9 are left to the encoder. */
+const TS_CARRY = new Set(['h264', 'hevc'])
+/** Whether an MPEG-TS piece can carry this picture copied, for a player that decodes it. */
+export const copyIntoTs = (p: Probe) => TS_CARRY.has(String(p.videoCodec ?? '')) && (!p.pixFmt || p.pixFmt === 'yuv420p')
+/**
+ * Whether THIS player can be handed the picture copied, inside a playlist: it decodes the codec (H.264 always; HEVC only
+ * when the device said so) in the colour layout every player takes. False means the picture has to be converted.
+ */
+export function copyPictureFor(p: Probe, can?: Set<string>) {
+  const codec = String(p.videoCodec ?? '')
+  return copyIntoTs(p) && (codec === 'h264' || !!can?.has(codec))
+}
 /** Playing this file needs a libx264 encode: not playable as it is, not HDR (which is copied), and its picture cannot be copied. */
 export const needsEncode = (p: Probe) => !p.direct && !p.hdr && !p.copyVideo
-/** Whether the picture may be re-encoded at all. In 'off' mode it never is: copy or refuse. */
-export const mayEncode = () => config.transcode.mode !== 'off'
+
 /** Subtitle formats that are text and can become WebVTT. Picture subtitles (PGS, VobSub) can't be shown in a browser. */
 const TEXT_SUBS = new Set(['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'])
 
@@ -124,6 +137,7 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
     fps, srcBitrate: v?.bit_rate ? Number(v.bit_rate) : undefined,
     tenBit: /10|12/.test(String(v?.pix_fmt ?? '')),
     pixFmt: v?.pix_fmt,
+    startTime: Number.isFinite(Number(j.format?.start_time)) ? Number(j.format.start_time) : undefined,
   }
   // The answer for a player that has said nothing about itself: the box's own list of what every player takes.
   p.direct = directPlay(p) && audioDirect(p)
@@ -134,17 +148,25 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
 
 /** One ffmpeg started at segment `from`; `stopAt` is the first segment that was already on disk then (it ends there on its own). */
 interface Run { proc: ChildProcess; from: number; stopAt: number; exited: boolean }
-/** A converted copy that is served as a complete playlist from the first request, with ffmpeg started wherever the viewer actually is. */
-interface Vod { count: number; duration: number; start: (from: number, stopAt: number) => string[]; run: Run | null; done: Set<number> }
+/**
+ * A copy that is served as a complete playlist from the first request, with ffmpeg started wherever the viewer actually is.
+ * `bounds` holds where each piece starts, plus the end: SEG apart for a converted picture (its keyframes are forced
+ * there), and on the file's own keyframes for a copied one, because a copied picture can only be cut on a keyframe.
+ */
+interface Vod { count: number; bounds: number[]; copy?: boolean; start: (from: number, stopAt: number) => string[]; run: Run | null; done: Set<number> }
 interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
 
-/** One job (and folder) per file and chosen audio track, so switching language doesn't disturb anyone else watching. */
-export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = false) {
-  return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}${hdr ? '-hdr' : ''}`)
+/**
+ * One job (and folder) per file and chosen audio track, so switching language doesn't disturb anyone else watching.
+ * `encode` is the converted cut of a picture that is otherwise copied: a player that cannot decode HEVC gets that one,
+ * while a player that can keeps the copy, and the two never share pieces.
+ */
+export function jobDir(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false) {
+  return join(hlsRoot(), `${torrentId}-${fileIndex}${audio ? `-a${audio}` : ''}${hdr ? '-hdr' : ''}${encode ? '-x' : ''}`)
 }
-const jobKey = (t: number, f: number, a = 0, hdr = false) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}`
+const jobKey = (t: number, f: number, a = 0, hdr = false, encode = false) => `${t}:${f}:${a}${hdr ? ':hdr' : ''}${encode ? ':x' : ''}`
 
 /** A job touched this recently is being watched right now, and is never closed to make room for another. */
 const ACTIVE_MS = 90_000
@@ -185,6 +207,7 @@ function stopJob(key: string) {
 }
 export function stopJobsFor(torrentId: number) {
   for (const k of [...jobs.keys()]) if (k.startsWith(`${torrentId}:`)) stopJob(k)
+  forgetKeyframes(torrentId)
   for (const k of [...vttCache.keys()]) if (k.startsWith(`${torrentId}:`)) vttCache.delete(k)
   if (existsSync(hlsRoot())) for (const d of readdirSync(hlsRoot())) if (d.startsWith(`${torrentId}-`)) rmSync(join(hlsRoot(), d), { recursive: true, force: true })
 }
@@ -222,10 +245,19 @@ export function hdrCopyOk(p: Probe, clientSaysHdr: boolean) {
 const AHEAD = 2 // a request this many segments past where ffmpeg is working waits for it; further away, ffmpeg is started there instead
 const segPath = (j: Job, n: number) => join(j.dir, `seg${String(n).padStart(5, '0')}.ts`)
 
-/** Segments are written under a temporary name and renamed when whole, so a name that exists is a segment that can be served. */
+/**
+ * A converted segment is written under a temporary name and renamed when whole, so a name that exists can be served. A
+ * copied one comes from ffmpeg's segment muxer, which has no temporary names: it is whole once its run's list names it.
+ */
 function scanDone(j: Job) {
   const v = j.vod!
-  for (const f of readdirSync(j.dir)) { const m = /^seg(\d{5})\.ts$/.exec(f); if (m) v.done.add(Number(m[1])) }
+  for (const f of readdirSync(j.dir)) {
+    const m = /^seg(\d{5})\.ts$/.exec(f)
+    if (m && !v.copy) v.done.add(Number(m[1]))
+    if (v.copy && /^list\d+\.csv$/.test(f)) {
+      for (const line of readFileSync(join(j.dir, f), 'utf8').split('\n')) { const s = /^seg(\d{5})\.ts,/.exec(line); if (s) v.done.add(Number(s[1])) }
+    }
+  }
 }
 
 function vodNext(v: Vod, r: Run) { let n = r.from; while (v.done.has(n)) n++; return n }
@@ -243,7 +275,7 @@ function startRun(j: Job, n: number) {
     run.exited = true
     try { scanDone(j) } catch { /* folder already removed */ }
     // Real timings, so a profile that cannot keep up shows up in the log instead of being felt as a hitch.
-    notePace('segment', Date.now() - started, ((stopAt >= v.count ? v.count : stopAt) - n) * SEG * 1000)
+    if (!v.copy) notePace('segment', Date.now() - started, (v.bounds[Math.min(stopAt, v.count)] - v.bounds[n]) * 1000)
   })
   v.run = run
 }
@@ -253,8 +285,8 @@ function startRun(j: Job, n: number) {
  * (a seek, a resume, a TV jumping ahead), not always from the start, so jumping anywhere costs about a second.
  * undefined: this job has no on-demand playlist (the caller serves the file from disk); null: no such segment.
  */
-export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false): Promise<string | null | undefined> {
-  const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr))
+export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false, encode = false): Promise<string | null | undefined> {
+  const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode))
   const v = j?.vod
   if (!j || !v) return undefined
   const m = /^seg(\d{5})\.ts$/.exec(file)
@@ -284,11 +316,14 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
 }
 
 /** The complete playlist of a job made by ensureHls, or null when that job plays from disk as it is written. */
-export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false): string | null {
-  const v = jobs.get(jobKey(torrentId, fileIndex, audio, hdr))?.vod
+export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false): string | null {
+  const v = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode))?.vod
   if (!v) return null
-  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${SEG}`, '#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-PLAYLIST-TYPE:VOD', '#EXT-X-INDEPENDENT-SEGMENTS']
-  for (let n = 0; n < v.count; n++) lines.push(`#EXTINF:${(n === v.count - 1 ? v.duration - n * SEG : SEG).toFixed(3)},`, `seg${String(n).padStart(5, '0')}.ts`)
+  const len = (n: number) => Math.max(0.001, v.bounds[n + 1] - v.bounds[n])
+  let longest = SEG
+  for (let n = 0; n < v.count; n++) longest = Math.max(longest, len(n))
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${Math.ceil(longest)}`, '#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-PLAYLIST-TYPE:VOD', '#EXT-X-INDEPENDENT-SEGMENTS']
+  for (let n = 0; n < v.count; n++) lines.push(`#EXTINF:${len(n).toFixed(3)},`, `seg${String(n).padStart(5, '0')}.ts`)
   lines.push('#EXT-X-ENDLIST')
   return lines.join('\n') + '\n'
 }
@@ -300,19 +335,75 @@ export function hlsSummary() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+// ---- keyframes: where a copied picture can be cut ---------------------------------------------------------------
+const kfRoot = () => join(config.dataDir, 'keyframes')
+const kfBusy = new Map<string, Promise<number[] | null>>()
+
 /**
- * Start (or touch) the HLS job. A picture that has to be re-encoded gets a complete playlist straight away and ffmpeg only
- * works where the viewer is (see vodSegment); a picture that is passed through is remuxed from the start, which is
- * quick, and resolves when the first segment exists.
+ * Where the picture's keyframes are, in seconds, for a file that has finished downloading. Read from the packets alone --
+ * ffprobe demuxes the file and decodes nothing -- so it costs the box a read of the file and almost no CPU, and it is kept
+ * on disk, so it is read once per file and survives a restart. `source` is the file on disk when the caller knows it
+ * (a plain read is quicker than going through the stream endpoint); otherwise the stream endpoint is used.
  */
-export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false): Promise<string> {
-  const key = jobKey(torrentId, fileIndex, audio, hdr)
+export function keyframes(torrentId: number, fileIndex: number, source?: string): Promise<number[] | null> {
+  const key = `${torrentId}-${fileIndex}`
+  const file = join(kfRoot(), `${key}.json`)
+  try { const k = JSON.parse(readFileSync(file, 'utf8')); if (Array.isArray(k) && k.length) return Promise.resolve(k) } catch { /* not read yet */ }
+  let p = kfBusy.get(key)
+  if (!p) {
+    const input = source && existsSync(source) ? source : rawUrl(torrentId, fileIndex)
+    p = execFileP('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,flags', '-of', 'csv=p=0', input],
+      { timeout: 10 * 60_000, maxBuffer: 64 << 20 })
+      .then(({ stdout }) => {
+        const k = [...new Set(stdout.split('\n').filter((l) => /,K/.test(l)).map((l) => Number(l.split(',')[0])).filter(Number.isFinite))].sort((a, b) => a - b)
+        if (!k.length) return null
+        mkdirSync(kfRoot(), { recursive: true })
+        writeFileSync(file, JSON.stringify(k))
+        return k
+      })
+      .catch((e) => { hitch('hls', 'could not read the keyframes', { torrentId, fileIndex, why: String(e.message).replace(config.internalKey, '***').slice(0, 200) }); return null })
+      .finally(() => kfBusy.delete(key))
+    kfBusy.set(key, p)
+  }
+  return p
+}
+export function forgetKeyframes(torrentId: number) {
+  if (!existsSync(kfRoot())) return
+  for (const f of readdirSync(kfRoot())) if (f.startsWith(`${torrentId}-`)) rmSync(join(kfRoot(), f), { force: true })
+}
+
+/**
+ * Where each piece of a copied picture starts, plus the end: the first keyframe at least `seg` seconds after the start
+ * of the piece before. A copied picture can only begin on a keyframe, so these are the only places a piece can be cut,
+ * and cutting there means every piece can be made on its own, in any order -- which is what lets a seek go anywhere.
+ */
+export function copyBounds(kf: number[], end: number, seg = SEG): number[] | null {
+  const k = kf.filter((t) => Number.isFinite(t) && t < end).sort((a, b) => a - b)
+  if (!k.length || !(end > k[0])) return null
+  const b = [k[0]]
+  for (const t of k) if (t - b[b.length - 1] >= seg) b.push(t)
+  if (b.length > 1 && end - b[b.length - 1] < 1) b.pop() // a sliver at the very end joins the piece before it
+  b.push(end)
+  return b
+}
+
+/**
+ * Start (or touch) the HLS job. Every picture gets a complete playlist straight away and ffmpeg only works where the
+ * viewer is (see vodSegment), so a seek, a resume or a jump backwards is a piece made in about a second wherever it is:
+ * - a picture that has to be converted is re-encoded on the CPU, its keyframes forced every SEG seconds;
+ * - a picture that is copied (the sound is all that is converted) is cut on its own keyframes, once the file is whole.
+ * Only a copied picture still arriving is remuxed from the start as it grows, because its keyframes are not all there yet.
+ *
+ * `encode` asks for the converted cut even where the picture could be copied: the player cannot decode it (HEVC).
+ */
+export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false, opts: { complete?: boolean; source?: string; encode?: boolean } = {}): Promise<string> {
+  const encodeAsked = !!opts.encode && !hdr
+  const key = jobKey(torrentId, fileIndex, audio, hdr, encodeAsked)
   let j = jobs.get(key)
   if (!j) {
-    const dir = jobDir(torrentId, fileIndex, audio, hdr)
+    const dir = jobDir(torrentId, fileIndex, audio, hdr, encodeAsked)
     const tonemap = p.hdr && (await canToneMap())
-    const copy = !hdr && (p.copyVideo || copyPictureOnly(p))
-    if (!copy && !hdr && !mayEncode()) throw new Error('needs-convert: this file would have to be converted, and Flix is set never to convert the picture')
+    const copy = !hdr && !encodeAsked && copyIntoTs(p)
     const outH = Math.min(p.height ?? 720, 1080)
     const filters = [...((p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []), ...(tonemap ? [TONEMAP] : [])]
     rmSync(dir, { recursive: true, force: true })
@@ -320,11 +411,33 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     const input = ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = ['-c:a', 'aac', '-ac', '2', '-b:a', '160k']
-    // Decided once per file: the encoder (GPU or CPU) and the profile do not change while it plays.
+    // Decided once per file: the profile does not change while it plays. Always the CPU (see pickEncoder).
     const enc = !hdr && !copy ? await videoEncode(outH, p.fps, filters, SEG) : null
     if (enc) diag('encode', `converting with ${enc.encoder} at ${enc.profile}`, { torrentId, fileIndex, height: outH })
-    if (!hdr && !copy && p.duration && p.duration > 0) {
+    // A copied picture of a whole file: its keyframes, read once, are where the pieces are cut. Waited for a while, since
+    // a playlist that can be seeked is worth a few seconds; a read that takes longer carries on behind and the old
+    // forwards-only remux is used this once.
+    const kf = copy && opts.complete && p.duration ? await Promise.race([keyframes(torrentId, fileIndex, opts.source), sleep(20_000).then(() => null)]) : null
+    const copyPlan = kf && p.duration ? copyBounds(kf, (p.startTime ?? 0) + p.duration) : null
+    if (copy && copyPlan) {
+      const b = copyPlan
+      const count = b.length - 1
+      // -copyts keeps the file's own clock, so pieces cut by different runs join exactly. The input seek lands on the
+      // keyframe at or before the time asked, so it is asked for a hair after the piece's own keyframe.
+      const start = (from: number, stopAt: number) => {
+        const last = Number.isFinite(stopAt) ? stopAt : count
+        return ['-hide_banner', '-loglevel', 'error', '-ss', (b[from] + 0.05).toFixed(3), '-copyts', ...input, ...maps,
+          '-c:v', 'copy', ...audioOut, ...(last < count ? ['-to', b[last].toFixed(3)] : []),
+          '-muxdelay', '0', '-muxpreload', '0',
+          '-f', 'segment', '-segment_format', 'mpegts', '-segment_time_delta', '0.05', '-segment_start_number', String(from),
+          ...(last - from > 1 ? ['-segment_times', b.slice(from + 1, last).map((t) => (t - b[from]).toFixed(3)).join(',')] : []),
+          '-segment_list', join(dir, `list${from}.csv`), '-segment_list_type', 'csv', join(dir, 'seg%05d.ts')]
+      }
+      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds: b, copy: true, start, run: null, done: new Set() } }
+      jobs.set(key, j)
+    } else if (!hdr && !copy && p.duration && p.duration > 0) {
       const count = Math.max(1, Math.ceil(p.duration / SEG))
+      const bounds = Array.from({ length: count }, (_, n) => n * SEG).concat(p.duration)
       const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...enc!.inputArgs, ...input, ...maps,
         ...enc!.codecArgs, ...enc!.filterArgs, ...audioOut,
         ...(Number.isFinite(stopAt) ? ['-t', String((stopAt - from) * SEG)] : []),
@@ -332,7 +445,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
         '-muxdelay', '0', '-muxpreload', '0', '-output_ts_offset', String(from * SEG),
         '-f', 'hls', '-hls_time', String(SEG), '-hls_list_size', '0', '-start_number', String(from),
         '-hls_flags', 'independent_segments+temp_file', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, `enc${from}.m3u8`)]
-      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, duration: p.duration, start, run: null, done: new Set() } }
+      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds, start, run: null, done: new Set() } }
       enforceJobCap()
       jobs.set(key, j)
     } else {
@@ -360,13 +473,13 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
       })()
       ready.catch(() => stopJob(key))
       j = { proc, dir, idle: setTimeout(() => {}, 0), torrentId, ready, touched: Date.now() }
-      enforceJobCap()
+      if (!copy) enforceJobCap()
       jobs.set(key, j)
       proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
     }
   }
   clearTimeout(j.idle)
-  j.idle = setTimeout(() => stopJob(key), 10 * 60_000)
+  j.idle = setTimeout(() => stopJob(key), 10 * 60_000).unref() // a timer, not a reason to keep the process alive
   await j.ready
   return j.dir
 }
@@ -379,16 +492,16 @@ export function releaseHls(torrentId: number, fileIndex: number) {
   for (const [key, j] of jobs) {
     if (!key.startsWith(`${torrentId}:${fileIndex}:`)) continue
     clearTimeout(j.idle)
-    j.idle = setTimeout(() => stopJob(key), 90_000)
+    j.idle = setTimeout(() => stopJob(key), 90_000).unref()
   }
 }
 
-export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false) {
-  const key = jobKey(torrentId, fileIndex, audio, hdr)
+export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false) {
+  const key = jobKey(torrentId, fileIndex, audio, hdr, encode)
   const j = jobs.get(key)
   if (!j) return false
   clearTimeout(j.idle)
-  j.idle = setTimeout(() => stopJob(key), 10 * 60_000)
+  j.idle = setTimeout(() => stopJob(key), 10 * 60_000).unref()
   return true
 }
 
