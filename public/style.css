@@ -771,3 +771,8 @@ html.tv .p-seek:focus-visible .p-rail, html.tv .p-seek:focus .p-rail { box-shado
 @media (min-width: 1100px) { .cs-where { font-size: 18px; } .cs-mark { width: 120px; height: 120px; border-radius: 26px; } }
 html.tv .castnote { font-size: 18px; padding: 14px 20px; bottom: 120px; }
 @media (prefers-reduced-motion: reduce) { .cs-mark, .castnote { animation: none; } }
+
+/* ---------- search results on a television ---------- */
+html.tv .grid { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 34px 24px; }
+html.tv .grid .tile { padding-top: 6px; }
+html.tv .empty .btn { margin-top: 4px; }
