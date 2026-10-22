@@ -50,3 +50,18 @@ test('shows with downloads are their own group and are not suggested again', () 
   assert.ok(![...q.sugg, ...q.pool].some((s: any) => s.id === 100 || s.id === 101))
   assert.equal(queueOf([], { myList: [], ready: [], picked: null, sections: [] }), null)
 })
+
+test('resume and Ready to Watch share the top rail; Your list and the suggestions are the rail under it', () => {
+  const html = app.match(/function queueHtml\(st\) \{[\s\S]*?\n\}\n/)
+  assert.ok(html, 'queueHtml is still in public/app.js')
+  const stub = (cls: string) => (s: any) => `<button class="tile ${cls}" data-s="${s.seriesId ?? s.id}"></button>`
+  const queueHtml = new Function('qcard', 'wideTile', 'contTile', 'tile', 'rowShell', `${html![0]}; return queueHtml`)(
+    (inner: string, id: number, kind = '') => `<div class="qcard${kind ? ' ' + kind : ''}" data-id="${id}">${inner}</div>`,
+    stub('wide'), stub('cont'), stub('p'), (inner: string, cls: string) => `<rail class="${cls}">${inner}</rail>`) as (st: any) => string
+  const q = queueOf([resume(1)], { myList: shows(10, 1), ready: shows(20, 2), picked: shows(30, 3), sections: [] })
+  const rails = [...queueHtml(q).matchAll(/<rail class="(\w+)">([\s\S]*?)<\/rail>/g)].map((m) => [m[1], [...m[2].matchAll(/data-id="(\d+)"/g)].map((x) => Number(x[1]))])
+  assert.deepEqual(rails, [['qtop', [1, 20, 21]], ['q', [10, 30, 31, 32]]])
+  assert.match(queueHtml(q), /data-g="Ready to Watch" class="qcard gl gs" data-id="20"/)
+  const onlyReady = queueHtml(queueOf([], { myList: [], ready: shows(20, 1), picked: null, sections: [] }))
+  assert.match(onlyReady, /data-g="Ready to Watch" class="qcard gl" data-id="20"/)
+})
