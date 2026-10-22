@@ -619,7 +619,7 @@ async function homeView(q, local = false) {
     }
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
-      try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+      try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
     }
   }
 }
@@ -913,12 +913,12 @@ async function seriesView(id) {
     if (isTv && !document.activeElement?.closest?.('#app, main')) (hp || $('#ml'))?.focus({ preventScroll: true })
     const ml = $('#ml'); if (ml) ml.onclick = async () => {
       const on = ml.getAttribute('aria-pressed') !== 'true'
-      try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+      try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
     }
     const tu = $('#tu'), td = $('#td')
     const vote = async (b, v) => {
       const next = b.getAttribute('aria-pressed') === 'true' ? 0 : v // tapping the same thumb again takes it back
-      try { await api('/api/vote', { seriesId: +id, vote: next }); tu.setAttribute('aria-pressed', String(next === 1)); td.setAttribute('aria-pressed', String(next === -1)) } catch (e) { alert(e.message) }
+      try { await api('/api/vote', { seriesId: +id, vote: next }); tu.setAttribute('aria-pressed', String(next === 1)); td.setAttribute('aria-pressed', String(next === -1)) } catch (e) { flashNote(e.message) }
     }
     if (tu) tu.onclick = () => vote(tu, 1)
     if (td) td.onclick = () => vote(td, -1)
@@ -2389,11 +2389,21 @@ function downloadsPanel(data, root) {
     const sec = (title, list, kind) => list.length ? `<div class="sub-h">${title}</div><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
     $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
       + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
+    // The list redraws every 15 seconds; one that was opened to read stays open.
+    const histOpen = !!$('#thist details')?.open
     $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><ul class="trows">${gone.slice(0, 50).map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}</span><div class="dim sm">${esc(x.remove_reason || '')}</div></div><span class="size dim">${x.removed_at ? ago(x.removed_at) : ''}</span><span></span></li>`).join('')}</ul></details>` : ''
+    if (histOpen) { const h = $('#thist details'); if (h) h.open = true }
     root.querySelectorAll('[data-ws]').forEach((b) => b.onclick = async () => {
-      try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { alert(e.message) }
+      try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { flashNote(e.message) }
     })
     root.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+      // Deleting a download is not undone by anything, so a second press confirms it, as everywhere else in Settings.
+      if (b.dataset.sure !== '1') {
+        const was = b.textContent
+        b.dataset.sure = '1'; b.textContent = 'Press again to remove'; b.classList.add('danger')
+        setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = was; b.classList.remove('danger') } }, 4000)
+        return
+      }
       try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
     })
   }
@@ -2413,6 +2423,8 @@ function downloadsPanel(data, root) {
     const d = await api('/api/admin/downloads').catch(() => data)
     lastHealth = await api('/api/admin/health').catch(() => lastHealth)
     const rp = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports
+    // Not while a Remove is waiting for its second press: the redraw would put the button back and lose the first one.
+    if (root.querySelector('[data-sure="1"]')) return
     keepFocus(root, () => { draw(d); reports(rp) })
   }, 15000)
   const t2 = setInterval(loadChart, 300000)
@@ -2459,7 +2471,7 @@ function familyPanel(data, root) {
         const cur = onList(u()), r = b.dataset.r, next = cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]
         b.setAttribute('aria-pressed', String(next.includes(r)))
         try { await patch(id, { allowedRatings: all.filter((x) => next.includes(x)) }); const l = $('.who .dim', card); if (l) l.textContent = u().allowed ? 'Limited' : 'Everything' }
-        catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); alert(e.message) }
+        catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); flashNote(e.message) }
       })
       card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
         const act = b.dataset.act
@@ -2467,21 +2479,21 @@ function familyPanel(data, root) {
         else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = ''; $('[data-act=pw]', card).textContent = 'Reset password' } catch (e) { msg.textContent = e.message } }
         else if (act === 'pin') { const row = $('.pinrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pinsave' || act === 'pinclear') {
-          try { await patch(id, { pin: act === 'pinclear' ? null : $('.pinrow input', card).value }); paint() } catch (e) { alert(e.message) }
+          try { await patch(id, { pin: act === 'pinclear' ? null : $('.pinrow input', card).value }); paint() } catch (e) { flashNote(e.message) }
         }
         else if (act === 'invite') {
           try {
             const r = await api(`/api/admin/users/${id}/invite`, {}); const url = `${location.origin}/#/join/${r.token}`
             const row = $('.invrow', card); row.hidden = false; const f = $('input', row); f.value = url; f.focus(); f.select()
             if (navigator.share) $('[data-act=share]', row).hidden = false
-          } catch (e) { alert(e.message) }
+          } catch (e) { flashNote(e.message) }
         }
         else if (act === 'copy') { const f = $('.invrow input', card); f.select(); try { await navigator.clipboard.writeText(f.value); b.textContent = 'Copied' } catch { document.execCommand?.('copy'); b.textContent = 'Copied' } setTimeout(() => { b.textContent = 'Copy' }, 2000) }
         else if (act === 'share') navigator.share({ title: 'Flix', text: `Sign in to Flix as ${u().name}`, url: $('.invrow input', card).value }).catch(() => {})
-        else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { alert(e.message) } }
+        else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { flashNote(e.message) } }
         else if (act === 'rm') {
           if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
-          try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { alert(e.message) }
+          try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { flashNote(e.message) }
         }
       })
     })
@@ -2513,7 +2525,7 @@ function playbackSection(tc) {
   return `<div id="s-playback" class="ssec"><h2 class="stitle2">Playback</h2>
       <p class="dim" style="max-width:66ch">How hard the box works to convert a file the player cannot take as it is. A file it can play directly is not converted at all, and when only the sound needs it the picture is copied, so this only applies to the rare file whose picture has to be converted. That happens on its own, with nothing to allow.</p>
       <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
-      <form id="tf" class="person"><label class="dim" for="tprofile">Quality</label>
+      <form id="tpf" class="person"><label class="dim" for="tprofile">Quality</label>
         <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
         <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Only download copies that play as they are (H.264), so nothing has to be converted</label>
         <div class="dim" id="tm2" role="status"></div></form></div>`
@@ -2603,9 +2615,12 @@ function settingsPanel(data, root) {
       tmsg('Testing…')
       try { await api('/api/admin/settings/tmdb/test', {}); tmsg('TMDB accepted the key.') } catch (err) { tmsg(err.message) }
     }
-    const tc = $('#tc')
-    if (tc) tc.onclick = async () => {
-      if (tc.dataset.sure !== '1') { tc.dataset.sure = '1'; tc.textContent = 'Tap again to remove'; setTimeout(() => { tc.dataset.sure = ''; tc.textContent = 'Remove saved key' }, 4000); return }
+    // Not called tc: that name is the transcode settings above, which the Playback controls assign to. With a const of the
+    // same name here, changing the quality or the "only copies that play as they are" box saved and then failed with
+    // "Assignment to constant variable", leaving the page out of date.
+    const tcb = $('#tc')
+    if (tcb) tcb.onclick = async () => {
+      if (tcb.dataset.sure !== '1') { tcb.dataset.sure = '1'; tcb.textContent = 'Tap again to remove'; setTimeout(() => { tcb.dataset.sure = ''; tcb.textContent = 'Remove saved key' }, 4000); return }
       try { tm = (await api('/api/admin/settings/tmdb', { apiKey: '' }, 'PUT')).tmdb; paint() } catch (err) { tmsg(err.message) }
     }
     const qmsg = (t) => { $('#qm').textContent = t }
@@ -2652,7 +2667,7 @@ function profileView() {
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
       const before = me.avatar
-      const msg = $('avmsg')
+      const msg = $('#avmsg')
       b.disabled = true
       try {
         me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user
@@ -2661,9 +2676,9 @@ function profileView() {
         setMsg(msg, 'Saved.')
       } catch (e) { me.avatar = before; setMsg(msg, e.message, true) } finally { b.disabled = false }
     })
-    $('nform').onsubmit = async (e) => {
+    $('#nform').onsubmit = async (e) => {
       e.preventDefault()
-      const err = $('nerr'); err.textContent = ''
+      const err = $('#nerr'); err.textContent = ''
       const name = new FormData(e.target).get('name')
       try {
         const r = await api('/api/me', { name }, 'PATCH')
@@ -2673,9 +2688,9 @@ function profileView() {
         err.textContent = 'Name saved.'; err.classList.add('ok')
       } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
     }
-    $('pform').onsubmit = async (e) => {
+    $('#pform').onsubmit = async (e) => {
       e.preventDefault()
-      const err = $('perr'); err.textContent = ''
+      const err = $('#perr'); err.textContent = ''
       const f = new FormData(e.target)
       try {
         await api('/api/me', { currentPassword: f.get('current'), newPassword: f.get('next') }, 'PATCH')
@@ -2979,9 +2994,16 @@ function captureView() {
       if (sel) at = { sel }
     }
   }
-  return { y: scrollY, at }
+  // On a show page the episode list is one season's: which one goes with it, or Back would light up the same place in
+  // whichever season the page opens on.
+  const season = app.querySelector('.pills[role="tablist"] .pill[aria-selected="true"]')?.dataset.k ?? null
+  return { y: scrollY, at, season }
 }
 function restoreView(v) {
+  if (v.season != null) {
+    const pill = app.querySelector(`.pills[role="tablist"] .pill[data-k=${JSON.stringify(String(v.season))}]`)
+    if (pill && pill.getAttribute('aria-selected') !== 'true') pill.click() // draws that season's episodes, synchronously
+  }
   window.scrollTo({ top: v.y, behavior: 'instant' })
   let el = null
   try { el = v.at?.sel ? app.querySelector(v.at.sel) : v.at ? app.querySelectorAll('.rowwrap')[v.at.row]?.querySelectorAll('.row-scroll > *')[v.at.idx] : null } catch { /* a selector that no longer parses */ }

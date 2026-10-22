@@ -806,6 +806,8 @@ html.tv .chart-wrap { min-height: 220px; }
    the page's own gap for the header is no longer needed beneath it. */
 .hbanner + .page-top, .hbanner + .pad.page-top { padding-top: 24px; }
 .hbanner + .hero .hero-in { padding-top: 56px; }
+/* The show page too: its banner already starts under the strip, so its own room for the header would be a second gap. */
+.hbanner + .s-hero .s-in { padding-top: 56px; }
 
 /* ---------- loading skeletons ---------- */
 .skeleton { animation: fadein .35s var(--ease) .05s both; }
