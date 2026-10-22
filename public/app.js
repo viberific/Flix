@@ -414,6 +414,18 @@ function profilesView() {
   }
 }
 
+/** Android's Back button outside the player (see MainActivity, which never hands Back to the page as a key press): what is
+    open on top of the page closes first -- the PIN box, the account menu -- instead of the page going back underneath it
+    and leaving the box floating over the page before. False lets the WebView go back as usual. */
+function pageBack() {
+  const pin = document.querySelector('.pin-modal')
+  if (pin) { pin.querySelector('#pc')?.click(); return true }
+  const menu = document.querySelector('#top > .menu:not(.out)')
+  if (menu) { closeMenu(menu); $('#av')?.focus({ preventScroll: true }); return true }
+  return false
+}
+window.__flixBack = pageBack
+
 /** A small "enter your PIN" box. Resolves with the digits, or null when cancelled. */
 function askPin(name, error = '', locked = false) {
   return new Promise((done) => {
@@ -536,7 +548,7 @@ function wireLeavingPrompt() {
   const close = () => { lpMark(ids); lp.remove() }
   const x = $('#lp-x')
   if (x) x.onclick = close
-  lp.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
+  lp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close() } })
 }
 
 async function homeView(q, local = false) {
@@ -636,7 +648,8 @@ function heroTrailer(hero, seriesId) {
     player = new YT.Player('htp', { videoId: ids[0], host: 'https://www.youtube-nocookie.com',
       playerVars: { autoplay: 1, mute: 1, controls: 0, disablekb: 1, fs: 0, rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3, cc_load_policy: 0 },
       events: {
-        onReady: (e) => { e.target.mute(); if (visible) e.target.playVideo() },
+        // The iframe is never somewhere the remote can land: keys sent into it would stop reaching Flix's own navigation.
+        onReady: (e) => { e.target.mute(); try { e.target.getIframe?.()?.setAttribute('tabindex', '-1') } catch { /* fine */ } if (visible) e.target.playVideo() },
         // Only a picture that is really moving is shown; the still stays up through buffering and any error.
         onStateChange: (e) => { if (e.data === 1) fade(true); else if (e.data === 0) { fade(false); setTimeout(() => !dead && gone(), 1200) } },
         onError: next,
@@ -1130,9 +1143,26 @@ function playView(seriesId, season, label) {
       const b = isTv && e.target.closest?.('.p-menu > button')
       if (b) setTimeout(() => { const m = b.parentElement.querySelector('.menu'); (m?.querySelector('button[aria-current]') || m?.querySelector('button'))?.focus() }, 0)
     })
+    // What a remote can reach on the black screen (Details and Cancel while it waits, Try again and Back when it failed, the
+    // casting card's buttons) and in the top bar.
+    const waitBtns = () => [...pl.querySelectorAll('#wait a[href], #wait button')].filter((x) => !x.closest('[hidden]') && x.offsetParent !== null && getComputedStyle(x).visibility !== 'hidden')
+    const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
     const key = (e) => {
-      if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
+      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
+      // On the black screen the arrows walk its buttons instead of seeking a picture that is not there: on the failure card
+      // Right went 10 seconds forward instead of reaching Back. Up from the first one reaches the top bar.
+      if (/^Arrow/.test(k) && e.target.closest?.('#wait') && !$('#wait').classList.contains('gone')) {
+        const b = waitBtns(), i = b.indexOf(e.target.closest('a, button'))
+        if (i >= 0) {
+          e.preventDefault()
+          const n = i + (k === 'ArrowRight' || k === 'ArrowDown' ? 1 : -1)
+          if (n >= 0 && n < b.length) b[n].focus()
+          else if (n < 0 && k === 'ArrowUp') topBtns()[0]?.focus()
+          wake()
+          return
+        }
+      }
       // While the up-next box is up its two buttons are what a remote is pointed at, so left and right walk between them
       // instead of seeking the picture. Enter and OK already work, because the button has the focus.
       if ((k === 'ArrowLeft' || k === 'ArrowRight') && e.target.closest?.('.p-next')) {
@@ -1178,7 +1208,6 @@ function playView(seriesId, season, label) {
       // The top bar (back, audio, play on a TV, something's wrong) is one row above the picture: Up from the bar reaches it,
       // Left and Right walk it, Down comes back to play/pause.
       const inTop = e.target.closest?.('.p-top') && !e.target.closest('.menu')
-      const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
       if (inTop && (k === 'ArrowLeft' || k === 'ArrowRight')) {
         e.preventDefault()
         const b = topBtns(), n = b.indexOf(e.target.closest('a, button')) + (k === 'ArrowRight' ? 1 : -1)
@@ -1186,11 +1215,18 @@ function playView(seriesId, season, label) {
         wake()
         return
       }
-      if (inTop && k === 'ArrowDown') { e.preventDefault(); ($('#ppp') || e.target).focus(); wake(); return }
+      if (inTop && k === 'ArrowDown') { e.preventDefault(); ((!$('#wait').classList.contains('gone') && waitBtns()[0]) || $('#ppp') || e.target).focus(); wake(); return }
       if (inBar && k === 'ArrowDown') { e.preventDefault(); e.target.blur(); wake(); return }
       if (k === 'ArrowUp' && !inTop && !e.target.closest?.('.menu')) {
-        const up = inBar ? topBtns()[0] : e.target.closest?.('a, button') ? null : (!$('#wait').classList.contains('gone') ? ($('#pmore') && !$('#pmore').hidden ? $('#pmore') : topBtns()[0]) : $('#ppp'))
+        const up = inBar ? topBtns()[0] : e.target.closest?.('a, button') ? null : (!$('#wait').classList.contains('gone') ? (waitBtns()[0] || topBtns()[0]) : $('#ppp'))
         if (up) { e.preventDefault(); up.focus(); wake(); return }
+      }
+      if (k === 'ArrowDown' && !e.target.closest?.('a, button, .menu') && !$('#wait').classList.contains('gone') && waitBtns()[0]) { e.preventDefault(); waitBtns()[0].focus(); wake(); return }
+      // Before there is a picture (the episode is still being found) or while a TV has it, there is nothing here to play,
+      // pause or seek: only Back, which leaves.
+      if (!v || castingOnly) {
+        if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); leavePlayer() }
+        return
       }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
@@ -1299,7 +1335,7 @@ function playView(seriesId, season, label) {
       $('#pio').textContent = desc; $('#pio').hidden = !desc
       // Score, year and genres, then how long is left and when it would finish if resumed now.
       const left = totalT() - nowT()
-      const bits = [s?.score ? `★ ${s.score.toFixed(1)}` : '', s?.year || '', (s?.genres ?? []).slice(0, 3).join(' · '),
+      const bits = [Number(s?.score) ? `★ ${Number(s.score).toFixed(1)}` : '', s?.year || '', (s?.genres ?? []).slice(0, 3).join(' · '),
         left > 30 ? `${Math.round(left / 60)} min left · ends ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''].filter(Boolean)
       $('#pim').textContent = bits.join('  ·  '); $('#pim').hidden = !bits.length
       const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 8)
@@ -1475,7 +1511,7 @@ function playView(seriesId, season, label) {
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
       alive = false; removeEventListener('visibilitychange', onVisible); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
-      if (window.__flixBack === onBack) window.__flixBack = null
+      if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
     const onBack = () => {
@@ -2837,7 +2873,8 @@ function revealStop(el) {
 let stickyX = null, stickyEl = null
 
 addEventListener('keydown', (e) => {
-  if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
+  // Already handled where it happened (the PIN box closing itself on Escape): going back a page as well was a second action.
+  if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
   const el = document.activeElement
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
   // Back on a remote, while the search field has the keyboard: put the keyboard away first, leave the page alone.
