@@ -2,17 +2,21 @@
 # clients, and Flix talks to it at 127.0.0.1:8080) and ffmpeg for the
 # remux/transcode HLS pipeline. All three share this filesystem, so the
 # download path qBittorrent writes is the path Flix streams from.
-FROM node:24-alpine
+FROM node:24-trixie-slim
 
 # ffmpeg/ffprobe: probe and remux/transcode to HLS.
 # qbittorrent-nox: the torrent engine.
 # tini: reap qBittorrent's children; node stays PID 1's exec.
-# intel-media-driver (amd64 only): the iHD VAAPI driver, so ffmpeg can reach Quick Sync when the container
-# is given /dev/dri. Alpine has no oneVPL GPU runtime, so on Gen12 parts (the N95) h264_vaapi is the one
-# expected to open, not h264_qsv -- the same encoder block either way. Without /dev/dri nothing changes:
-# encode.ts probes and uses x264.
-RUN apk add --no-cache ffmpeg qbittorrent-nox tini \
- && if [ "$(apk --print-arch)" = x86_64 ]; then apk add --no-cache intel-media-driver; fi
+# oneVPL's GPU implementation is separate from its dispatcher and depends on
+# libva plus Intel's iHD media driver. Debian packages it as libmfx-gen1.2.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg qbittorrent-nox tini \
+ && if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+      apt-get install -y --no-install-recommends intel-media-va-driver libvpl2 libmfx-gen1.2 \
+      && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_qsv; \
+    fi \
+ && test -x /usr/bin/tini \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -38,11 +42,12 @@ ENV NODE_ENV=production \
 
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/qb-config.mjs /qb-config.mjs
-RUN chmod +x /entrypoint.sh
+COPY docker/verify-qsv.sh /usr/local/bin/verify-qsv
+RUN chmod +x /entrypoint.sh /usr/local/bin/verify-qsv
 
 # /data: the sqlite db, qBittorrent's config and the .env with the keys.
 # /downloads: the media. Both persist across app updates via APP_DATA_DIR.
 VOLUME /data /downloads
 EXPOSE 8096
 
-ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
