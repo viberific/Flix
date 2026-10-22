@@ -79,6 +79,7 @@ function avSvg(id, cls = '') { const a = AV_ART[id]; return a ? `<svg class="avs
 const I = {
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
+  plus: '<svg class="pl" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
   next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
@@ -478,7 +479,7 @@ function authView(needsSetup) {
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge ep">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
@@ -487,8 +488,48 @@ const leavingTile = (l, i) => {
   const days = Math.max(1, Math.ceil((l.leavesAt - Date.now() / 1000) / 86400))
   return `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${l.seriesId}">${art(l.poster, l.series)}<div class="tt">${esc(l.series)}</div><div class="ts">${esc(l.label)} · leaves in ${days} day${days === 1 ? '' : 's'}</div></a>`
 }
-function rowOf(items, html) {
-  return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll">${items.map(html).join('')}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
+function rowShell(inner, cls = '') {
+  return `<div class="rowwrap"><button class="arrow l" aria-label="Scroll left">${I.back}</button><div class="row-scroll${cls ? ' ' + cls : ''}">${inner}</div><button class="arrow r" aria-label="Scroll right">${I.next}</button></div>`
+}
+const rowOf = (items, html) => rowShell(items.map(html).join(''))
+
+/* ---------- the Queue: what to resume, your list, and what to add next, in one rail ---------- */
+/** The show to resume, wide: its banner (its poster when it has none), a play button, and how much is left. */
+const wideTile = (c, i) => {
+  const left = c.next ? 'Up next' : `${Math.max(1, Math.ceil(((c.duration || 0) - (c.position || 0)) / 60))} min left`
+  return `<button class="tile wide rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
+  <div class="poster ph" style="--h:${hue(c.series)}"><span class="ph-t">${esc(c.series)}</span><img class="fade" loading="lazy" src="/api/art/${c.seriesId}/banner" alt="" onload="this.classList.add('in')" onerror="if(this.dataset.f){this.remove()}else{this.dataset.f=1;this.src='${esc(c.poster)}'}">
+    <span class="wide-pill">${left}</span><span class="wide-play">${I.play}</span>${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div>
+  <div class="tt">${esc(c.series)}</div><div class="ts">${esc(c.label)}${c.next ? '' : ' · resume'}</div></button>`
+}
+/** A tile in the Queue. The add / remove button sits beside the tile, not in it: a link cannot hold a button. */
+const qcard = (inner, id, kind = '') => `<div class="qcard${kind ? ' ' + kind : ''}" data-id="${id}">${inner}${kind ? `<button class="qact" aria-label="${kind === 'list' ? 'Remove from' : 'Add to'} My List">${I.plus}${I.check.replace('<svg', '<svg class="ck"')}</button>` : ''}</div>`
+const QUEUE_SUGGESTIONS = 8
+
+/**
+ * What the Queue holds. Suggestions are the home screen's own picks, so nothing new is worked out here: "Picked for you" when
+ * the viewer has a taste, else "Because you watched", else the first row of what is popular. Whatever row they come from
+ * is not drawn again lower down (`used` says which), so a show is still on the screen once. A viewer with nothing to resume
+ * and nothing on their list gets no Queue: the rows below are all there is to show.
+ */
+function queueOf(cont, home) {
+  const list = home.myList ?? []
+  if (!cont.length && !list.length) return null
+  let pool = [], title = 'Suggested for you', used = null
+  if (home.picked?.length) { pool = home.picked; used = 'picked' }
+  else if (home.because?.series?.length) { pool = home.because.series; title = `Because you ${home.because.liked ? 'liked' : 'watched'} ${home.because.name}`; used = 'because' }
+  else if (home.sections?.[0]?.series?.length) { pool = home.sections[0].series; title = home.sections[0].title; used = 'section' }
+  const have = new Set([...list.map((s) => s.id), ...cont.map((c) => c.seriesId)])
+  pool = pool.filter((s) => !have.has(s.id))
+  return { resume: cont, list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
+}
+function queueHtml(st) {
+  const cards = [
+    ...st.resume.map((c, i) => qcard(i ? contTile(c, i) : wideTile(c, i), c.seriesId)),
+    ...st.list.map((s, i) => qcard(tile(s, st.resume.length + i), s.id, 'list')),
+    ...st.sugg.map((s, i) => qcard(tile(s, st.resume.length + st.list.length + i), s.id, 'sugg')),
+  ]
+  return `<h2 class="sec queue-h">Queue</h2>${rowShell(cards.join(''), 'q')}`
 }
 function wireRows(root) {
   const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
@@ -502,6 +543,79 @@ function wireRows(root) {
     if (io && w.getBoundingClientRect().top > innerHeight * 0.9) { w.classList.add('reveal'); io.observe(w); const h = w.previousElementSibling; if (h?.matches('h2.sec')) { h.classList.add('rv'); io.observe(h) } }
   })
   root.querySelectorAll('.tile[data-s]').forEach((b) => b.onclick = () => go(`#/play/${b.dataset.s}/${b.dataset.season || 'x'}/${encodeURIComponent(b.dataset.label)}`))
+}
+
+/**
+ * The Queue's buttons. + puts a suggestion on My List and slides it across into the list while the next pick fills in behind
+ * it; the check takes a show back off and sends it to the front of the suggestions. The server is asked first, so a card never
+ * moves for a change that did not happen. Cards are moved, never redrawn, so the highlight a remote has on one is kept.
+ */
+function wireQueue(root, st) {
+  const sc = root.querySelector('.row-scroll.q')
+  if (!sc) return
+  const els = new Map([...sc.querySelectorAll('.qcard[data-id]')].map((e) => [Number(e.dataset.id), e]))
+  const byId = new Map([...st.list, ...st.sugg, ...st.pool].map((s) => [s.id, s]))
+  const empty = document.createElement('div')
+  empty.className = 'qcard empty'
+  empty.innerHTML = '<span><b>Your list is empty</b>Tap + on a suggestion to add it here</span>'
+  const label = (el, id, on) => { el.classList.toggle('list', on); el.classList.toggle('sugg', !on); el.querySelector('.qact')?.setAttribute('aria-label', `${on ? 'Remove' : 'Add'} ${byId.get(id)?.name ?? 'this show'} ${on ? 'from' : 'to'} My List`) }
+  const place = () => {
+    const seq = []
+    const add = (head, cards) => cards.forEach((el, i) => seq.push([el, i ? '' : head]))
+    if (st.resume.length) add('Continue', st.resume.map((c) => els.get(c.seriesId)))
+    add('Your list', st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
+    add(st.title, st.sugg.map((s) => els.get(s.id)))
+    st.list.forEach((s) => label(els.get(s.id), s.id, true))
+    st.sugg.forEach((s) => label(els.get(s.id), s.id, false))
+    seq.forEach(([el, head], i) => {
+      if (sc.children[i] !== el) sc.insertBefore(el, sc.children[i] ?? null)
+      el.classList.toggle('gl', !!head); el.classList.toggle('gs', !!head && i > 0)
+      if (head) el.dataset.g = head; else delete el.dataset.g
+    })
+    while (sc.children.length > seq.length) sc.lastElementChild.remove() // the empty-list note, once there is a list
+  }
+  const flip = (mutate) => {
+    const before = new Map()
+    if (!rmq.matches) els.forEach((e, id) => before.set(id, e.getBoundingClientRect()))
+    mutate(); place()
+    if (rmq.matches) return
+    els.forEach((e, id) => {
+      if (typeof e.animate !== 'function') return
+      const b = before.get(id), a = e.getBoundingClientRect()
+      if (!b) e.animate([{ opacity: 0, transform: 'translateX(28px) scale(.94)' }, { opacity: 1, transform: 'none' }], { duration: 520, delay: 260, easing: 'cubic-bezier(.16,1,.3,1)', fill: 'backwards' })
+      else if (b.left !== a.left || b.top !== a.top) e.animate([{ transform: `translate(${b.left - a.left}px, ${b.top - a.top}px)` }, { transform: 'none' }], { duration: 620, easing: 'cubic-bezier(.16,1,.3,1)' })
+    })
+  }
+  const bind = (el) => { const id = Number(el.dataset.id); const b = el.querySelector('.qact'); if (b) b.onclick = () => toggle(id) }
+  const make = (s) => {
+    const t = document.createElement('template')
+    t.innerHTML = qcard(tile(s, 0), s.id, 'sugg').trim()
+    const el = t.content.firstElementChild
+    el.querySelectorAll('.rise').forEach((n) => n.classList.remove('rise'))
+    els.set(s.id, el); bind(el)
+    return el
+  }
+  let busy = false
+  async function toggle(id) {
+    if (busy) return
+    const el = els.get(id), adding = el.classList.contains('sugg'), s = byId.get(id)
+    busy = true
+    try { await api('/api/mylist', { seriesId: id, on: adding }) } catch (e) { busy = false; flashNote(e.message || 'That did not work'); return }
+    busy = false
+    const refocus = el.contains(document.activeElement)
+    el.querySelectorAll('.rise').forEach((n) => n.classList.remove('rise')) // a moved element would replay its entrance
+    flip(() => {
+      if (adding) {
+        st.sugg = st.sugg.filter((x) => x.id !== id); st.list = [...st.list, s]
+        const next = st.pool.shift()
+        if (next) { make(next); st.sugg = [...st.sugg, next] }
+      } else { st.list = st.list.filter((x) => x.id !== id); st.sugg = [s, ...st.sugg] }
+    })
+    if (refocus) el.querySelector('.qact')?.focus({ preventScroll: true }) // moving a node drops focus
+    flashNote(adding ? `Added ${s.name} to My List` : `Removed ${s.name} from My List`)
+  }
+  els.forEach(bind)
+  place()
 }
 
 /* ---------- the soft "Leaving soon" prompt ---------- */
@@ -581,11 +695,12 @@ async function homeView(q, local = false) {
     html += '<div class="pad">'
     if (lpShow.length) html += leavingPrompt(lpShow)
     // The featured show is never one being resumed (the server keeps it out), so every show to resume is in this row.
-    if (items.length) html += `<h2 class="sec">Continue watching</h2>${rowOf(items, contTile)}`
+    // Resume, My List and the picks are one rail (see queueOf); without a Queue the picks keep their own row.
+    const queue = q ? null : queueOf(items, home)
+    if (queue) html += queueHtml(queue)
     if (!q && leaving.items.some((l) => !lpIds.has(l.torrentId))) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items.filter((l) => !lpIds.has(l.torrentId)), leavingTile)}`
-    if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
-    if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
-    if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
+    if (!q && !queue && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
+    if (!q && home.because && queue?.used !== 'because') html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
     if (q) {
       // Live search draws this page again with every answer. Tiles that rise in each time would flash on every letter, so
       // after the first showing of the results they simply appear.
@@ -596,12 +711,13 @@ async function homeView(q, local = false) {
           : `<div class="empty">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
     }
     else {
-      for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
+      for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
+    if (queue) wireQueue(app, queue)
     wireLeavingPrompt()
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
     // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
@@ -2986,7 +3102,8 @@ function captureView() {
   let at = null
   if (el && el !== document.body && app.contains(el)) {
     const cell = el.closest('.row-scroll > *'), wrap = el.closest('.rowwrap')
-    if (cell && wrap) at = { row: [...app.querySelectorAll('.rowwrap')].indexOf(wrap), idx: [...wrap.querySelectorAll('.row-scroll > *')].indexOf(cell) }
+    // A cell is a tile, or a card holding a tile and its + button: which of its stops had the highlight comes with it.
+    if (cell && wrap) at = { row: [...app.querySelectorAll('.rowwrap')].indexOf(wrap), idx: [...wrap.querySelectorAll('.row-scroll > *')].indexOf(cell), sub: cell.matches(FOCUSABLE) ? 0 : [...cell.querySelectorAll(FOCUSABLE)].indexOf(el) }
     else {
       const q = (v) => JSON.stringify(String(v))
       const sel = el.id ? '#' + CSS.escape(el.id) : el.dataset.id ? `[data-id=${q(el.dataset.id)}]` : el.matches('.ep[data-i]') ? `.ep[data-i=${q(el.dataset.i)}]`
@@ -3007,6 +3124,7 @@ function restoreView(v) {
   window.scrollTo({ top: v.y, behavior: 'instant' })
   let el = null
   try { el = v.at?.sel ? app.querySelector(v.at.sel) : v.at ? app.querySelectorAll('.rowwrap')[v.at.row]?.querySelectorAll('.row-scroll > *')[v.at.idx] : null } catch { /* a selector that no longer parses */ }
+  if (el && !el.matches(FOCUSABLE)) el = [...el.querySelectorAll(FOCUSABLE)][Math.max(0, v.at?.sub ?? 0)] ?? el.querySelector(FOCUSABLE) // a card: the stop inside it
   if (!el) return
   el.focus({ preventScroll: true })
   el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'instant' }) // the rail it sits in is brought round to it
