@@ -2197,6 +2197,16 @@ function storageChart(el, h) {
   const hit = $('.hit', el); hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move); hit.addEventListener('pointerleave', hide)
 }
 
+/** Run a redraw of an admin panel and put the remote's highlight back on the same control afterwards. The panels redraw
+    themselves (every 15 seconds for the torrent list, and after each save), which silently dropped the highlight to the
+    top of the page and left a television with nothing selected. */
+function keepFocus(root, fn) {
+  const a = document.activeElement
+  const at = a && a !== document.body && root.contains(a) ? [...root.querySelectorAll(FOCUSABLE)].indexOf(a) : -1
+  fn()
+  if (at >= 0) [...root.querySelectorAll(FOCUSABLE)][at]?.focus({ preventScroll: true })
+}
+
 function downloadsPanel(data, root) {
   const req = data.requirements
   root.innerHTML = `<h2 class="stitle2">Torrents &amp; seeding</h2>
@@ -2282,8 +2292,9 @@ function downloadsPanel(data, root) {
   draw(data); reports(data.reports ?? []); loadChart()
   const t = setInterval(async () => {
     const d = await api('/api/admin/downloads').catch(() => data)
-    lastHealth = await api('/api/admin/health').catch(() => lastHealth); draw(d)
-    reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
+    lastHealth = await api('/api/admin/health').catch(() => lastHealth)
+    const rp = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports
+    keepFocus(root, () => { draw(d); reports(rp) })
   }, 15000)
   const t2 = setInterval(loadChart, 300000)
   let rz; const onResize = () => { clearTimeout(rz); rz = setTimeout(() => chartData && storageChart($('#tchart'), chartData), 150) }
@@ -2295,7 +2306,8 @@ function familyPanel(data, root) {
   const all = data.ratings
   let users = data.users
   const onList = (u) => u.allowed ?? all
-  const paint = () => {
+  const paint = () => keepFocus(root, paintNow)
+  const paintNow = () => {
     root.innerHTML = `<h2 class="stitle2">Family</h2>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
       ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → Ratings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
@@ -2390,7 +2402,8 @@ function playbackSection(tc) {
 
 function settingsPanel(data, root) {
   let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, tc = data.transcode
-  const paint = () => {
+  const paint = () => keepFocus(root, paintNow)
+  const paintNow = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<div id="s-btn" class="ssec"><h2 class="stitle2">BroadcasTheNet</h2>
       <p class="dim" style="max-width:66ch">Flix talks to BTN with an API key, not your BTN username and password. Find the key in your BTN profile settings. BTN also only accepts a key from IP addresses you have approved on their site, so approve this server's address there if the test fails.</p>

@@ -782,3 +782,17 @@ html.tv .auth[data-offline] { width: min(560px, 100%); }
 html.tv .auth[data-offline] h1 { font-size: 32px; }
 html.tv .auth[data-offline] p, html.tv .auth[data-offline] .dim { font-size: 18px !important; line-height: 1.5; }
 html.tv .auth[data-offline] .btn:focus { box-shadow: 0 0 0 3px #fff; transform: scale(1.04); }
+
+/* ---------- the admin panels on a television ---------- */
+/* Everything a remote can press is big enough to see from the sofa and rings the same way as the rest of the app. */
+html.tv .person .btn, html.tv .tcard .btn, html.tv .tfoot .btn, html.tv .pact .btn, html.tv .row-form .btn { min-height: 44px; padding: 10px 18px !important; font-size: 16px; }
+html.tv .rpill { padding: 9px 16px; font-size: 15px; outline: none !important; transition: transform .15s var(--ease), box-shadow .15s; }
+html.tv .rpill:focus { transform: scale(1.08); box-shadow: 0 0 0 3px var(--fg); color: var(--fg); }
+html.tv .person { padding: 18px; }
+html.tv table { font-size: 16px; } html.tv td, html.tv th { padding: 14px 10px; }
+html.tv .tcard { padding: 20px; } html.tv .tcard:focus-within { border-color: color-mix(in srgb, var(--fg) 40%, var(--line)); }
+html.tv .stat { padding: 14px 22px; } html.tv .stat span { font-size: 15px; }
+html.tv .dim, html.tv .tcard .dim { font-size: max(1em, 15px); }
+html.tv .hist summary { font-size: 17px; padding: 8px 4px; }
+html.tv .pwrow { gap: 12px; }
+html.tv .chart-wrap { min-height: 220px; }
