@@ -2043,6 +2043,7 @@ function playView(seriesId, season, label) {
     }
     function showCastCard(where, withButtons, stopped) {
       $('#msg').innerHTML = `<div class="cast-splash done"><span class="cs-mark"></span><span class="cs-where">${esc(where)}</span><div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn" id="cstop">${stopped ? 'Play on this phone' : 'Stop casting'}</button><a class="btn" href="#/series/${seriesId}">Back</a></div></div>`
+      $('#cstop').focus({ preventScroll: true }) // something for a keyboard or remote to press
       // Stopping the cast brings the show back on the phone, from where the TV was.
       $('#cstop').onclick = () => {
         saveRemote()

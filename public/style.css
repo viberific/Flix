@@ -764,3 +764,10 @@ html.tv .p-more:focus { color: #fff; outline: none; box-shadow: 0 0 0 3px var(--
 html.tv .p-wait .btn:focus, html.tv .p-wait .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; transform: scale(1.06); }
 html.tv .p-ctl .p-menu .menu button, html.tv .p-top .p-menu .menu button { padding: 12px 16px; font-size: 17px; }
 html.tv .p-seek:focus-visible .p-rail, html.tv .p-seek:focus .p-rail { box-shadow: 0 0 0 3px #fff; height: 8px; }
+
+/* ---------- casting screens ---------- */
+.castnote { animation: rise .3s var(--ease); }
+.cast-splash .btn:focus-visible, html.tv .cast-splash .btn:focus { outline: none; box-shadow: 0 0 0 3px #fff; transform: scale(1.06); }
+@media (min-width: 1100px) { .cs-where { font-size: 18px; } .cs-mark { width: 120px; height: 120px; border-radius: 26px; } }
+html.tv .castnote { font-size: 18px; padding: 14px 20px; bottom: 120px; }
+@media (prefers-reduced-motion: reduce) { .cs-mark, .castnote { animation: none; } }
