@@ -686,10 +686,10 @@ html.tv * { cursor: none; }
 /* the season download sits opposite the Episodes heading */
 .eps-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .eps-head h2.sec { margin-bottom: 14px; }
-.dls { padding: 9px 15px; font-size: 14px; gap: 8px; display: inline-flex; align-items: center; }
+.dls { position: relative; overflow: hidden; padding: 9px 15px; font-size: 14px; gap: 8px; display: inline-flex; align-items: center; }
 .dls svg { width: 17px; height: 17px; }
 .dls.done { color: var(--ok); }
-.dls.run { color: var(--fg); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.dls.run { background-image: linear-gradient(90deg, color-mix(in srgb, var(--accent) 38%, transparent) var(--fill, 0%), transparent var(--fill, 0%)); color: var(--fg); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
 @media (max-width: 480px) { .eps-head { gap: 6px; } .dls { padding: 8px 12px; font-size: 13px; } }
 .dlb { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); font-size: 13px; font-weight: 600; cursor: pointer; max-width: 22ch; text-align: left; }
 .dlb svg { width: 18px; height: 18px; } .dlb:hover { color: var(--fg); }
