@@ -930,31 +930,30 @@ async function seriesView(id) {
   // The episode this person is on, as the server worked it out: the one played last, or the one after it once that is
   // finished. Not "the first episode with some progress", which brought back an episode abandoned in its credits weeks
   // ago after the ones that followed it had been watched.
-  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available && (!e.locked || e.position > 30)) : null
+  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available) : null
   // The hero never offers something the order rule forbids. A resume is always allowed (that episode was started);
   // otherwise it is the first episode that may be started and has not been watched, so Play Now cannot dead-end.
-  const hero = resume ?? episodes.find((e) => !e.watched && e.available && !e.locked)
-  const firstLocked = episodes.find((e) => e.locked && e.available)
+  const hero = resume ?? episodes.find((e) => !e.watched && e.available)
   const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
   const saved = new Set((await dl.list()).map((m) => m.id))
   return () => {
-    let gone = false, seasonRun = 0
+    
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
       <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">${firstLocked ? `Watch ${shortEp(firstLocked.after)} first` : 'Nothing is available to play right now.'}</span>`}
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
-      <div class="eps-head"><h2 class="sec">Episodes</h2><span id="sdls"></span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+      <div class="eps-head"><h2 class="sec">Episodes</h2></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const dlButton = (e) => {
       if (!dl.supported() || !e.available || (e.isPack && e.episode === null)) return ''
@@ -962,56 +961,19 @@ async function seriesView(id) {
       if (a) return `<span class="dlb busy${a.error ? ' err' : ''}" role="button" tabindex="0" title="${esc(a.text)}">${a.error ? esc(a.text) : esc(a.text)}</span>`
       return saved.has(did) ? `<span class="dlb done" role="button" tabindex="0" title="Saved on this device. Open Downloads">${I.check} Saved</span>` : `<span class="dlb" role="button" tabindex="0" title="Save a 1080p copy on this device to watch offline" aria-label="Download for offline">${I.dl}</span>`
     }
-    // The whole season saved to this device, one episode at a time: the server is never asked for several at once,
-    // so the one-episode-at-a-time rule still holds and nothing extra ends up on disk unasked.
-    const seasonList = () => (seasons.get(cur) ?? []).filter((e) => e.available && !(e.isPack && e.episode === null))
     const saveEp = (e) => dl.start({ seriesId: +id, season: e.season, label: e.label, title: e.title, seriesName: series.name },
       () => api('/api/watch', { seriesId: +id, season: e.season ?? null, label: e.label }))
-    const paintSeason = () => {
-      const box = $('#sdls'); if (!box) return
-      const list = seasonList()
-      if (!dl.supported() || !list.length) { box.innerHTML = ''; return }
-      const left = list.filter((e) => !saved.has(dl.idOf(id, e.season, e.label)))
-      const done = list.length - left.length
-      // The button fills as the season saves: finished episodes plus how far the one in flight has got.
-      const inFlight = list.reduce((n, e) => n + (dl.active.get(dl.idOf(id, e.season, e.label))?.pct ?? 0), 0)
-      const frac = Math.min(1, (done + inFlight) / list.length)
-      const label = seasonRun ? `Stop · ${done} of ${list.length} saved`
-        : !left.length ? `${I.check} Season saved`
-        : done ? `${I.dl} Save the rest · ${left.length} left`
-        : `${I.dl} Download season`
-      box.innerHTML = `<button class="btn dls${!left.length && !seasonRun ? ' done' : ''}${seasonRun ? ' run' : ''}" id="sdl" style="--fill:${Math.round(frac * 100)}%" aria-label="${!left.length ? 'This season is saved on this device' : seasonRun ? 'Stop saving this season' : 'Save every episode of this season on this device'}">${label}</button>`
-      $('#sdl').onclick = () => {
-        if (seasonRun) { seasonRun++; paintSeason(); return } // a second tap stops it after the episode in flight
-        if (!left.length) return go('#/downloads')
-        const job = ++seasonRun
-        paintSeason()
-        ;(async () => {
-          for (const e of left) {
-            if (gone || job !== seasonRun) break
-            saveEp(e)
-            // stop the run on a failure: if one episode will not save, the rest will not either
-            if (!(await dl.whenDone(dl.idOf(id, e.season, e.label)))) break
-          }
-          if (job === seasonRun) seasonRun = 0
-          if (!gone) paint()
-        })()
-      }
-    }
     const paint = () => {
-      $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise${e.locked ? ' locked' : ''}" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
+      $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
           <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · ')}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
-        <span class="eside">${e.locked ? `<span class="lock" aria-label="Watch ${esc(shortEp(e.after))} first" title="Watch ${esc(shortEp(e.after))} first">${I.lock}</span>` : ''}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
-      // A locked episode is not a dead end: it says which episode comes first, in one line, and stays where it is.
+        <span class="eside">${e.available ? '' : `<span class="lock" aria-label="Not available yet" title="Not available yet">${I.lock}</span>`}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => {
         const e = seasons.get(cur)[+b.dataset.i]
-        if (e.locked) return flashNote(`Watch ${shortEp(e.after)} first`)
         go1(e)
       })
-      paintSeason()
     }
     // The per-episode download buttons act through one listener, so they can be swapped in place without redrawing the list.
     const dlAct = (ev) => {
@@ -1037,19 +999,12 @@ async function seriesView(id) {
         else if (old) old.remove()
         else if (next) side.appendChild(next)
       })
-      paintSeason()
     }
     paint()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
-    // A page a person flicks past is not intent, and the catalogue is browsed by opening pages and leaving them, so the
-    // first episode starts only once this show has actually been on screen for a while. The server fetches one episode
-    // and only one, under the ordinary automatic-download limits; leaving the page cancels it before it is ever sent.
-    const openTimer = hero && !hero.locked && !hero.watched
-      ? setTimeout(() => { if (alive && !document.hidden) api('/api/opened', { seriesId: +id }).catch(() => {}) }, 10_000)
-      : 0
     addEventListener('flix-dl', onDl)
-    cleanup = () => { alive = false; gone = true; seasonRun++; clearTimeout(openTimer); removeEventListener('flix-dl', onDl) }
+    cleanup = () => { alive = false; removeEventListener('flix-dl', onDl) }
     app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
       cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
       app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))
@@ -1092,9 +1047,6 @@ async function seriesView(id) {
       }
     }
     const trb = $('#trb'); if (trb) trb.onclick = loadTrailer
-    // Arrived here because a locked episode was asked for by its address: the reason the player turned it away belongs on
-    // this page, once, where the episode it names is on screen.
-    if (pendingSeriesNote) { const n = pendingSeriesNote; pendingSeriesNote = null; flashNote(n) }
   }
 }
 
@@ -1132,7 +1084,6 @@ function flashNote(text) {
   noteTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 400) }, 2400)
 }
 
-let pendingSeriesNote = null
 
 /**
  * Picture size. Saved per device: 'auto', 'orig', or a height (720, 480) the server converts to on the fly. Auto plays the
@@ -1144,7 +1095,6 @@ let autoQuality = 0
 const qAsk = () => { const s = qSetting(); return s === 'auto' ? autoQuality : s === 'orig' ? 0 : Number(s) || 0 }
 
 /** "S01E03" reads as "E03" in a short note, the way it is said out loud; anything else is left alone. */
-const shortEp = (label) => { const m = /^S\d+\s*E(\d+)/i.exec(String(label ?? '')); return m ? `E${m[1]}` : String(label ?? '') }
 const ICON = {
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
@@ -1781,9 +1731,6 @@ function playView(seriesId, season, label) {
         }, 1000)
         await loadInfo(0, play.position)
       } catch (e) {
-        // The order rule refused this episode: go to the show with the one line that says which episode comes first, rather
-        // than leaving a dead player behind. A direct #/play address ends up here too.
-        if (e.gated) { pendingSeriesNote = e.message; go(`#/series/${seriesId}`); return }
         fail(e.message)
       }
     }
@@ -2017,7 +1964,7 @@ function playView(seriesId, season, label) {
     function showUpNext() {
       // Nothing to offer, already offered, or already declined: no box. A countdown that is already running is left alone
       // rather than restarted, so the `ended` path does not give the viewer a second helping of the same 15 seconds.
-      if (!alive || upNextMuted || upNextBox || !play?.next || play.next.locked) return
+      if (!alive || upNextMuted || upNextBox || !play?.next) return
       // The countdown is fifteen seconds and the next episode's bytes start right here: the server starts the fetch, the
       // probe and the first piece now, so pressing "Play now" (or letting it run) lands on a warm episode instead of the
       // twelve seconds a cold one spends waiting for its first bytes. Fire and forget: this box must never wait on it.
@@ -2069,7 +2016,7 @@ function playView(seriesId, season, label) {
 
     function onEnded() {
       report(true)
-      if (!play.next || play.next.locked) return leavePlayer()
+      if (!play.next) return leavePlayer()
       showUpNext()
     }
 

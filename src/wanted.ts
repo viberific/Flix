@@ -4,11 +4,10 @@ import { qb } from './qb.ts'
 /**
  * What a DOWNLOAD holds, as opposed to what the engine holds.
  *
- * A season pack is a 38 GB torrent with fourteen episodes in it; Flix only ever downloads the one somebody pressed play
- * on (plus the next one, enabled ahead of time). The engine then reports the torrent as 9% done and 38 GB in size, and
- * every number made from that is about the pack rather than about the 6.25 GB the person is waiting for. So the wanted
- * files are read from `interests` (one row per file somebody asked for) and the sizes and per-file progress from
- * qBittorrent's own file list. Everything the Torrents page, the storage graph and the show page say comes from here.
+ * A season pack is a 38 GB torrent with fourteen episodes in it; Flix fetches it whole, front to back, once an episode in it
+ * is tapped. Until then the engine can report the torrent as barely started, and a pack added stopped has nothing
+ * switched on yet. So the wanted files are the ones somebody asked for (`interests`) plus everything the engine has
+ * switched on, with sizes and per-file progress from qBittorrent's own file list. Everything the Torrents page, the storage graph and the show page say comes from here.
  */
 
 /** One file inside a torrent, as qBittorrent reports it. */
@@ -65,8 +64,8 @@ export async function wantedBytes(torrentId: number): Promise<Wanted | null> {
   const want = wantedIndexes(torrentId)
   // Files somebody asked for. Before the first interest is written (a pack added but not yet played, an adopted torrent)
   // the files the engine has enabled are the ones Flix selected, so those stand in.
-  const asked = files.filter((f) => want.includes(f.index))
-  const list = asked.length ? asked : files.filter((f) => f.priority > 0)
+  // A season is fetched whole, so every file the engine has switched on counts, not just the ones somebody played.
+  const list = files.filter((f) => want.includes(f.index) || f.priority > 0)
   if (!list.length) return null
   const wanted = list.reduce((n, f) => n + f.size, 0)
   const held = list.reduce((n, f) => n + f.size * Math.min(1, Math.max(0, f.progress)), 0)

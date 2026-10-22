@@ -32,8 +32,7 @@ import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
 import { fullInDays, storageHistory } from './storage.ts'
-import { autoFetch, autoFirst, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
-import { STARTED_AT, gatesFor, gatedNote } from './gate.ts'
+import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
@@ -47,9 +46,7 @@ export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } 
 app.setErrorHandler((err: any, _req, reply) => {
   const status = err instanceof RateLimitError ? 429 : err instanceof IpNotAuthorizedError ? 403 : err.statusCode ?? 500
   if (status >= 500) app.log.error(err)
-  // `gated` and `after` ride along so the player knows to send the viewer to the show page with the one-line note,
-  // instead of drawing an error it cannot act on.
-  reply.code(status).send({ error: err.message, ...(err.gated ? { gated: true, after: err.after ?? null } : {}) })
+  reply.code(status).send({ error: err.message })
 })
 
 /** True for a host that only exists on the home network: a private IPv4 literal, an mDNS .local name, whatever
@@ -248,12 +245,9 @@ app.get('/api/series/:id', auth, async (req) => {
 /** Add each episode's title, summary, length and still image when we know them. */
 function withInfo<T extends { season: number | null; episode: number | null; watched: boolean; position: number; label: string }>(seriesId: number, eps: T[]) {
   const info = episodeInfoFor(seriesId)
-  const gates = gatesFor(eps)
-  return eps.map((e, n) => {
+  return eps.map((e) => {
     const i = e.season !== null && e.episode !== null ? info.get(`${e.season}|${e.episode}`) : undefined
-    // Every episode carries its own answer to "may this be started yet?", so a card, a row and the hero all read the same
-    // rule without any of them working it out again.
-    return { ...e, ...gates[n], title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: e.season !== null && e.episode !== null ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null } // always asked for: the server falls back to the show's artwork
+    return { ...e, title: i?.name ?? null, overview: i?.overview ?? null, runtime: i?.runtime ?? null, still: e.season !== null && e.episode !== null ? `/api/still/${seriesId}/${e.season}/${e.episode}` : null } // always asked for: the server falls back to the show's artwork
   })
 }
 
@@ -442,38 +436,13 @@ app.post('/api/watch', auth, async (req) => {
   if (i < 0) throw Object.assign(new Error(avoid.size ? 'There is no other source for this episode.' : 'That episode is not available'), { statusCode: 404 })
   const ep = eps[i]
   if (!ep.available) throw Object.assign(new Error('Nobody is sharing this episode right now. Please try again later.'), { statusCode: 503 })
-  // One, two, three (see gate.ts). Only a play is held to it: the same route starts a download for the "save this"
-  // button, and that must keep working from any episode. `play: true` is what the player itself sends.
-  const gates = gatesFor(eps)
-  const gate = gates[i]
-  if (gate.locked && (req.body as any).play === true) {
-    throw Object.assign(new Error(gatedNote(gate.after!)), { statusCode: 409, gated: true, after: gate.after })
-  }
   const play = await startPlayback(req.user!.id, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label })
   const ni = eps.findIndex((e, j) => j > i && e.available)
   const next = ni < 0 ? undefined : eps[ni]
-  // The box offered at the credits must itself be allowed. The gates above were worked out before this play counted, so
-  // an episode opened from the start had not been "started" yet and the one after it read as locked: the up-next box never
-  // came, and the end of the episode went back to the show page however much of the season was on disk. By the time the
-  // next one is asked for, this one is being watched -- so it counts as started here.
-  const nowGates = gatesFor(eps.map((e, j) => (j === i ? { ...e, position: Math.max(e.position, STARTED_AT + 1) } : e)))
-  const nextOpen = ni >= 0 && !nowGates[ni].locked
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
   const titles = episodeInfoFor(Number(seriesId))
   const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
-  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next), locked: !nextOpen } : null }
-})
-
-/**
- * A show's page has been open a while (the client waits ten seconds and sends this only if the page is still up): start
- * the first episode, and only that one. Answers at once and carries on behind -- the page must not wait on a torrent --
- * and autoFirst applies the ordinary automatic-download limits itself.
- */
-app.post('/api/opened', auth, async (req) => {
-  const seriesId = Number((req.body as any)?.seriesId)
-  if (!Number.isInteger(seriesId) || !canViewSeries(req.user, seriesId)) return { ok: false }
-  void autoFirst(req.user!.id, seriesId).catch(() => {})
-  return { ok: true }
+  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
 /** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */
