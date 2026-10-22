@@ -1058,6 +1058,11 @@ function playView(seriesId, season, label) {
       first?.focus()
       return !!m
     }
+    // A list opened with OK on a television puts the highlight on the entry already chosen, so Up and Down have a place to start.
+    pl.addEventListener('click', (e) => {
+      const b = isTv && e.target.closest?.('.p-menu > button')
+      if (b) setTimeout(() => { const m = b.parentElement.querySelector('.menu'); (m?.querySelector('button[aria-current]') || m?.querySelector('button'))?.focus() }, 0)
+    })
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
@@ -1103,8 +1108,23 @@ function playView(seriesId, season, label) {
         wake()
         return
       }
+      // The top bar (back, audio, play on a TV, something's wrong) is one row above the picture: Up from the bar reaches it,
+      // Left and Right walk it, Down comes back to play/pause.
+      const inTop = e.target.closest?.('.p-top') && !e.target.closest('.menu')
+      const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
+      if (inTop && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+        e.preventDefault()
+        const b = topBtns(), n = b.indexOf(e.target.closest('a, button')) + (k === 'ArrowRight' ? 1 : -1)
+        if (n >= 0 && n < b.length) b[n].focus()
+        wake()
+        return
+      }
+      if (inTop && k === 'ArrowDown') { e.preventDefault(); ($('#ppp') || e.target).focus(); wake(); return }
       if (inBar && k === 'ArrowDown') { e.preventDefault(); e.target.blur(); wake(); return }
-      if (k === 'ArrowUp' && !inBar && !e.target.closest?.('a, button')) { e.preventDefault(); $('#ppp')?.focus(); wake(); return }
+      if (k === 'ArrowUp' && !inTop && !e.target.closest?.('.menu')) {
+        const up = inBar ? topBtns()[0] : e.target.closest?.('a, button') ? null : (!$('#wait').classList.contains('gone') ? ($('#pmore') && !$('#pmore').hidden ? $('#pmore') : topBtns()[0]) : $('#ppp'))
+        if (up) { e.preventDefault(); up.focus(); wake(); return }
+      }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
       else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
