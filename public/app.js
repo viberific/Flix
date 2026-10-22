@@ -413,7 +413,7 @@ function askPin(name, error = '', locked = false) {
     const end = (v) => { m.remove(); done(v) }
     m.querySelector('form').onsubmit = (e) => { e.preventDefault(); if (f.value.length >= 4) end(f.value) }
     $('#pc', m).onclick = () => end(null)
-    m.addEventListener('keydown', (e) => { if (e.key === 'Escape') end(null) })
+    m.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') { e.preventDefault(); end(null) } })
   })
 }
 
@@ -434,6 +434,11 @@ function authView(needsSetup) {
       <input class="field" name="name" placeholder="Username" autocomplete="username" value="${esc(signinHint)}" required>
       <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password (8+ characters)' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required' : ''}>
       <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
+    // OK on the username moves on to the password rather than submitting half a form (a remote's keyboard ends with OK).
+    const nameIn = $('input[name=name]'), passIn = $('input[name=password]')
+    nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && nameIn.value.trim() && !passIn.value) { e.preventDefault(); passIn.focus() } })
+    // A television starts on the first empty field, so typing can begin straight away.
+    if (isTv) (nameIn.value ? passIn : nameIn).focus()
     $('form').onsubmit = async (e) => {
       e.preventDefault()
       const f = new FormData(e.target)
@@ -2642,7 +2647,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input
     "is this drawn" on its own, and the offsetParent test is the fallback for a WebView that has never had it. */
 function focusStops() {
   const out = []
-  for (const n of document.querySelectorAll(FOCUSABLE)) {
+  for (const n of (document.querySelector('.pin-modal') || document).querySelectorAll(FOCUSABLE)) { // a PIN box traps the remote: nothing behind it
     if (n.closest('[hidden]') || n.classList.contains('arrow')) continue
     if (!(n.checkVisibility?.({ visibilityProperty: true }) ?? (n.offsetParent !== null || getComputedStyle(n).position === 'fixed'))) continue
     const r = n.getBoundingClientRect()
@@ -2700,9 +2705,13 @@ addEventListener('keydown', (e) => {
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
   // Back on a remote, while the search field has the keyboard: put the keyboard away first, leave the page alone.
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && typing) { el.blur(); e.preventDefault(); return }
+  if (document.querySelector('.pin-modal') && !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return // the PIN box has its own Back
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && !typing && location.hash.length > 2) { history.back(); return }
   const dir = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]
-  if (!dir || typing) return
+  // A remote's Up and Down must be able to leave a text field (to the next field or the button under it); Left and Right stay
+  // with the caret. A dropdown keeps both, because Up and Down change its value.
+  const leaves = typing && isTv && dir && dir[0] === 0 && el.tagName === 'INPUT'
+  if (!dir || (typing && !leaves)) return
   const onThing = el && el !== document.body
   if (!onThing && !isTv) return // on a computer with nothing focused, arrows keep scrolling the page
   const rows = focusRows(focusStops())
