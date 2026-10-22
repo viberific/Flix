@@ -1440,8 +1440,13 @@ function playView(seriesId, season, label) {
         left > 30 ? `${Math.round(left / 60)} min left · ends ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''].filter(Boolean)
       $('#pim').textContent = bits.join('  ·  '); $('#pim').hidden = !bits.length
       const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 8)
-      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b>${c.role ? `<em>${esc(c.role)}</em>` : ''}</span>`).join('')
-      $('#pic').hidden = !cast.length
+      // Only rebuilt when the people change: every pause repaints the card, and a fresh row would jump back to its start.
+      const pic = $('#pic'), faces = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none';this.closest('.p-info-c').onscroll()"><b>${esc(c.name)}</b>${c.role ? `<em>${esc(c.role)}</em>` : ''}</span>`).join('')
+      if (pic.dataset.faces !== faces) { pic.innerHTML = faces; pic.dataset.faces = faces; pic.scrollLeft = 0 }
+      pic.hidden = !cast.length
+      // The right edge fades while there are more faces past it.
+      pic.onscroll = () => pic.classList.toggle('more', pic.scrollWidth - pic.scrollLeft - pic.clientWidth > 2)
+      pic.onscroll()
     }
     function wirePlayer() {
       const bar = $('#pseek')
