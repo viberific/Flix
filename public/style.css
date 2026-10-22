@@ -129,10 +129,10 @@ img.fade.in { opacity: 1; }
 .arrow svg { width: 20px; height: 20px; }
 @media (hover: none) { .arrow { display: none; } }
 
-/* ---------- the Queue: resume, My List and suggestions in one rail ---------- */
+/* ---------- the Queue: resume and Ready to Watch in one rail, My List and suggestions in the one under it ---------- */
 /* Each group's name sits above its first card (data-g, set in wireQueue); a hairline sets the groups apart. */
 .queue-h { margin-bottom: 0; }
-.row-scroll.q { padding-top: 36px; }
+.row-scroll.q, .row-scroll.qtop { padding-top: 36px; }
 .qcard { --tw: 168px; flex: none; position: relative; scroll-snap-align: start; }
 .qcard > .tile { width: var(--tw); }
 .qcard > .tile.wide { width: calc(var(--tw) * 2.4); }

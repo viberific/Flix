@@ -493,7 +493,7 @@ function rowShell(inner, cls = '') {
 }
 const rowOf = (items, html) => rowShell(items.map(html).join(''))
 
-/* ---------- the Queue: what to resume, your list, and what to add next, in one rail ---------- */
+/* ---------- the Queue: what to resume and what is downloaded, then your list and what to add next ---------- */
 /** The show to resume, wide: its banner (its poster when it has none), a play button, and how much is left. */
 const wideTile = (c, i) => {
   const left = c.next ? 'Up next' : `${Math.max(1, Math.ceil(((c.duration || 0) - (c.position || 0)) / 60))} min left`
@@ -524,13 +524,18 @@ function queueOf(cont, home) {
   return { resume: cont, ready: [...ready], list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
 }
 function queueHtml(st) {
-  const cards = [
+  // Two rails: what can be played now (resume, then shows with something downloaded), and under it the list and the picks.
+  // The top rail's group names never move, so they are drawn here; the lower rail's are placed by wireQueue.
+  const now = [
     ...st.resume.map((c, i) => qcard(i ? contTile(c, i) : wideTile(c, i), c.seriesId)),
     ...st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id)),
-    ...st.list.map((s, i) => qcard(tile(s, st.resume.length + st.ready.length + i), s.id, 'list')),
-    ...st.sugg.map((s, i) => qcard(tile(s, st.resume.length + st.ready.length + st.list.length + i), s.id, 'sugg')),
+  ].map((h, i) => !i ? h.replace('class="qcard', `data-g="${st.resume.length ? 'Continue' : 'Ready to Watch'}" class="qcard gl`)
+    : i === st.resume.length ? h.replace('class="qcard', 'data-g="Ready to Watch" class="qcard gl gs') : h)
+  const next = [
+    ...st.list.map((s, i) => qcard(tile(s, i), s.id, 'list')),
+    ...st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')),
   ]
-  return `<h2 class="sec queue-h">Queue</h2>${rowShell(cards.join(''), 'q')}`
+  return `<h2 class="sec queue-h">Queue</h2>${now.length ? rowShell(now.join(''), 'qtop') : ''}${rowShell(next.join(''), 'q')}`
 }
 function wireRows(root) {
   const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
@@ -563,8 +568,6 @@ function wireQueue(root, st) {
   const place = () => {
     const seq = []
     const add = (head, cards) => cards.forEach((el, i) => seq.push([el, i ? '' : head]))
-    if (st.resume.length) add('Continue', st.resume.map((c) => els.get(c.seriesId)))
-    if (st.ready.length) add('Ready to Watch', st.ready.map((s) => els.get(s.id)))
     add('Your list', st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
     add(st.title, st.sugg.map((s) => els.get(s.id)))
     st.list.forEach((s) => label(els.get(s.id), s.id, true))
@@ -697,7 +700,7 @@ async function homeView(q, local = false) {
     html += '<div class="pad">'
     if (lpShow.length) html += leavingPrompt(lpShow)
     // The featured show is never one being resumed (the server keeps it out), so every show to resume is in this row.
-    // Resume, My List and the picks are one rail (see queueOf); without a Queue the picks keep their own row.
+    // Resume and Ready to Watch are one rail, My List and the picks the one under it (see queueOf); without a Queue the picks keep their own row.
     const queue = q ? null : queueOf(items, home)
     if (queue) html += queueHtml(queue)
     if (!q && leaving.items.some((l) => !lpIds.has(l.torrentId))) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items.filter((l) => !lpIds.has(l.torrentId)), leavingTile)}`
