@@ -109,8 +109,8 @@ export const config = {
     // Copy-only by default: a release whose picture would have to be re-encoded is never downloaded in the first
     // place (pick.ts), and what is downloaded plays as it is or is repacked. TRANSCODE_MODE=auto allows conversions.
     mode: (env.TRANSCODE_MODE === 'auto' ? 'auto' : 'off') as 'auto' | 'off',
-    /** Use the GPU's encoder (Quick Sync / VAAPI) when the container can see /dev/dri. Falls back to libx264 on its own. */
-    hardware: env.TRANSCODE_HARDWARE !== 'false',
+    /** Use the GPU's encoder (Quick Sync / VAAPI) when the container can see /dev/dri. Off by default: this box converts on the CPU. TRANSCODE_HARDWARE=true opts in. */
+    hardware: env.TRANSCODE_HARDWARE === 'true',
     /**
      * Encodes allowed at once. One, because this box serves one screen: a second full-quality job
      * halves the speed of both on four cores. A second client is never turned away -- enforceJobCap

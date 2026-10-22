@@ -86,7 +86,7 @@ let chosen: Encoder | null | undefined
  * asks), because the answer depends on the container's devices and is the same for every job afterwards.
  * 0.3.57: on again by default (0.3.56 kept it behind an opt-in switch). The image now carries the iHD driver and the
  * Umbrel compose passes /dev/dri; an encoder that cannot open a session is never chosen, so x264 is still the floor.
- * TRANSCODE_HARDWARE=false keeps everything on the CPU.
+ * Off by default now: everything runs on the CPU unless TRANSCODE_HARDWARE=true (or the admin switch in Settings) opts in.
  */
 export async function pickEncoder(force = false): Promise<Encoder> {
   if (chosen !== undefined && !force) return chosen ?? 'libx264'
