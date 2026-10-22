@@ -465,7 +465,7 @@ a.pill { display: inline-block; }
 .tile { position: relative; }
 .new-badge { position: absolute; top: 8px; left: 8px; z-index: 2; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; color: var(--accent-fg); background: linear-gradient(100deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 12px rgba(0,0,0,.35); }
 #ml[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); }
-.hbanner { display: flex; gap: 12px; align-items: center; position: fixed; top: 66px; left: 0; right: 0; z-index: 40; padding: 8px calc(var(--gutter-r, 20px) + 8px) 8px var(--gutter, 20px); font-size: 13px; line-height: 1.4; color: #fff; text-decoration: none; box-shadow: 0 6px 18px rgba(0,0,0,.25); max-width: 100%; overflow-wrap: anywhere; }
+.hbanner { display: flex; gap: 12px; align-items: center; position: sticky; top: 66px; margin-top: 66px; z-index: 40; padding: 8px calc(var(--gutter-r, 20px) + 8px) 8px var(--gutter, 20px); font-size: 13px; line-height: 1.4; color: #fff; text-decoration: none; box-shadow: 0 6px 18px rgba(0,0,0,.25); max-width: 100%; overflow-wrap: anywhere; }
 .hbanner .hbmain { flex: 1 1 auto; min-width: 0; color: inherit; text-decoration: none; }
 .hbanner .hbx { flex: 0 0 auto; background: none; border: 0; color: inherit; font: inherit; font-size: 20px; line-height: 1; padding: 0 6px; cursor: pointer; opacity: .85; }
 .hbanner .hbx:hover, .hbanner .hbx:focus-visible { opacity: 1; }
@@ -796,3 +796,8 @@ html.tv .dim, html.tv .tcard .dim { font-size: max(1em, 15px); }
 html.tv .hist summary { font-size: 17px; padding: 8px 4px; }
 html.tv .pwrow { gap: 12px; }
 html.tv .chart-wrap { min-height: 220px; }
+
+/* The health strip sits in the page under the header and pushes the page down, instead of floating over its first heading;
+   the page's own gap for the header is no longer needed beneath it. */
+.hbanner + .page-top, .hbanner + .pad.page-top { padding-top: 24px; }
+.hbanner + .hero .hero-in { padding-top: 56px; }
