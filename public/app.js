@@ -513,21 +513,22 @@ const QUEUE_SUGGESTIONS = 8
  * and nothing on their list gets no Queue: the rows below are all there is to show.
  */
 function queueOf(cont, home) {
-  const list = home.myList ?? []
-  if (!cont.length && !list.length) return null
+  const list = home.myList ?? [], ready = home.ready ?? []
+  if (!cont.length && !list.length && !ready.length) return null
   let pool = [], title = 'Suggested for you', used = null
   if (home.picked?.length) { pool = home.picked; used = 'picked' }
   else if (home.because?.series?.length) { pool = home.because.series; title = `Because you ${home.because.liked ? 'liked' : 'watched'} ${home.because.name}`; used = 'because' }
   else if (home.sections?.[0]?.series?.length) { pool = home.sections[0].series; title = home.sections[0].title; used = 'section' }
-  const have = new Set([...list.map((s) => s.id), ...cont.map((c) => c.seriesId)])
+  const have = new Set([...list.map((s) => s.id), ...ready.map((s) => s.id), ...cont.map((c) => c.seriesId)])
   pool = pool.filter((s) => !have.has(s.id))
-  return { resume: cont, list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
+  return { resume: cont, ready: [...ready], list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
 }
 function queueHtml(st) {
   const cards = [
     ...st.resume.map((c, i) => qcard(i ? contTile(c, i) : wideTile(c, i), c.seriesId)),
-    ...st.list.map((s, i) => qcard(tile(s, st.resume.length + i), s.id, 'list')),
-    ...st.sugg.map((s, i) => qcard(tile(s, st.resume.length + st.list.length + i), s.id, 'sugg')),
+    ...st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id)),
+    ...st.list.map((s, i) => qcard(tile(s, st.resume.length + st.ready.length + i), s.id, 'list')),
+    ...st.sugg.map((s, i) => qcard(tile(s, st.resume.length + st.ready.length + st.list.length + i), s.id, 'sugg')),
   ]
   return `<h2 class="sec queue-h">Queue</h2>${rowShell(cards.join(''), 'q')}`
 }
@@ -563,6 +564,7 @@ function wireQueue(root, st) {
     const seq = []
     const add = (head, cards) => cards.forEach((el, i) => seq.push([el, i ? '' : head]))
     if (st.resume.length) add('Continue', st.resume.map((c) => els.get(c.seriesId)))
+    if (st.ready.length) add('Ready to Watch', st.ready.map((s) => els.get(s.id)))
     add('Your list', st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
     add(st.title, st.sugg.map((s) => els.get(s.id)))
     st.list.forEach((s) => label(els.get(s.id), s.id, true))
