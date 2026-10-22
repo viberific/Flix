@@ -692,3 +692,20 @@ html.tv * { cursor: none; }
 .lp-list .btn.lp-keep { border-color: var(--accent); }
 .lp-done { color: var(--dim); }
 .lp-done .lp-name { font-weight: 500; color: var(--dim); }
+
+/* ---------- the show page on a television ---------- */
+/* An episode row lifts and lights up the way the pointer's hover does -- the thumbnail's play badge fills, the row slides in
+   a little -- with a ring that follows its rounded corners. Transform, colour and shadow only. */
+html.tv .ep { outline: none !important; transition: transform .2s var(--ease), background .2s, box-shadow .2s, border-color .2s; }
+html.tv .ep:focus:not(:disabled) { transform: translateX(6px); background: var(--surface-2); box-shadow: 0 0 0 3px var(--fg), 0 14px 32px rgba(0,0,0,.45); border-radius: var(--radius); }
+html.tv .ep:focus:not(:disabled) .play { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; transform: scale(1.1); }
+html.tv .ep:focus .eo { -webkit-line-clamp: 4; }
+/* Season pills: the focused one is filled, so it reads from across the room even when it is not the chosen season. */
+html.tv .pill { outline: none !important; transition: transform .15s var(--ease), background .15s, color .15s, box-shadow .15s; }
+html.tv .pill:focus { transform: scale(1.08); box-shadow: 0 0 0 3px var(--fg); color: var(--fg); }
+/* Cast and the trailer button take the focus so a long cast row can be walked and scrolled, and ring the same way. */
+html.tv .actor { outline: none !important; border-radius: var(--radius); transition: transform .2s var(--ease), box-shadow .2s; }
+html.tv .actor:focus { transform: scale(1.06); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .tr-play:focus { box-shadow: 0 0 0 3px var(--fg); filter: brightness(1.1); }
+html.tv .tr-play:focus svg { transform: scale(1.12); }
+html.tv .dlb:focus { box-shadow: 0 0 0 3px var(--fg); border-radius: 999px; color: var(--fg); }

@@ -732,7 +732,7 @@ async function seriesView(id) {
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
-      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
+      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <div class="eps-head"><h2 class="sec">Episodes</h2><span id="sdls"></span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const dlButton = (e) => {
@@ -816,6 +816,9 @@ async function seriesView(id) {
       paint()
     })
     const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+    // A remote has nothing to point at on a page that has just drawn, so Play (else My List) is already highlighted: one
+    // press of OK starts the show, and the first arrow press moves from somewhere real rather than from a guess.
+    if (isTv && !document.activeElement?.closest?.('#app, main')) (hp || $('#ml'))?.focus({ preventScroll: true })
     const ml = $('#ml'); if (ml) ml.onclick = async () => {
       const on = ml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
