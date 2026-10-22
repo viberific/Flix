@@ -110,7 +110,9 @@ export function start(ep, watch) {
       }
       const poster = await fetch(`/api/art/${ep.seriesId}/poster`).catch(() => null)
       if (poster?.ok) await put(imgUrl(id), poster)
-      const size = (await c.match(videoUrl(id)).then((r) => r?.blob()).catch(() => null))?.size ?? got
+      // What was written, as counted on the way in. Reading the saved video back as a blob just to ask its size pulled a
+      // gigabyte or more into memory, which a television's WebView may not have.
+      const size = got
       await putMeta(c, { id, seriesId: ep.seriesId, season: ep.season, label: ep.label, seriesName: play.seriesName || ep.seriesName, episodeTitle: play.episodeTitle || ep.title || null,
         torrentId: play.torrentId, fileIndex: play.fileIndex, duration: info?.duration ?? null, size, subs, position: 0, savedAt: Date.now() })
       tick(id, null)

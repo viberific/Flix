@@ -404,6 +404,9 @@ function profilesView() {
       for (;;) {
         try { const r = await api('/api/switch', { token: p.token, pin }); me = r.user; markPicked(); return goHome() }
         catch (e) {
+          // Only the server saying this sign-in is no longer good forgets it. A server that did not answer, a restart or
+          // Umbrel's own login in the way used to wipe the profile off the device too, and with it the way back in.
+          if (!e.pin && e.status !== 401) return flashNote(e.message)
           if (!e.pin) { store.set('profiles', profiles().filter((x) => x.name !== p.name)); signinHint = p.name; return go('#/signin') }
           if (e.status === 429) { msg = e.message; pin = await askPin(p.name, msg, true); if (pin === null) return; continue }
           pin = await askPin(p.name, pin ? e.message : ''); if (pin === null) return
@@ -1542,7 +1545,11 @@ function playView(seriesId, season, label) {
       sendReport('auto', why)
       report()
       avoid.push(play.torrentId); tries++; started = false
-      clearInterval(timer); clearInterval(subT); clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
+      clearInterval(timer); clearInterval(subT); clearInterval(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
+      // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
+      // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
+      // moment could bring up "Up next" in the middle of the new copy, which is cut differently.
+      haveFrac = 0; stuckRetried = false; creditAt = null; creditDur = -1; creditFrom = null; creditChecked = 0; prefetched = false
       // A new source is a new file, so the box goes and its countdown with it: leaving the interval running would send the
       // viewer to the next episode while the episode they are watching is still being fetched.
       clearInterval(cdT); upNextBox = null
@@ -1715,6 +1722,9 @@ function playView(seriesId, season, label) {
               creditAt = m.at; creditDur = m.dur; creditFrom = m.from
             }
             if (creditAt != null && v.currentTime >= creditAt) showUpNext()
+            // Went back into the episode from the credits (to see the last scene again): the countdown would have cut it
+            // off and opened the next one 15 seconds later. The box goes, and comes back when the credits do.
+            else if (upNextBox && creditAt != null && v.currentTime < creditAt - 5) upNextCancel?.()
           }
           const dur = knownDuration(info, v)
           if (!prefetched && dur && v.currentTime / dur >= 0.6) {
@@ -1854,7 +1864,7 @@ function playView(seriesId, season, label) {
     let creditAt = null, creditDur = -1, creditFrom = null, creditChecked = 0
     // One showing per play. Not now sets `upNextMuted` for the rest of the episode: neither the credits check nor the end
     // of the file brings the box back, and navigating away does not need to because the whole view goes with it.
-    let upNextMuted = false, upNextBox = null
+    let upNextMuted = false, upNextBox = null, upNextCancel = null
 
     function showUpNext() {
       // Nothing to offer, already offered, or already declined: no box. A countdown that is already running is left alone
@@ -1886,8 +1896,21 @@ function playView(seriesId, season, label) {
         await Promise.race([report(true), new Promise((r) => setTimeout(r, 1500))])
         location.replace(target)
       }
-      cdT = setInterval(() => { if (--left <= 0) onward() }, 1000)
-      const dismiss = () => { upNextMuted = true; clearInterval(cdT); upNextBox = null; box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+      // Paused, the countdown waits too: pausing in the credits to answer the door used to come back to the next episode
+      // already playing. The bar stops where it is and runs on for the seconds left when play resumes. The end of the file
+      // (paused and ended) and a TV that has the show count as running.
+      let frozen = false
+      cdT = setInterval(() => {
+        if (v && v.paused && !v.ended && !castingOnly) {
+          if (!frozen) { frozen = true; bar.style.transition = 'none'; bar.style.transform = `scaleX(${(LEFT - left) / LEFT})` }
+          return
+        }
+        if (frozen) { frozen = false; requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }) }
+        if (--left <= 0) onward()
+      }, 1000)
+      const cancel = () => { clearInterval(cdT); if (upNextBox === box) { upNextBox = null; upNextCancel = null } box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+      upNextCancel = cancel
+      const dismiss = () => { upNextMuted = true; cancel() }
       $('#nn').onclick = onward
       $('#nc').onclick = dismiss
       // A remote needs something to land on, so on a television Play now takes the focus. A computer keeps what it was
