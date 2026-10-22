@@ -735,3 +735,14 @@ html.tv .auth .btn, html.tv .pin-box .btn { padding: 14px 20px; font-size: 18px;
 html.tv .pin-box { width: min(420px, 100%); }
 html.tv .pin-box input { font-size: 32px; }
 html.tv .pin-modal .btn:focus { transform: scale(1.06); }
+
+/* ---------- the top bar, menus and notices on a television ---------- */
+html.tv a.brand:focus { outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 12px; }
+html.tv .search:focus-within { border-color: var(--fg); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .search input:focus { outline: none; box-shadow: none; }
+html.tv .avatar:focus { outline: none; transform: scale(1.1); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .menu a:focus, html.tv .menu button:focus { outline: none; background: var(--fg); color: var(--bg); border-radius: 8px; }
+html.tv .menu { animation: rise .2s var(--ease); }
+html.tv .menu a, html.tv .menu button { padding: 12px 14px; font-size: 17px; }
+html.tv .lp-x:focus, html.tv .hbx:focus, html.tv .lp-name:focus { outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 8px; opacity: 1; }
+html.tv .empty .btn:focus { box-shadow: 0 0 0 3px var(--fg); }

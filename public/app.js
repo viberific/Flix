@@ -271,7 +271,7 @@ function renderTop() {
       if (full && mine === liveN) show(full, v)
     }, 120)
   }
-  sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
+  sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur(); if (isTv) setTimeout(() => $('#app .tile')?.focus({ preventScroll: true }), 500) }
   $('#av').onclick = (e) => {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
@@ -286,6 +286,8 @@ function renderTop() {
     }
     const sw = $('#sw'); if (sw) sw.onclick = () => { try { sessionStorage.removeItem('flix.picked') } catch { /* ignore */ } go('#/profiles') }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
+    // A remote lands on the first entry; Up and Down walk the list (see focusStops); Back closes it.
+    if (isTv) m.querySelector('a, button')?.focus({ preventScroll: true })
   }
 }
 /* ---------- the Flix sound ---------- */
@@ -2583,7 +2585,18 @@ async function offlinePlayView(id) {
     v.onpause = () => save(false)
     v.onended = () => { save(true); go('#/downloads') }
     v.onerror = () => { app.innerHTML = `<div class="pad page-top"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
-    const key = (e) => { if (e.key === 'Escape') go('#/downloads') }
+    // The remote works the saved episode the way it works the streamed one: back leaves, left and right skip ten seconds,
+    // OK and the media keys play and pause.
+    const key = (e) => {
+      const k = e.key
+      if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); go('#/downloads') }
+      else if (k === 'ArrowLeft' || k === 'MediaRewind') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
+      else if (k === 'ArrowRight' || k === 'MediaFastForward') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+      else if (k === ' ' || k === 'Enter' || k === 'MediaPlayPause') { if (e.target.closest?.('a, button')) return; e.preventDefault(); v.paused ? v.play() : v.pause() }
+      else if (k === 'MediaPlay') v.play()
+      else if (k === 'MediaPause') v.pause()
+      wake()
+    }
     addEventListener('keydown', key)
     cleanup = () => { clearTimeout(idleT); removeEventListener('keydown', key); if (v.currentTime) dl.saveProgress(id, v.currentTime, v.duration || m.duration, false).catch(() => {}); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
   }
@@ -2647,7 +2660,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input
     "is this drawn" on its own, and the offsetParent test is the fallback for a WebView that has never had it. */
 function focusStops() {
   const out = []
-  for (const n of (document.querySelector('.pin-modal') || document).querySelectorAll(FOCUSABLE)) { // a PIN box traps the remote: nothing behind it
+  for (const n of (document.querySelector('.pin-modal') || document.querySelector('#top > .menu:not(.out)') || document).querySelectorAll(FOCUSABLE)) { // a PIN box traps the remote: nothing behind it
     if (n.closest('[hidden]') || n.classList.contains('arrow')) continue
     if (!(n.checkVisibility?.({ visibilityProperty: true }) ?? (n.offsetParent !== null || getComputedStyle(n).position === 'fixed'))) continue
     const r = n.getBoundingClientRect()
@@ -2705,6 +2718,8 @@ addEventListener('keydown', (e) => {
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
   // Back on a remote, while the search field has the keyboard: put the keyboard away first, leave the page alone.
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && typing) { el.blur(); e.preventDefault(); return }
+  const openMenu = document.querySelector('#top > .menu:not(.out)')
+  if (openMenu && (e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack')) { e.preventDefault(); closeMenu(openMenu); $('#av')?.focus({ preventScroll: true }); return }
   if (document.querySelector('.pin-modal') && !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return // the PIN box has its own Back
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && !typing && location.hash.length > 2) { history.back(); return }
   const dir = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]
@@ -2813,7 +2828,11 @@ async function route() {
     if (me.is_admin && parts[0] !== 'play') healthBanner()
   } catch (e) {
     clearTimeout(slow)
-    if (token === navToken) app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}</div></div>`
+    if (token === navToken) {
+      app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
+      $('#retry').onclick = () => route()
+      if (isTv) $('#retry').focus({ preventScroll: true })
+    }
   }
 }
 addEventListener('hashchange', route)
