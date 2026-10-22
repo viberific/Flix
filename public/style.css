@@ -205,7 +205,11 @@ img.fade.in { opacity: 1; }
    brightens, the aura flaring with it) then a dissolve into blur, gone in about a second -- not a plain fade of the
    whole overlay, which took the logo and the picture down together. */
 .p-wait.gone { background: transparent; pointer-events: none; }
-.p-wait.gone #msg, .p-wait.gone #pnow { visibility: hidden; }
+.p-wait.gone #msg, .p-wait.gone #pnow, .p-wait.gone #cnc { visibility: hidden; }
+/* And once the mark's exit has played, the whole layer is put away. The exit is an animation, and a television's WebView
+   does not always run it to its end, which left the logo sitting over a show that was already playing. Visibility after a
+   delay does not depend on that: the mark gets its second and a bit to bloom and dissolve, then nothing of it remains. */
+.p-wait.gone { visibility: hidden; transition: opacity .9s ease, visibility 0s linear 1.25s; }
 /* What a wait looks like on the picture: a bar, a plain line and how long it is. The how-fast and how-many numbers are real
    and worth keeping, so they live behind Details -- on screen they read like a torrent client, which is not what this is. */
 .p-now { display: grid; justify-items: center; gap: 10px; width: min(380px, 76vw); }
@@ -802,6 +806,8 @@ html.tv .chart-wrap { min-height: 220px; }
    the page's own gap for the header is no longer needed beneath it. */
 .hbanner + .page-top, .hbanner + .pad.page-top { padding-top: 24px; }
 .hbanner + .hero .hero-in { padding-top: 56px; }
+/* The show page too: its banner already starts under the strip, so its own room for the header would be a second gap. */
+.hbanner + .s-hero .s-in { padding-top: 56px; }
 
 /* ---------- loading skeletons ---------- */
 .skeleton { animation: fadein .35s var(--ease) .05s both; }

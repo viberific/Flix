@@ -281,18 +281,33 @@ export async function recheckMissingFiles(): Promise<{ rechecked: number; failed
   return out
 }
 
+/** When each active download was first found missing from the engine (see sweep). */
+const absentSince = new Map<number, number>()
+const ABSENT_FOR_SEC = 600
+
 /** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled. */
 export async function sweep(): Promise<string[]> {
   const removed: string[] = []
   await syncFolder().catch((e) => console.warn(`[folder] ${e.message}`)) // adopt what was downloaded by hand, move old hash-named folders, tidy leftovers
   const rows = db.prepare(`SELECT torrent_id, info_hash, added_at FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string; added_at: number }[]
   let onDisk = 0 // what the engine holds for Flix's downloads, for the storage graph
+  // An engine that has just started answers with an empty list for a while, as it reads its torrents back in. Taking that
+  // at its word marked every download "missing from engine": they stopped counting as on the server and, no longer
+  // active, were never swept again once seeded. So a torrent only counts as gone when the engine is plainly holding
+  // others and this one has been absent for ten minutes of sweeps.
+  const engineHasAny = rows.length ? (await qb.listAll().catch(() => [])).length > 0 : false
   for (const d of rows) {
     const t = await qb.info(d.info_hash)
     if (!t) { // vanished from the engine (manually deleted) -> reflect it
-      db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
+      const first = absentSince.get(d.torrent_id) ?? now()
+      absentSince.set(d.torrent_id, first)
+      if (engineHasAny && now() - first >= ABSENT_FOR_SEC) {
+        absentSince.delete(d.torrent_id)
+        db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
+      }
       continue
     }
+    absentSince.delete(d.torrent_id)
     const held = (await wantedBytes(d.torrent_id).catch(() => null))?.held ?? t.size * t.progress
     onDisk += held
     if (d.added_at > now() - config.sweepGraceSec) continue // just added: its first viewer's interest may not be written yet

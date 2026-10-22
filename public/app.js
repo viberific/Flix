@@ -404,6 +404,9 @@ function profilesView() {
       for (;;) {
         try { const r = await api('/api/switch', { token: p.token, pin }); me = r.user; markPicked(); return goHome() }
         catch (e) {
+          // Only the server saying this sign-in is no longer good forgets it. A server that did not answer, a restart or
+          // Umbrel's own login in the way used to wipe the profile off the device too, and with it the way back in.
+          if (!e.pin && e.status !== 401) return flashNote(e.message)
           if (!e.pin) { store.set('profiles', profiles().filter((x) => x.name !== p.name)); signinHint = p.name; return go('#/signin') }
           if (e.status === 429) { msg = e.message; pin = await askPin(p.name, msg, true); if (pin === null) return; continue }
           pin = await askPin(p.name, pin ? e.message : ''); if (pin === null) return
@@ -413,6 +416,18 @@ function profilesView() {
     const f = $('.who-tile'); if (f) f.focus()
   }
 }
+
+/** Android's Back button outside the player (see MainActivity, which never hands Back to the page as a key press): what is
+    open on top of the page closes first -- the PIN box, the account menu -- instead of the page going back underneath it
+    and leaving the box floating over the page before. False lets the WebView go back as usual. */
+function pageBack() {
+  const pin = document.querySelector('.pin-modal')
+  if (pin) { pin.querySelector('#pc')?.click(); return true }
+  const menu = document.querySelector('#top > .menu:not(.out)')
+  if (menu) { closeMenu(menu); $('#av')?.focus({ preventScroll: true }); return true }
+  return false
+}
+window.__flixBack = pageBack
 
 /** A small "enter your PIN" box. Resolves with the digits, or null when cancelled. */
 function askPin(name, error = '', locked = false) {
@@ -536,7 +551,7 @@ function wireLeavingPrompt() {
   const close = () => { lpMark(ids); lp.remove() }
   const x = $('#lp-x')
   if (x) x.onclick = close
-  lp.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
+  lp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close() } })
 }
 
 async function homeView(q, local = false) {
@@ -604,7 +619,7 @@ async function homeView(q, local = false) {
     }
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
-      try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+      try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
     }
   }
 }
@@ -636,7 +651,8 @@ function heroTrailer(hero, seriesId) {
     player = new YT.Player('htp', { videoId: ids[0], host: 'https://www.youtube-nocookie.com',
       playerVars: { autoplay: 1, mute: 1, controls: 0, disablekb: 1, fs: 0, rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3, cc_load_policy: 0 },
       events: {
-        onReady: (e) => { e.target.mute(); if (visible) e.target.playVideo() },
+        // The iframe is never somewhere the remote can land: keys sent into it would stop reaching Flix's own navigation.
+        onReady: (e) => { e.target.mute(); try { e.target.getIframe?.()?.setAttribute('tabindex', '-1') } catch { /* fine */ } if (visible) e.target.playVideo() },
         // Only a picture that is really moving is shown; the still stays up through buffering and any error.
         onStateChange: (e) => { if (e.data === 1) fade(true); else if (e.data === 0) { fade(false); setTimeout(() => !dead && gone(), 1200) } },
         onError: next,
@@ -897,12 +913,12 @@ async function seriesView(id) {
     if (isTv && !document.activeElement?.closest?.('#app, main')) (hp || $('#ml'))?.focus({ preventScroll: true })
     const ml = $('#ml'); if (ml) ml.onclick = async () => {
       const on = ml.getAttribute('aria-pressed') !== 'true'
-      try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
+      try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
     }
     const tu = $('#tu'), td = $('#td')
     const vote = async (b, v) => {
       const next = b.getAttribute('aria-pressed') === 'true' ? 0 : v // tapping the same thumb again takes it back
-      try { await api('/api/vote', { seriesId: +id, vote: next }); tu.setAttribute('aria-pressed', String(next === 1)); td.setAttribute('aria-pressed', String(next === -1)) } catch (e) { alert(e.message) }
+      try { await api('/api/vote', { seriesId: +id, vote: next }); tu.setAttribute('aria-pressed', String(next === 1)); td.setAttribute('aria-pressed', String(next === -1)) } catch (e) { flashNote(e.message) }
     }
     if (tu) tu.onclick = () => vote(tu, 1)
     if (td) td.onclick = () => vote(td, -1)
@@ -1130,9 +1146,26 @@ function playView(seriesId, season, label) {
       const b = isTv && e.target.closest?.('.p-menu > button')
       if (b) setTimeout(() => { const m = b.parentElement.querySelector('.menu'); (m?.querySelector('button[aria-current]') || m?.querySelector('button'))?.focus() }, 0)
     })
+    // What a remote can reach on the black screen (Details and Cancel while it waits, Try again and Back when it failed, the
+    // casting card's buttons) and in the top bar.
+    const waitBtns = () => [...pl.querySelectorAll('#wait a[href], #wait button')].filter((x) => !x.closest('[hidden]') && x.offsetParent !== null && getComputedStyle(x).visibility !== 'hidden')
+    const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
     const key = (e) => {
-      if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
+      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
+      // On the black screen the arrows walk its buttons instead of seeking a picture that is not there: on the failure card
+      // Right went 10 seconds forward instead of reaching Back. Up from the first one reaches the top bar.
+      if (/^Arrow/.test(k) && e.target.closest?.('#wait') && !$('#wait').classList.contains('gone')) {
+        const b = waitBtns(), i = b.indexOf(e.target.closest('a, button'))
+        if (i >= 0) {
+          e.preventDefault()
+          const n = i + (k === 'ArrowRight' || k === 'ArrowDown' ? 1 : -1)
+          if (n >= 0 && n < b.length) b[n].focus()
+          else if (n < 0 && k === 'ArrowUp') topBtns()[0]?.focus()
+          wake()
+          return
+        }
+      }
       // While the up-next box is up its two buttons are what a remote is pointed at, so left and right walk between them
       // instead of seeking the picture. Enter and OK already work, because the button has the focus.
       if ((k === 'ArrowLeft' || k === 'ArrowRight') && e.target.closest?.('.p-next')) {
@@ -1178,7 +1211,6 @@ function playView(seriesId, season, label) {
       // The top bar (back, audio, play on a TV, something's wrong) is one row above the picture: Up from the bar reaches it,
       // Left and Right walk it, Down comes back to play/pause.
       const inTop = e.target.closest?.('.p-top') && !e.target.closest('.menu')
-      const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
       if (inTop && (k === 'ArrowLeft' || k === 'ArrowRight')) {
         e.preventDefault()
         const b = topBtns(), n = b.indexOf(e.target.closest('a, button')) + (k === 'ArrowRight' ? 1 : -1)
@@ -1186,11 +1218,18 @@ function playView(seriesId, season, label) {
         wake()
         return
       }
-      if (inTop && k === 'ArrowDown') { e.preventDefault(); ($('#ppp') || e.target).focus(); wake(); return }
+      if (inTop && k === 'ArrowDown') { e.preventDefault(); ((!$('#wait').classList.contains('gone') && waitBtns()[0]) || $('#ppp') || e.target).focus(); wake(); return }
       if (inBar && k === 'ArrowDown') { e.preventDefault(); e.target.blur(); wake(); return }
       if (k === 'ArrowUp' && !inTop && !e.target.closest?.('.menu')) {
-        const up = inBar ? topBtns()[0] : e.target.closest?.('a, button') ? null : (!$('#wait').classList.contains('gone') ? ($('#pmore') && !$('#pmore').hidden ? $('#pmore') : topBtns()[0]) : $('#ppp'))
+        const up = inBar ? topBtns()[0] : e.target.closest?.('a, button') ? null : (!$('#wait').classList.contains('gone') ? (waitBtns()[0] || topBtns()[0]) : $('#ppp'))
         if (up) { e.preventDefault(); up.focus(); wake(); return }
+      }
+      if (k === 'ArrowDown' && !e.target.closest?.('a, button, .menu') && !$('#wait').classList.contains('gone') && waitBtns()[0]) { e.preventDefault(); waitBtns()[0].focus(); wake(); return }
+      // Before there is a picture (the episode is still being found) or while a TV has it, there is nothing here to play,
+      // pause or seek: only Back, which leaves.
+      if (!v || castingOnly) {
+        if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); leavePlayer() }
+        return
       }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
@@ -1299,7 +1338,7 @@ function playView(seriesId, season, label) {
       $('#pio').textContent = desc; $('#pio').hidden = !desc
       // Score, year and genres, then how long is left and when it would finish if resumed now.
       const left = totalT() - nowT()
-      const bits = [s?.score ? `★ ${s.score.toFixed(1)}` : '', s?.year || '', (s?.genres ?? []).slice(0, 3).join(' · '),
+      const bits = [Number(s?.score) ? `★ ${Number(s.score).toFixed(1)}` : '', s?.year || '', (s?.genres ?? []).slice(0, 3).join(' · '),
         left > 30 ? `${Math.round(left / 60)} min left · ends ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''].filter(Boolean)
       $('#pim').textContent = bits.join('  ·  '); $('#pim').hidden = !bits.length
       const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 8)
@@ -1475,7 +1514,7 @@ function playView(seriesId, season, label) {
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
       alive = false; removeEventListener('visibilitychange', onVisible); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
-      if (window.__flixBack === onBack) window.__flixBack = null
+      if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
     const onBack = () => {
@@ -1506,7 +1545,11 @@ function playView(seriesId, season, label) {
       sendReport('auto', why)
       report()
       avoid.push(play.torrentId); tries++; started = false
-      clearInterval(timer); clearInterval(subT); clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
+      clearInterval(timer); clearInterval(subT); clearInterval(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
+      // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
+      // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
+      // moment could bring up "Up next" in the middle of the new copy, which is cut differently.
+      haveFrac = 0; stuckRetried = false; creditAt = null; creditDur = -1; creditFrom = null; creditChecked = 0; prefetched = false
       // A new source is a new file, so the box goes and its countdown with it: leaving the interval running would send the
       // viewer to the next episode while the episode they are watching is still being fetched.
       clearInterval(cdT); upNextBox = null
@@ -1633,7 +1676,7 @@ function playView(seriesId, season, label) {
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
@@ -1679,6 +1722,9 @@ function playView(seriesId, season, label) {
               creditAt = m.at; creditDur = m.dur; creditFrom = m.from
             }
             if (creditAt != null && v.currentTime >= creditAt) showUpNext()
+            // Went back into the episode from the credits (to see the last scene again): the countdown would have cut it
+            // off and opened the next one 15 seconds later. The box goes, and comes back when the credits do.
+            else if (upNextBox && creditAt != null && v.currentTime < creditAt - 5) upNextCancel?.()
           }
           const dur = knownDuration(info, v)
           if (!prefetched && dur && v.currentTime / dur >= 0.6) {
@@ -1818,7 +1864,7 @@ function playView(seriesId, season, label) {
     let creditAt = null, creditDur = -1, creditFrom = null, creditChecked = 0
     // One showing per play. Not now sets `upNextMuted` for the rest of the episode: neither the credits check nor the end
     // of the file brings the box back, and navigating away does not need to because the whole view goes with it.
-    let upNextMuted = false, upNextBox = null
+    let upNextMuted = false, upNextBox = null, upNextCancel = null
 
     function showUpNext() {
       // Nothing to offer, already offered, or already declined: no box. A countdown that is already running is left alone
@@ -1850,8 +1896,21 @@ function playView(seriesId, season, label) {
         await Promise.race([report(true), new Promise((r) => setTimeout(r, 1500))])
         location.replace(target)
       }
-      cdT = setInterval(() => { if (--left <= 0) onward() }, 1000)
-      const dismiss = () => { upNextMuted = true; clearInterval(cdT); upNextBox = null; box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+      // Paused, the countdown waits too: pausing in the credits to answer the door used to come back to the next episode
+      // already playing. The bar stops where it is and runs on for the seconds left when play resumes. The end of the file
+      // (paused and ended) and a TV that has the show count as running.
+      let frozen = false
+      cdT = setInterval(() => {
+        if (v && v.paused && !v.ended && !castingOnly) {
+          if (!frozen) { frozen = true; bar.style.transition = 'none'; bar.style.transform = `scaleX(${(LEFT - left) / LEFT})` }
+          return
+        }
+        if (frozen) { frozen = false; requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }) }
+        if (--left <= 0) onward()
+      }, 1000)
+      const cancel = () => { clearInterval(cdT); if (upNextBox === box) { upNextBox = null; upNextCancel = null } box.classList.add('out'); setTimeout(() => box.remove(), 350) }
+      upNextCancel = cancel
+      const dismiss = () => { upNextMuted = true; cancel() }
       $('#nn').onclick = onward
       $('#nc').onclick = dismiss
       // A remote needs something to land on, so on a television Play now takes the focus. A computer keeps what it was
@@ -1924,6 +1983,7 @@ function playView(seriesId, season, label) {
       t.kind = 'subtitles'; t.label = s.label; t.dataset.n = s.n; t.src = s.url + '?r=' + Date.now()
       if (s.lang && s.lang !== 'und') t.srclang = s.lang.length === 2 ? s.lang : ''
       v.appendChild(t)
+      liftCues(t)
       t.track.mode = 'disabled' // applySubs turns on the one that is chosen
     }
 
@@ -2329,11 +2389,21 @@ function downloadsPanel(data, root) {
     const sec = (title, list, kind) => list.length ? `<div class="sub-h">${title}</div><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
     $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
       + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
+    // The list redraws every 15 seconds; one that was opened to read stays open.
+    const histOpen = !!$('#thist details')?.open
     $('#thist').innerHTML = gone.length ? `<details class="hist"><summary>Removed (${gone.length})</summary><ul class="trows">${gone.slice(0, 50).map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}</span><div class="dim sm">${esc(x.remove_reason || '')}</div></div><span class="size dim">${x.removed_at ? ago(x.removed_at) : ''}</span><span></span></li>`).join('')}</ul></details>` : ''
+    if (histOpen) { const h = $('#thist details'); if (h) h.open = true }
     root.querySelectorAll('[data-ws]').forEach((b) => b.onclick = async () => {
-      try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { alert(e.message) }
+      try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { flashNote(e.message) }
     })
     root.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+      // Deleting a download is not undone by anything, so a second press confirms it, as everywhere else in Settings.
+      if (b.dataset.sure !== '1') {
+        const was = b.textContent
+        b.dataset.sure = '1'; b.textContent = 'Press again to remove'; b.classList.add('danger')
+        setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = was; b.classList.remove('danger') } }, 4000)
+        return
+      }
       try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
     })
   }
@@ -2353,6 +2423,8 @@ function downloadsPanel(data, root) {
     const d = await api('/api/admin/downloads').catch(() => data)
     lastHealth = await api('/api/admin/health').catch(() => lastHealth)
     const rp = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports
+    // Not while a Remove is waiting for its second press: the redraw would put the button back and lose the first one.
+    if (root.querySelector('[data-sure="1"]')) return
     keepFocus(root, () => { draw(d); reports(rp) })
   }, 15000)
   const t2 = setInterval(loadChart, 300000)
@@ -2399,7 +2471,7 @@ function familyPanel(data, root) {
         const cur = onList(u()), r = b.dataset.r, next = cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]
         b.setAttribute('aria-pressed', String(next.includes(r)))
         try { await patch(id, { allowedRatings: all.filter((x) => next.includes(x)) }); const l = $('.who .dim', card); if (l) l.textContent = u().allowed ? 'Limited' : 'Everything' }
-        catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); alert(e.message) }
+        catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); flashNote(e.message) }
       })
       card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
         const act = b.dataset.act
@@ -2407,21 +2479,21 @@ function familyPanel(data, root) {
         else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = ''; $('[data-act=pw]', card).textContent = 'Reset password' } catch (e) { msg.textContent = e.message } }
         else if (act === 'pin') { const row = $('.pinrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pinsave' || act === 'pinclear') {
-          try { await patch(id, { pin: act === 'pinclear' ? null : $('.pinrow input', card).value }); paint() } catch (e) { alert(e.message) }
+          try { await patch(id, { pin: act === 'pinclear' ? null : $('.pinrow input', card).value }); paint() } catch (e) { flashNote(e.message) }
         }
         else if (act === 'invite') {
           try {
             const r = await api(`/api/admin/users/${id}/invite`, {}); const url = `${location.origin}/#/join/${r.token}`
             const row = $('.invrow', card); row.hidden = false; const f = $('input', row); f.value = url; f.focus(); f.select()
             if (navigator.share) $('[data-act=share]', row).hidden = false
-          } catch (e) { alert(e.message) }
+          } catch (e) { flashNote(e.message) }
         }
         else if (act === 'copy') { const f = $('.invrow input', card); f.select(); try { await navigator.clipboard.writeText(f.value); b.textContent = 'Copied' } catch { document.execCommand?.('copy'); b.textContent = 'Copied' } setTimeout(() => { b.textContent = 'Copy' }, 2000) }
         else if (act === 'share') navigator.share({ title: 'Flix', text: `Sign in to Flix as ${u().name}`, url: $('.invrow input', card).value }).catch(() => {})
-        else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { alert(e.message) } }
+        else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { flashNote(e.message) } }
         else if (act === 'rm') {
           if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
-          try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { alert(e.message) }
+          try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { flashNote(e.message) }
         }
       })
     })
@@ -2453,7 +2525,7 @@ function playbackSection(tc) {
   return `<div id="s-playback" class="ssec"><h2 class="stitle2">Playback</h2>
       <p class="dim" style="max-width:66ch">How hard the box works to convert a file the player cannot take as it is. A file it can play directly is not converted at all, and when only the sound needs it the picture is copied, so this only applies to the rare file whose picture has to be converted. That happens on its own, with nothing to allow.</p>
       <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
-      <form id="tf" class="person"><label class="dim" for="tprofile">Quality</label>
+      <form id="tpf" class="person"><label class="dim" for="tprofile">Quality</label>
         <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
         <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Only download copies that play as they are (H.264), so nothing has to be converted</label>
         <div class="dim" id="tm2" role="status"></div></form></div>`
@@ -2543,9 +2615,12 @@ function settingsPanel(data, root) {
       tmsg('Testing…')
       try { await api('/api/admin/settings/tmdb/test', {}); tmsg('TMDB accepted the key.') } catch (err) { tmsg(err.message) }
     }
-    const tc = $('#tc')
-    if (tc) tc.onclick = async () => {
-      if (tc.dataset.sure !== '1') { tc.dataset.sure = '1'; tc.textContent = 'Tap again to remove'; setTimeout(() => { tc.dataset.sure = ''; tc.textContent = 'Remove saved key' }, 4000); return }
+    // Not called tc: that name is the transcode settings above, which the Playback controls assign to. With a const of the
+    // same name here, changing the quality or the "only copies that play as they are" box saved and then failed with
+    // "Assignment to constant variable", leaving the page out of date.
+    const tcb = $('#tc')
+    if (tcb) tcb.onclick = async () => {
+      if (tcb.dataset.sure !== '1') { tcb.dataset.sure = '1'; tcb.textContent = 'Tap again to remove'; setTimeout(() => { tcb.dataset.sure = ''; tcb.textContent = 'Remove saved key' }, 4000); return }
       try { tm = (await api('/api/admin/settings/tmdb', { apiKey: '' }, 'PUT')).tmdb; paint() } catch (err) { tmsg(err.message) }
     }
     const qmsg = (t) => { $('#qm').textContent = t }
@@ -2592,7 +2667,7 @@ function profileView() {
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
       const before = me.avatar
-      const msg = $('avmsg')
+      const msg = $('#avmsg')
       b.disabled = true
       try {
         me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user
@@ -2601,9 +2676,9 @@ function profileView() {
         setMsg(msg, 'Saved.')
       } catch (e) { me.avatar = before; setMsg(msg, e.message, true) } finally { b.disabled = false }
     })
-    $('nform').onsubmit = async (e) => {
+    $('#nform').onsubmit = async (e) => {
       e.preventDefault()
-      const err = $('nerr'); err.textContent = ''
+      const err = $('#nerr'); err.textContent = ''
       const name = new FormData(e.target).get('name')
       try {
         const r = await api('/api/me', { name }, 'PATCH')
@@ -2613,9 +2688,9 @@ function profileView() {
         err.textContent = 'Name saved.'; err.classList.add('ok')
       } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
     }
-    $('pform').onsubmit = async (e) => {
+    $('#pform').onsubmit = async (e) => {
       e.preventDefault()
-      const err = $('perr'); err.textContent = ''
+      const err = $('#perr'); err.textContent = ''
       const f = new FormData(e.target)
       try {
         await api('/api/me', { currentPassword: f.get('current'), newPassword: f.get('next') }, 'PATCH')
@@ -2681,6 +2756,7 @@ async function offlinePlayView(id) {
     app.innerHTML = `<div class="player" id="pl"><div class="p-top"><a class="icon-btn" href="#/downloads" aria-label="Back">${I.back}</a><div class="p-title"><b>${esc(m.seriesName || '')}</b><span>${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span></div></div>
       <div id="vw"><video controls autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
     const pl = $('#pl'), v = $('video')
+    v.querySelectorAll('track').forEach(liftCues)
     let idleT = null, last = 0
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (!v.paused) pl.classList.add('idle') }, 3000) }
     pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
@@ -2835,7 +2911,8 @@ function revealStop(el) {
 let stickyX = null, stickyEl = null
 
 addEventListener('keydown', (e) => {
-  if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
+  // Already handled where it happened (the PIN box closing itself on Escape): going back a page as well was a second action.
+  if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
   const el = document.activeElement
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
   // Back on a remote, while the search field has the keyboard: put the keyboard away first, leave the page alone.
@@ -2917,9 +2994,16 @@ function captureView() {
       if (sel) at = { sel }
     }
   }
-  return { y: scrollY, at }
+  // On a show page the episode list is one season's: which one goes with it, or Back would light up the same place in
+  // whichever season the page opens on.
+  const season = app.querySelector('.pills[role="tablist"] .pill[aria-selected="true"]')?.dataset.k ?? null
+  return { y: scrollY, at, season }
 }
 function restoreView(v) {
+  if (v.season != null) {
+    const pill = app.querySelector(`.pills[role="tablist"] .pill[data-k=${JSON.stringify(String(v.season))}]`)
+    if (pill && pill.getAttribute('aria-selected') !== 'true') pill.click() // draws that season's episodes, synchronously
+  }
   window.scrollTo({ top: v.y, behavior: 'instant' })
   let el = null
   try { el = v.at?.sel ? app.querySelector(v.at.sel) : v.at ? app.querySelectorAll('.rowwrap')[v.at.row]?.querySelectorAll('.row-scroll > *')[v.at.idx] : null } catch { /* a selector that no longer parses */ }
@@ -2994,6 +3078,17 @@ async function route() {
 addEventListener('hashchange', route)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 route()
+
+/**
+ * Captions sit one line up from the very bottom of the picture. The browser puts a cue with no position of its own on the
+ * last line, which with the smaller outlined captions read as hugging the edge of the screen. A cue that carries a
+ * position from the file (a sign, a speaker on the left) keeps it. Runs once the track's cues have loaded.
+ */
+function liftCues(el) {
+  el.addEventListener('load', () => {
+    for (const c of el.track?.cues ?? []) if (c.line === 'auto') { c.snapToLines = true; c.line = -2 }
+  })
+}
 
 /**
  * Report what the player felt, so a hitch has a time on both ends: the browser knows it ran dry and when, the server knows
