@@ -391,6 +391,17 @@ app.get('/api/cast/:id/:i', auth, async (req, reply) => {
   return reply.type(art.type).header('cache-control', 'private, max-age=604800').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
 })
 
+/** Just the trailer links for a show, for the Home billboard: no lookups waited on and nothing marked as seen, unlike the show page. */
+app.get('/api/trailer/:id', auth, async (req, reply) => {
+  const id = Number((req.params as any).id)
+  if (!canViewSeries(req.user, id)) return reply.code(404).send({ error: 'no trailer' })
+  const d = getDetails(id)
+  if (!d) void queueDetails(id).catch(() => {}) // found for next time
+  const row = db.prepare('SELECT MAX(youtube_trailer) AS u FROM releases WHERE series_id = ?').get(id) as { u: string | null } | undefined
+  const ids = d?.trailers.length ? d.trailers : [youtubeId(row?.u) ?? youtubeId(d?.trailer)].filter((x): x is string => !!x)
+  return { ids: ids.slice(0, 3) }
+})
+
 /** Artwork is served from our own cache; the browser never talks to BTN's image host. */
 app.get('/api/art/:id/:kind', auth, async (req, reply) => {
   const { id, kind } = req.params as any

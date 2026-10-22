@@ -114,8 +114,18 @@ async function swap(fn) {
   once()
 }
 
-function skeleton() {
-  return `<div class="pad page-top"><div class="skel" style="height:min(46vh,380px);margin-bottom:28px"></div><div style="display:flex;gap:18px;overflow:hidden">${'<div class="skel" style="flex:none;width:168px;aspect-ratio:2/3"></div>'.repeat(8)}</div></div>`
+/** What a page looks like before it has arrived: the same shapes in the same places, so nothing jumps when the real one lands.
+    The pieces shimmer one after another (--k) rather than all at once, and the whole thing fades in so a quick load never flashes it. */
+function skeleton(kind) {
+  const bar = (w, h = 14, k = 0, extra = '') => `<div class="skel" style="width:${w};height:${h}px;--k:${k};${extra}"></div>`
+  if (kind === 'series') {
+    return `<div class="skeleton"><section class="s-hero"><div class="s-in pad"><div class="skel" style="width:200px;aspect-ratio:2/3;flex:none"></div>
+      <div class="s-meta" style="flex:1;display:grid;gap:14px;align-content:end">${bar('55%', 44)}${bar('38%', 16, 1)}${bar('260px', 46, 2, 'border-radius:999px')}</div></div></section>
+      <div class="pad">${bar('70ch', 14, 1, 'max-width:100%;margin-top:26px')}${bar('60ch', 14, 2, 'max-width:100%;margin-top:10px')}
+      <div style="margin-top:34px;display:grid;gap:12px">${[0, 1, 2, 3, 4].map((i) => `<div class="skel" style="height:92px;--k:${i}"></div>`).join('')}</div></div></div>`
+  }
+  const row = (n) => `<div class="skel" style="width:180px;height:20px;margin:26px 0 12px;--k:${n}"></div><div style="display:flex;gap:18px;overflow:hidden">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => `<div style="flex:none;width:168px"><div class="skel" style="aspect-ratio:2/3;--k:${i + n}"></div>${bar('70%', 12, i + n, 'margin-top:10px')}</div>`).join('')}</div>`
+  return `<div class="skeleton"><div class="skel" style="height:min(${isTv ? 52 : 66}vh,${isTv ? 440 : 560}px);border-radius:0;position:relative"><div class="pad" style="position:absolute;left:0;right:0;bottom:40px;display:grid;gap:14px">${bar('34%', 46, 1, 'background:rgba(255,255,255,.07)')}${bar('18%', 16, 2, 'background:rgba(255,255,255,.07)')}<div style="display:flex;gap:12px">${bar('150px', 46, 3, 'border-radius:999px;background:rgba(255,255,255,.1)')}${bar('130px', 46, 4, 'border-radius:999px;background:rgba(255,255,255,.07)')}</div></div></div><div class="pad">${row(0)}${row(2)}</div></div>`
 }
 
 /* ---------- casting ----------
@@ -271,7 +281,7 @@ function renderTop() {
       if (full && mine === liveN) show(full, v)
     }, 120)
   }
-  sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur() }
+  sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur(); if (isTv) setTimeout(() => $('#app .tile')?.focus({ preventScroll: true }), 500) }
   $('#av').onclick = (e) => {
     e.stopPropagation()
     const old = $('.menu'); if (old) return closeMenu(old)
@@ -286,6 +296,8 @@ function renderTop() {
     }
     const sw = $('#sw'); if (sw) sw.onclick = () => { try { sessionStorage.removeItem('flix.picked') } catch { /* ignore */ } go('#/profiles') }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
+    // A remote lands on the first entry; Up and Down walk the list (see focusStops); Back closes it.
+    if (isTv) m.querySelector('a, button')?.focus({ preventScroll: true })
   }
 }
 /* ---------- the Flix sound ---------- */
@@ -413,7 +425,7 @@ function askPin(name, error = '', locked = false) {
     const end = (v) => { m.remove(); done(v) }
     m.querySelector('form').onsubmit = (e) => { e.preventDefault(); if (f.value.length >= 4) end(f.value) }
     $('#pc', m).onclick = () => end(null)
-    m.addEventListener('keydown', (e) => { if (e.key === 'Escape') end(null) })
+    m.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') { e.preventDefault(); end(null) } })
   })
 }
 
@@ -434,6 +446,11 @@ function authView(needsSetup) {
       <input class="field" name="name" placeholder="Username" autocomplete="username" value="${esc(signinHint)}" required>
       <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password (8+ characters)' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required' : ''}>
       <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
+    // OK on the username moves on to the password rather than submitting half a form (a remote's keyboard ends with OK).
+    const nameIn = $('input[name=name]'), passIn = $('input[name=password]')
+    nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && nameIn.value.trim() && !passIn.value) { e.preventDefault(); passIn.focus() } })
+    // A television starts on the first empty field, so typing can begin straight away.
+    if (isTv) (nameIn.value ? passIn : nameIn).focus()
     $('form').onsubmit = async (e) => {
       e.preventDefault()
       const f = new FormData(e.target)
@@ -541,10 +558,10 @@ async function homeView(q, local = false) {
     if (!q && featured) {
       const s = featured
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">Featured</div>
-        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">Tap to see episodes</p>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${isTv ? 'Press OK to see episodes' : 'Tap to see episodes'}</p>
         <div class="actions rise" style="--i:3"><a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>
         <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
-        <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
+        ${isTv ? '' : `<a class="btn" href="#/series/${s.id}">${I.info} Details</a>`}</div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
     if (lpShow.length) html += leavingPrompt(lpShow)
@@ -554,7 +571,15 @@ async function homeView(q, local = false) {
     if (!q && home.myList?.length) html += `<h2 class="sec">My List</h2>${rowOf(home.myList, tile)}`
     if (!q && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
     if (!q && home.because) html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
-    if (q) html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}”</h2>` + (series.length ? `<div class="grid">${series.map(tile).join('')}</div>` : '<div class="empty">No shows found. Try a different spelling.</div>')
+    if (q) {
+      // Live search draws this page again with every answer. Tiles that rise in each time would flash on every letter, so
+      // after the first showing of the results they simply appear.
+      const again = !!document.querySelector('#app .grid')
+      const tiles = series.map(tile).join('')
+      html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
+        (series.length ? `<div class="grid">${again ? tiles.replaceAll('tile rise"', 'tile"') : tiles}</div>`
+          : `<div class="empty">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
+    }
     else {
       for (const sec of home.sections) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
@@ -570,12 +595,63 @@ async function homeView(q, local = false) {
     const beforeCleanup = cleanup
     cleanup = () => { beforeCleanup?.(); art?.stop?.(); if (artShow === art) artShow = null }
     const hs = !q && featured
+    // A remote starts on the billboard's Watch now: one press of OK plays, one press of Down goes to the first row.
+    if (isTv && hs && !document.activeElement?.closest?.('#app')) $('.hero .btn.primary')?.focus({ preventScroll: true })
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
+    if (hs) {
+      const stopTrailer = heroTrailer($('.hero'), hs.id)
+      if (stopTrailer) { const prev = cleanup; cleanup = () => { prev?.(); stopTrailer() } }
+    }
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
   }
+}
+
+/* ---------- the billboard's trailer ---------- */
+/**
+ * A few seconds after the billboard has been on screen, the show's trailer fades in behind the title -- muted, no controls,
+ * just the picture moving -- and fades back to the still when it ends. It runs only where there is a screen to watch from
+ * (a television or a big window), never with reduced motion, never in a hidden tab, and it pauses whenever the billboard
+ * scrolls out of view. It talks to YouTube (the privacy-friendly nocookie host), so it can be turned off per device on the
+ * Profile page. Returns the function that tears it down, or null when it must not run.
+ */
+function heroTrailer(hero, seriesId) {
+  if (!hero || rmq.matches || !bigScreen() || !store.get('previews', true) || !navigator.onLine) return null
+  let dead = false, player = null, box = null, io = null, visible = true, timer = setTimeout(start, 5000)
+  const fade = (on) => box?.classList.toggle('on', on)
+  async function start() {
+    if (dead || document.hidden) return
+    let ids
+    try { ids = (await api(`/api/trailer/${seriesId}`)).ids } catch { return }
+    if (dead || !ids?.length) return
+    try { await ytApi() } catch { return }
+    if (dead) return
+    box = document.createElement('div'); box.className = 'hero-tr'; box.setAttribute('aria-hidden', 'true')
+    box.innerHTML = '<div id="htp"></div>'
+    $('.bd', hero)?.after(box)
+    let n = 0
+    const next = () => { if (++n < ids.length) player.loadVideoById({ videoId: ids[n] }); else gone() }
+    player = new YT.Player('htp', { videoId: ids[0], host: 'https://www.youtube-nocookie.com',
+      playerVars: { autoplay: 1, mute: 1, controls: 0, disablekb: 1, fs: 0, rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3, cc_load_policy: 0 },
+      events: {
+        onReady: (e) => { e.target.mute(); if (visible) e.target.playVideo() },
+        // Only a picture that is really moving is shown; the still stays up through buffering and any error.
+        onStateChange: (e) => { if (e.data === 1) fade(true); else if (e.data === 0) { fade(false); setTimeout(() => !dead && gone(), 1200) } },
+        onError: next,
+      } })
+    // Off screen, it stops: nothing plays under the rows, and it picks up again when the billboard is back.
+    io = new IntersectionObserver(([en]) => {
+      visible = en.isIntersecting && en.intersectionRatio > 0.35
+      try { if (visible) player.playVideo?.(); else player.pauseVideo?.() } catch { /* not ready yet */ }
+    }, { threshold: [0, 0.35, 0.6] })
+    io.observe(hero)
+    document.addEventListener('visibilitychange', onVis)
+  }
+  const onVis = () => { try { document.hidden ? player?.pauseVideo?.() : visible && player?.playVideo?.() } catch { /* not ready */ } }
+  function gone() { try { player?.destroy?.() } catch { /* already gone */ } player = null; box?.remove(); box = null }
+  return () => { dead = true; clearTimeout(timer); io?.disconnect(); document.removeEventListener('visibilitychange', onVis); gone() }
 }
 
 /* ---------- the idle sit-back slideshow ---------- */
@@ -732,7 +808,7 @@ async function seriesView(id) {
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
-      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
+      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <div class="eps-head"><h2 class="sec">Episodes</h2><span id="sdls"></span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const dlButton = (e) => {
@@ -816,6 +892,9 @@ async function seriesView(id) {
       paint()
     })
     const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
+    // A remote has nothing to point at on a page that has just drawn, so Play (else My List) is already highlighted: one
+    // press of OK starts the show, and the first arrow press moves from somewhere real rather than from a guess.
+    if (isTv && !document.activeElement?.closest?.('#app, main')) (hp || $('#ml'))?.focus({ preventScroll: true })
     const ml = $('#ml'); if (ml) ml.onclick = async () => {
       const on = ml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: +id, on }); ml.setAttribute('aria-pressed', String(on)); ml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
@@ -925,7 +1004,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
-        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
+        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
@@ -959,10 +1038,14 @@ function playView(seriesId, season, label) {
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
     // started only by the player's own idle timer (manual mode), and any input at all brings the film back at once.
     let idleArt = null, artRun = 0
+    // The list of shows is asked for as soon as the show is paused, so that 30 seconds later the artwork is already
+    // on its way rather than only then starting a request.
+    let homeP = null
+    const warmArt = () => (homeP ??= api('/api/home').catch(() => { homeP = null; return null }))
     const startIdleArt = async () => {
       const run = ++artRun
       if (idleArt) { if (run === artRun) idleArt.start(); return }
-      const home = await api('/api/home').catch(() => null)
+      const home = await warmArt()
       if (!home || !alive || run !== artRun) return
       idleArt = artSlideshow([...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])], { manual: true, parent: pl })
       if (run === artRun) idleArt?.start()
@@ -1042,6 +1125,11 @@ function playView(seriesId, season, label) {
       first?.focus()
       return !!m
     }
+    // A list opened with OK on a television puts the highlight on the entry already chosen, so Up and Down have a place to start.
+    pl.addEventListener('click', (e) => {
+      const b = isTv && e.target.closest?.('.p-menu > button')
+      if (b) setTimeout(() => { const m = b.parentElement.querySelector('.menu'); (m?.querySelector('button[aria-current]') || m?.querySelector('button'))?.focus() }, 0)
+    })
     const key = (e) => {
       if (!v || castingOnly || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
       const k = e.key
@@ -1074,6 +1162,36 @@ function playView(seriesId, season, label) {
           return
         }
       }
+      // The bar's buttons are walked with the arrow keys, like on any TV: up from the picture lands on play/pause, left and
+      // right move along the row (back 10, play/pause, forward 10, quality, captions, fill), down returns to the picture.
+      // Enter presses the highlighted button. With nothing highlighted, left and right still skip 10 seconds.
+      const inBar = e.target.closest?.('#pctl .p-btn') && !e.target.closest('.menu')
+      if (inBar && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+        e.preventDefault()
+        const b = [...pl.querySelectorAll('#pctl .p-btn')].filter((x) => !x.hidden && !x.closest('.menu'))
+        const i = b.indexOf(e.target.closest('.p-btn'))
+        const n = i + (k === 'ArrowRight' ? 1 : -1)
+        if (n >= 0 && n < b.length) b[n].focus()
+        wake()
+        return
+      }
+      // The top bar (back, audio, play on a TV, something's wrong) is one row above the picture: Up from the bar reaches it,
+      // Left and Right walk it, Down comes back to play/pause.
+      const inTop = e.target.closest?.('.p-top') && !e.target.closest('.menu')
+      const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
+      if (inTop && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+        e.preventDefault()
+        const b = topBtns(), n = b.indexOf(e.target.closest('a, button')) + (k === 'ArrowRight' ? 1 : -1)
+        if (n >= 0 && n < b.length) b[n].focus()
+        wake()
+        return
+      }
+      if (inTop && k === 'ArrowDown') { e.preventDefault(); ($('#ppp') || e.target).focus(); wake(); return }
+      if (inBar && k === 'ArrowDown') { e.preventDefault(); e.target.blur(); wake(); return }
+      if (k === 'ArrowUp' && !inTop && !e.target.closest?.('.menu')) {
+        const up = inBar ? topBtns()[0] : e.target.closest?.('a, button') ? null : (!$('#wait').classList.contains('gone') ? ($('#pmore') && !$('#pmore').hidden ? $('#pmore') : topBtns()[0]) : $('#ppp'))
+        if (up) { e.preventDefault(); up.focus(); wake(); return }
+      }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
       else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
@@ -1087,7 +1205,6 @@ function playView(seriesId, season, label) {
       else if (k === 'End') { e.preventDefault(); setT(Math.max(0, totalT() - 5)) }
       // The volume is the phone's or the television's own, from its buttons or its remote: Flix has no volume of its own.
       // On a television, up opens the captions list instead (up and down walk it once it is open, above).
-      else if (isTv && k === 'ArrowUp' && !$('#pcc').hidden) { e.preventDefault(); openFromKey($('#pcc')) }
       else if (k === 'z') setFill(!fill)
       else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : pl.requestFullscreen?.()
       else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); return leavePlayer() }
@@ -1158,7 +1275,7 @@ function playView(seriesId, season, label) {
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
       $('#pfull').setAttribute('aria-pressed', String(fill))
-      if (paused || castingOnly) wake()
+      if (paused || castingOnly) { wake(); if (bigScreen()) warmArt() }
       fillPause()
       syncBar()
     }
@@ -1180,8 +1297,13 @@ function playView(seriesId, season, label) {
       const ep = meta?.episodes?.find((e) => e.label === play?.title && e.season === (season === 'x' ? null : +season))
       const desc = ep?.overview || s?.overview || ''
       $('#pio').textContent = desc; $('#pio').hidden = !desc
-      const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 6)
-      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b></span>`).join('')
+      // Score, year and genres, then how long is left and when it would finish if resumed now.
+      const left = totalT() - nowT()
+      const bits = [s?.score ? `★ ${s.score.toFixed(1)}` : '', s?.year || '', (s?.genres ?? []).slice(0, 3).join(' · '),
+        left > 30 ? `${Math.round(left / 60)} min left · ends ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''].filter(Boolean)
+      $('#pim').textContent = bits.join('  ·  '); $('#pim').hidden = !bits.length
+      const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 8)
+      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b>${c.role ? `<em>${esc(c.role)}</em>` : ''}</span>`).join('')
       $('#pic').hidden = !cast.length
     }
     function wirePlayer() {
@@ -1193,6 +1315,9 @@ function playView(seriesId, season, label) {
       // means the bar on its own, with no picture and nothing moving.
       const tip = $('#ptip'), tipShot = $('#ptipimg'), tipLab = $('#ptipt')
       let shot = null, shotFor = '', shotAsked = false, tipHide = 0
+      // The sheet's tiles are 160 px wide; the preview is drawn bigger than that (up to 400 px, a fifth of a wide screen),
+      // with the sheet scaled to match.
+      const tipW = () => Math.round(Math.max(240, Math.min(400, innerWidth * 0.22, (bar.clientWidth || 300) - 8)))
       async function loadSheet(forWhat) {
         if (!play) return
         const m = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/sprite/meta`).catch(() => null)
@@ -1218,7 +1343,7 @@ function playView(seriesId, season, label) {
         const pct = Math.max(0, Math.min(100, (t / d) * 100))
         // Kept inside the bar's own width, so the picture never hangs off the edge of a narrow screen.
         const w = bar.clientWidth || 1
-        const half = Math.min(88, w / 2)
+        const half = Math.min(tipW() / 2 + 4, w / 2)
         tip.style.left = Math.max(half, Math.min(w - half, (pct / 100) * w)) + 'px'
         tip.hidden = false
         tipLab.textContent = fmtT(Math.max(0, t))
@@ -1227,8 +1352,10 @@ function playView(seriesId, season, label) {
         if (!shot) return
         const i = Math.max(0, Math.min(shot.count - 1, Math.floor(Math.max(0, t) / Math.max(0.5, shot.interval))))
         // The element is exactly one tile, so the sheet is laid out at its full size and shifted to the tile asked for.
-        tipShot.style.backgroundSize = `${shot.cols * shot.tileW}px ${shot.rows * shot.tileH}px`
-        tipShot.style.backgroundPosition = `${-((i % shot.cols) * shot.tileW)}px ${-(Math.floor(i / shot.cols) * shot.tileH)}px`
+        const k = tipW() / shot.tileW
+        tipShot.style.width = tipW() + 'px'
+        tipShot.style.backgroundSize = `${shot.cols * shot.tileW * k}px ${shot.rows * shot.tileH * k}px`
+        tipShot.style.backgroundPosition = `${-((i % shot.cols) * shot.tileW * k)}px ${-(Math.floor(i / shot.cols) * shot.tileH * k)}px`
       }
       // Dragging paints the bar and the picture over it. A source that is all here (a finished file, or its single-file
       // copy) also moves the picture itself as the finger goes -- one seek at a time, the next only once the last has
@@ -1494,7 +1621,7 @@ function playView(seriesId, season, label) {
       if (castingOnly) return // the TV has it; nothing plays here
       hls?.destroy(); hls = null
       if (!v) {
-        $('#vw').innerHTML = '<video autoplay playsinline></video>'
+        $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
         if (fill) v.style.objectFit = 'cover'
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
@@ -1536,6 +1663,9 @@ function playView(seriesId, season, label) {
         // otherwise leave the artwork sitting over a show that is playing again.
         v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
         v.ontimeupdate = () => {
+          // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
+          // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
+          if (started && !holding && !castingOnly && !v.paused && v.currentTime > 0.5) $('#wait')?.classList.add('gone')
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.
@@ -1980,6 +2110,7 @@ function playView(seriesId, season, label) {
     }
     function showCastCard(where, withButtons, stopped) {
       $('#msg').innerHTML = `<div class="cast-splash done"><span class="cs-mark"></span><span class="cs-where">${esc(where)}</span><div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn" id="cstop">${stopped ? 'Play on this phone' : 'Stop casting'}</button><a class="btn" href="#/series/${seriesId}">Back</a></div></div>`
+      $('#cstop').focus({ preventScroll: true }) // something for a keyboard or remote to press
       // Stopping the cast brings the show back on the phone, from where the TV was.
       $('#cstop').onclick = () => {
         saveRemote()
@@ -2056,6 +2187,7 @@ async function settingsView(section = 'torrents') {
     const prev = cleanup; cleanup = () => { prev?.(); removeEventListener('scroll', onScroll) }
     if (section !== 'torrents') requestAnimationFrame(() => jump(section, false))
     onScroll()
+    if (isTv) (pills.find((p) => p.dataset.s === section) || pills[0])?.focus({ preventScroll: true }) // a remote starts on the section bar
   }
 }
 
@@ -2122,6 +2254,16 @@ function storageChart(el, h) {
   }
   const hide = () => { cx.hidden = true; tip.hidden = true }
   const hit = $('.hit', el); hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move); hit.addEventListener('pointerleave', hide)
+}
+
+/** Run a redraw of an admin panel and put the remote's highlight back on the same control afterwards. The panels redraw
+    themselves (every 15 seconds for the torrent list, and after each save), which silently dropped the highlight to the
+    top of the page and left a television with nothing selected. */
+function keepFocus(root, fn) {
+  const a = document.activeElement
+  const at = a && a !== document.body && root.contains(a) ? [...root.querySelectorAll(FOCUSABLE)].indexOf(a) : -1
+  fn()
+  if (at >= 0) [...root.querySelectorAll(FOCUSABLE)][at]?.focus({ preventScroll: true })
 }
 
 function downloadsPanel(data, root) {
@@ -2209,8 +2351,9 @@ function downloadsPanel(data, root) {
   draw(data); reports(data.reports ?? []); loadChart()
   const t = setInterval(async () => {
     const d = await api('/api/admin/downloads').catch(() => data)
-    lastHealth = await api('/api/admin/health').catch(() => lastHealth); draw(d)
-    reports((await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports)
+    lastHealth = await api('/api/admin/health').catch(() => lastHealth)
+    const rp = (await api('/api/admin/reports').catch(() => ({ reports: [] }))).reports
+    keepFocus(root, () => { draw(d); reports(rp) })
   }, 15000)
   const t2 = setInterval(loadChart, 300000)
   let rz; const onResize = () => { clearTimeout(rz); rz = setTimeout(() => chartData && storageChart($('#tchart'), chartData), 150) }
@@ -2222,7 +2365,8 @@ function familyPanel(data, root) {
   const all = data.ratings
   let users = data.users
   const onList = (u) => u.allowed ?? all
-  const paint = () => {
+  const paint = () => keepFocus(root, paintNow)
+  const paintNow = () => {
     root.innerHTML = `<h2 class="stitle2">Family</h2>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
       ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → Ratings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
@@ -2317,7 +2461,8 @@ function playbackSection(tc) {
 
 function settingsPanel(data, root) {
   let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, tc = data.transcode
-  const paint = () => {
+  const paint = () => keepFocus(root, paintNow)
+  const paintNow = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
     root.innerHTML = `<div id="s-btn" class="ssec"><h2 class="stitle2">BroadcasTheNet</h2>
       <p class="dim" style="max-width:66ch">Flix talks to BTN with an API key, not your BTN username and password. Find the key in your BTN profile settings. BTN also only accepts a key from IP addresses you have approved on their site, so approve this server's address there if the test fails.</p>
@@ -2436,11 +2581,14 @@ function profileView() {
       <h2 class="sec" style="margin-top:0">Your creature</h2>
       <div class="avgrid">${AVATARS.map((id) => `<button class="avpick" data-av="${id}" aria-pressed="${me.avatar === id}" aria-label="${id}">${avSvg(id)}</button>`).join('')}</div>
       <p class="dim" id="avmsg" style="margin:8px 0 0;font-size:14px">Tap one to use it beside your name.</p>
+      <h2 class="sec">Home screen</h2>
+      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', true) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard, on this device. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
       <h2 class="sec">Name</h2>
       <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
       <h2 class="sec">Password</h2>
       <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
 
+    $('#pprev').onchange = (e) => store.set('previews', e.target.checked)
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
       const before = me.avatar
@@ -2499,17 +2647,25 @@ async function downloadsView(offline = false) {
           : act.length ? '' : `<div class="empty">Nothing is saved on this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap the download arrow next to an episode.</span></div>`}</div>`
       app.querySelectorAll('.dl-item').forEach((el) => {
         const open = () => go('#/offplay/' + el.dataset.id)
-        el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter') open() }
+        el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter' && e.target === el) open() }
       })
       app.querySelectorAll('.dl-rm').forEach((b) => b.onclick = async (e) => {
         e.stopPropagation()
-        if (!confirm('Delete this download from this device?')) return
-        await dl.remove(b.dataset.id); if (alive) paint(await dl.list())
+        // A second press confirms. The browser's own confirm() box is unreliable on a television (some WebViews never draw
+        // it, and a remote cannot always reach its buttons), so the button itself asks and goes back after a few seconds.
+        if (b.dataset.armed !== '1') {
+          b.dataset.armed = '1'; b.textContent = 'Press again to delete'; b.classList.add('danger')
+          setTimeout(() => { if (b.isConnected) { b.dataset.armed = ''; b.textContent = 'Delete'; b.classList.remove('danger') } }, 4000)
+          return
+        }
+        const rows = [...app.querySelectorAll('.dl-item')], at = rows.indexOf(b.closest('.dl-item'))
+        await dl.remove(b.dataset.id); if (alive) { await paint(await dl.list()); if (isTv) (app.querySelectorAll('.dl-item')[Math.min(at, app.querySelectorAll('.dl-item').length - 1)] || $('.stitle'))?.focus?.({ preventScroll: true }) }
       })
       const rt = $('#rt'); if (rt) rt.onclick = () => route()
     }
     top.hidden = offline || !me
     paint(items)
+    if (isTv) (app.querySelector('.dl-item') || $('#rt'))?.focus({ preventScroll: true }) // something for a remote to start from
     const on = async () => { if (alive) paint(await dl.list()) }
     addEventListener('flix-dl', on)
     cleanup = () => { alive = false; removeEventListener('flix-dl', on); top.hidden = !me }
@@ -2523,7 +2679,7 @@ async function offlinePlayView(id) {
     if (!m) { go('#/downloads'); return }
     top.hidden = true
     app.innerHTML = `<div class="player" id="pl"><div class="p-top"><a class="icon-btn" href="#/downloads" aria-label="Back">${I.back}</a><div class="p-title"><b>${esc(m.seriesName || '')}</b><span>${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span></div></div>
-      <div id="vw"><video controls autoplay playsinline>${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
+      <div id="vw"><video controls autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
     const pl = $('#pl'), v = $('video')
     let idleT = null, last = 0
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (!v.paused) pl.classList.add('idle') }, 3000) }
@@ -2535,7 +2691,18 @@ async function offlinePlayView(id) {
     v.onpause = () => save(false)
     v.onended = () => { save(true); go('#/downloads') }
     v.onerror = () => { app.innerHTML = `<div class="pad page-top"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
-    const key = (e) => { if (e.key === 'Escape') go('#/downloads') }
+    // The remote works the saved episode the way it works the streamed one: back leaves, left and right skip ten seconds,
+    // OK and the media keys play and pause.
+    const key = (e) => {
+      const k = e.key
+      if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); go('#/downloads') }
+      else if (k === 'ArrowLeft' || k === 'MediaRewind') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10) }
+      else if (k === 'ArrowRight' || k === 'MediaFastForward') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10) }
+      else if (k === ' ' || k === 'Enter' || k === 'MediaPlayPause') { if (e.target.closest?.('a, button')) return; e.preventDefault(); v.paused ? v.play() : v.pause() }
+      else if (k === 'MediaPlay') v.play()
+      else if (k === 'MediaPause') v.pause()
+      wake()
+    }
     addEventListener('keydown', key)
     cleanup = () => { clearTimeout(idleT); removeEventListener('keydown', key); if (v.currentTime) dl.saveProgress(id, v.currentTime, v.duration || m.duration, false).catch(() => {}); top.hidden = !me; if (document.fullscreenElement) document.exitFullscreen?.() }
   }
@@ -2551,16 +2718,32 @@ addEventListener('online', () => syncDownloads().catch(() => {}))
 function offlineView(why, isGate) {
   const admin = `https://${location.hostname}/`
   top.hidden = true
-  app.innerHTML = `<div class="auth-wrap"><div class="auth" role="alert"><div class="brand">${I.logo}<span>Flix</span></div>
+  // The retry runs again every few seconds. Drawing the whole card each time replayed its entrance and dropped the
+  // highlight, so a second look at the same problem only updates the words and the countdown.
+  const same = $('.auth[data-offline]')?.dataset.offline === (isGate ? 'gate' : 'down')
+  if (same) $('#owhy').textContent = why
+  else {
+    app.innerHTML = `<div class="auth-wrap"><div class="auth" role="alert" data-offline="${isGate ? 'gate' : 'down'}"><div class="brand">${I.logo}<span>Flix</span></div>
     <h1 style="text-align:center">${isGate ? 'Umbrel signed you out' : 'Can’t reach Flix'}</h1>
     <p class="dim" style="text-align:center;margin:0">${isGate
       ? 'Flix is installed behind Umbrel’s own login. Sign in to Umbrel, then open Flix again.'
       : 'The Flix server isn’t answering. Check that the Flix app is running in Umbrel, and that this device is online.'}</p>
-    <p class="dim" style="text-align:center;margin:0;font-size:13px">${esc(why)}</p>
+    <p class="dim" style="text-align:center;margin:0;font-size:13px" id="owhy">${esc(why)}</p>
     ${isGate ? `<a class="btn primary" style="width:100%;display:block;text-align:center;box-sizing:border-box" href="${esc(admin)}">Sign in to Umbrel</a><div style="height:8px"></div>` : ''}
-    <button class="btn${isGate ? '' : ' primary'}" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px">Retrying automatically…</div></div></div>`
+    <button class="btn${isGate ? '' : ' primary'}" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px" id="ocd" aria-live="off"></div></div></div>`
+    // A remote starts on the button that does something.
+    if (isTv) (isGate ? $('.auth a.btn') : $('#rt'))?.focus({ preventScroll: true })
+  }
   $('#rt').onclick = () => route()
-  clearTimeout(retryT); retryT = setTimeout(route, isGate ? 15000 : 5000)
+  // Counts down to the next try instead of saying "retrying" for ever, so it is plain that something is still happening.
+  let left = isGate ? 15 : 5
+  clearTimeout(retryT)
+  const tick = () => {
+    const el = $('#ocd'); if (el) el.textContent = left > 0 ? `Trying again in ${left}s` : 'Trying now…'
+    if (left-- <= 0) return route()
+    retryT = setTimeout(tick, 1000)
+  }
+  tick()
 }
 
 /** Admins see a red/amber strip on any page when something needs attention (BTN refused us, disk full, engine down). */
@@ -2599,7 +2782,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input
     "is this drawn" on its own, and the offsetParent test is the fallback for a WebView that has never had it. */
 function focusStops() {
   const out = []
-  for (const n of document.querySelectorAll(FOCUSABLE)) {
+  for (const n of (document.querySelector('.pin-modal') || document.querySelector('#top > .menu:not(.out)') || document).querySelectorAll(FOCUSABLE)) { // a PIN box traps the remote: nothing behind it
     if (n.closest('[hidden]') || n.classList.contains('arrow')) continue
     if (!(n.checkVisibility?.({ visibilityProperty: true }) ?? (n.offsetParent !== null || getComputedStyle(n).position === 'fixed'))) continue
     const r = n.getBoundingClientRect()
@@ -2629,14 +2812,27 @@ function focusRows(stops) {
     that had already jumped. On a television both are instant: a glide is a 300ms smear on a remote. */
 function revealStop(el) {
   const r = el.getBoundingClientRect()
-  let cut = r.top < 0 || r.bottom > innerHeight
-  for (let p = el.parentElement; !cut && p && p !== document.documentElement; p = p.parentElement) {
+  // Sideways first, on the rail itself: the tile is brought in with a tile's width to spare on the side it came from,
+  // so the next one is always visible beyond it and the rail never stops with the highlight hard against the edge.
+  for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
     if (p.scrollWidth <= p.clientWidth + 1 || !/auto|scroll|overlay|hidden/.test(getComputedStyle(p).overflowX)) continue
-    const pr = p.getBoundingClientRect()
-    cut = r.left < pr.left - 1 || r.right > pr.right + 1
+    const pr = p.getBoundingClientRect(), pad = Math.min(r.width * 0.6, 90)
+    const dxs = r.left < pr.left + pad ? r.left - pr.left - pad : r.right > pr.right - pad ? r.right - pr.right + pad : 0
+    if (dxs) p.scrollBy({ left: dxs, behavior: isTv ? 'auto' : smooth() })
+    break
   }
-  if (cut) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: isTv ? 'instant' : smooth() })
+  // Then the page: only when the row is near an edge, and then by enough to put it a little above the middle, with room
+  // for its title below -- rather than the least that shows the poster, which left the row jammed against the bottom
+  // with its name cut off. A short eased glide; the highlight itself has already moved, so it never lags the remote.
+  const edge = isTv ? Math.max(180, innerHeight * 0.2) : Math.min(140, innerHeight * 0.16)
+  if (r.top < edge || r.bottom > innerHeight - edge - 40) {
+    const want = r.top + r.height / 2 - innerHeight * 0.42
+    scrollBy({ top: want, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  }
 }
+// The column the highlight was last moved along, kept across Up and Down so a trip over a short row and back lands where
+// it started instead of drifting toward the middle. Cleared by any sideways move or by focus arriving from elsewhere.
+let stickyX = null, stickyEl = null
 
 addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
@@ -2644,16 +2840,23 @@ addEventListener('keydown', (e) => {
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
   // Back on a remote, while the search field has the keyboard: put the keyboard away first, leave the page alone.
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && typing) { el.blur(); e.preventDefault(); return }
+  const openMenu = document.querySelector('#top > .menu:not(.out)')
+  if (openMenu && (e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack')) { e.preventDefault(); closeMenu(openMenu); $('#av')?.focus({ preventScroll: true }); return }
+  if (document.querySelector('.pin-modal') && !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return // the PIN box has its own Back
   if ((e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') && !typing && location.hash.length > 2) { history.back(); return }
   const dir = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]
-  if (!dir || typing) return
+  // A remote's Up and Down must be able to leave a text field (to the next field or the button under it); Left and Right stay
+  // with the caret. A dropdown keeps both, because Up and Down change its value.
+  const leaves = typing && isTv && dir && dir[0] === 0 && el.tagName === 'INPUT'
+  if (!dir || (typing && !leaves)) return
   const onThing = el && el !== document.body
   if (!onThing && !isTv) return // on a computer with nothing focused, arrows keep scrolling the page
   const rows = focusRows(focusStops())
   if (!rows.length) return
   const [dx, dy] = dir
   const from = onThing ? el.getBoundingClientRect() : { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 }
-  const ox = from.left + from.width / 2, oy = from.top + from.height / 2
+  const oy = from.top + from.height / 2
+  const ox = dy && stickyX != null && stickyEl === el ? stickyX : from.left + from.width / 2
   // The row the highlight is on; with nothing focused yet (a television that has just drawn the page) the row nearest the
   // middle of the screen stands in for it, so a first press still lands somewhere.
   const cur = (onThing && rows.find((row) => row.items.some((s) => s.el === el))) || rows.reduce((a, b) => (Math.abs(b.cy - oy) < Math.abs(a.cy - oy) ? b : a))
@@ -2685,6 +2888,7 @@ addEventListener('keydown', (e) => {
   if (!best) return
   e.preventDefault()
   best.focus({ preventScroll: true })
+  stickyX = dy ? ox : null; stickyEl = dy ? best : null
   revealStop(best)
   // A remote's OK on a text field has to raise the on-screen keyboard: the focus above happens inside a key event, which
   // is what lets a WebView show it, but a field that already had focus never raises it again.
@@ -2695,7 +2899,40 @@ addEventListener('keydown', (e) => {
 // The page the player was opened from, kept across one episode handing over to the next, so leaving the player can step
 // back to it instead of stacking another copy of the show page on the history.
 let lastHash = null, playerOrigin = null
+// Where each page was left: how far it was scrolled and what had the highlight, so Back lands exactly where you were
+// (the row, the tile, the episode) instead of at the top with nothing selected.
+try { history.scrollRestoration = 'manual' } catch { /* the browser decides */ }
+const viewState = new Map()
+let navIdx = 0
+function captureView() {
+  const el = document.activeElement
+  let at = null
+  if (el && el !== document.body && app.contains(el)) {
+    const cell = el.closest('.row-scroll > *'), wrap = el.closest('.rowwrap')
+    if (cell && wrap) at = { row: [...app.querySelectorAll('.rowwrap')].indexOf(wrap), idx: [...wrap.querySelectorAll('.row-scroll > *')].indexOf(cell) }
+    else {
+      const q = (v) => JSON.stringify(String(v))
+      const sel = el.id ? '#' + CSS.escape(el.id) : el.dataset.id ? `[data-id=${q(el.dataset.id)}]` : el.matches('.ep[data-i]') ? `.ep[data-i=${q(el.dataset.i)}]`
+        : el.dataset.k ? `.pill[data-k=${q(el.dataset.k)}]` : el.dataset.s && el.matches('.pill') ? `.pill[data-s=${q(el.dataset.s)}]` : el.getAttribute('href') ? `[href=${q(el.getAttribute('href'))}]` : null
+      if (sel) at = { sel }
+    }
+  }
+  return { y: scrollY, at }
+}
+function restoreView(v) {
+  window.scrollTo({ top: v.y, behavior: 'instant' })
+  let el = null
+  try { el = v.at?.sel ? app.querySelector(v.at.sel) : v.at ? app.querySelectorAll('.rowwrap')[v.at.row]?.querySelectorAll('.row-scroll > *')[v.at.idx] : null } catch { /* a selector that no longer parses */ }
+  if (!el) return
+  el.focus({ preventScroll: true })
+  el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'instant' }) // the rail it sits in is brought round to it
+}
 async function route() {
+  if (lastHash != null && !$('.player')) viewState.set(lastHash, captureView())
+  // A new page is a new history entry with no state; Back and Forward arrive with the number this code gave them.
+  const hst = history.state
+  const arrived = hst && typeof hst.flix === 'number'
+  if (arrived) navIdx = hst.flix; else { try { history.replaceState({ flix: ++navIdx }, '') } catch { /* no history */ } }
   cleanup?.(); cleanup = null
   clearTimeout(retryT)
   const fromHash = lastHash
@@ -2730,7 +2967,7 @@ async function route() {
   // A shared device asks who is watching each time the app is opened.
   if (profiles().length > 1 && !picked() && parts[0] !== 'play' && parts[0] !== 'offplay') { markPicked(); return swap(profilesView()) }
   // Opening a show can take a moment on the server. Show the placeholder at once rather than leave the old page up, which looks like the tap did nothing.
-  const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton() } }, app.innerHTML.trim() ? 120 : 200)
+  const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton(parts[0] === 'series' ? 'series' : 'home') } }, app.innerHTML.trim() ? 120 : 200)
   try {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
@@ -2743,10 +2980,15 @@ async function route() {
     clearTimeout(slow)
     if (token !== navToken) return
     await swap(render)
+    if (arrived && viewState.has(location.hash) && parts[0] !== 'play') restoreView(viewState.get(location.hash))
     if (me.is_admin && parts[0] !== 'play') healthBanner()
   } catch (e) {
     clearTimeout(slow)
-    if (token === navToken) app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}</div></div>`
+    if (token === navToken) {
+      app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
+      $('#retry').onclick = () => route()
+      if (isTv) $('#retry').focus({ preventScroll: true })
+    }
   }
 }
 addEventListener('hashchange', route)

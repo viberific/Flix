@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
-import { canToneMap, MP4_CARRY, TONEMAP, type Probe } from './transcode.ts'
+import { AUDIO_LEVEL, canToneMap, MP4_CARRY, TONEMAP, type Probe } from './transcode.ts'
 
 /**
  * A single MP4 of an episode, no bigger than 1080p, for saving on a device to watch without a connection.
@@ -51,7 +51,7 @@ export async function offlineCopy(t: number, f: number, p: Probe, source: string
         // An HDR picture is copied, never converted, so its colour has to be named on the container or the TV shows it grey.
         ...(p.hdr ? ['-color_primaries', 'bt2020', '-color_trc', p.hdrKind === 'hlg' ? 'arib-std-b67' : 'smpte2084', '-colorspace', 'bt2020nc'] : [])]
       : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...(filters.length ? ['-vf', filters.join(',')] : [])]),
-    '-c:a', 'aac', '-ac', '2', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', part]
+    ...AUDIO_LEVEL, '-c:a', 'aac', '-ac', '2', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', part]
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
   const job: Job = { proc, progress: 0, out, last: Date.now() }
   jobs.set(key, job)

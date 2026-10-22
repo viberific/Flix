@@ -8,12 +8,6 @@
   --gutter: max(18px, env(safe-area-inset-left, 0px)); --gutter-r: max(18px, env(safe-area-inset-right, 0px));
   color-scheme: dark;
 }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f4f5f8; --bg-2: #eceef3; --surface: #ffffff; --surface-2: #f0f2f6; --line: rgba(10,14,25,.1);
-    --fg: #12151c; --dim: #5d6678; --accent: #e8502d; --accent-2: #e02560; --ok: #14855c; --warn: #a85f00; --bad: #d1243f; --shadow: 0 14px 40px rgba(20,28,50,.16); color-scheme: light;
-  }
-}
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html { scroll-behavior: smooth; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
@@ -27,7 +21,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 header#top { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 66px; display: flex; align-items: center; gap: 18px;
   padding: 0 var(--gutter-r) 0 var(--gutter); view-transition-name: hdr;
   background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 88%, transparent), transparent); transition: background .35s var(--ease), backdrop-filter .35s, box-shadow .35s; }
-header#top.solid { background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
+header#top.solid { background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 23px; letter-spacing: -.045em; line-height: 1; }
 .brand svg { width: 30px; height: 30px; flex: none; border-radius: 8px; box-shadow: 0 6px 18px -4px color-mix(in srgb, var(--accent-2) 60%, transparent), inset 0 0 0 1px rgba(255,255,255,.12);
   transition: transform .35s var(--ease); }
@@ -236,7 +230,7 @@ img.fade.in { opacity: 1; }
   background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); transition: bottom .35s var(--ease); }
 /* Clear of the player's own bar. The bar is ~110px tall (10px padding, 24px seek, 4px gap, a 60px button, 12px below), so
    the card sits over it rather than under it at 960x540 and 1280x720, and drops back into the corner while the bar is away. */
-.player.idle .p-next { bottom: max(28px, env(safe-area-inset-bottom, 0px)); }
+.player.idle .p-next, .player.p-quiet .p-next { bottom: max(28px, env(safe-area-inset-bottom, 0px)); }
 /* Paused: what you are watching, centre-left over the dimmed frame -- the episode's title with its age rating beside
    it, the episode's own description under that, then the people in it. No artwork behind it: the frame itself, dimmed,
    is always right (see the paused block above). */
@@ -247,10 +241,12 @@ img.fade.in { opacity: 1; }
    card's right edge and sat alone there across three lines of title; inline after the last word it stays with it, and a
    long title that wraps takes it to the end of the last line rather than leaving it stranded. */
 .p-info-rate { display: inline-block; vertical-align: middle; margin-left: 10px; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; border: 1px solid rgba(255,255,255,.45); }
+.p-info-m { margin: 8px 0 0; font-size: 14px; font-weight: 600; color: rgba(255,255,255,.7); text-shadow: 0 1px 14px rgba(0,0,0,.8); }
+.p-cast em { font-style: normal; font-size: 10px; color: rgba(255,255,255,.5); line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .p-info-o { margin: 10px 0 0; font-size: 15px; line-height: 1.5; color: rgba(255,255,255,.85); max-width: 54ch; text-shadow: 0 1px 14px rgba(0,0,0,.8); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .p-info-c { display: flex; gap: 14px; margin-top: 18px; flex-wrap: wrap; }
-.p-cast { display: grid; justify-items: center; gap: 6px; width: 64px; font-size: 11px; color: rgba(255,255,255,.75); text-align: center; }
-.p-cast img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
+.p-cast { display: grid; justify-items: center; gap: 6px; width: 84px; font-size: 12px; color: rgba(255,255,255,.75); text-align: center; }
+.p-cast img { width: 76px; height: 76px; border-radius: 50%; object-fit: cover; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
 .p-cast b { font-weight: 600; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 @media (max-width: 640px) { .p-info { top: auto; bottom: 128px; transform: none; max-width: calc(100vw - 32px); } .p-info-o { font-size: 13px; -webkit-line-clamp: 3; } .p-cast { width: 52px; } .p-cast img { width: 44px; height: 44px; } }
 .p-next small { color: rgba(255,255,255,.65); } .p-next b { display: block; font-size: 20px; margin: 2px 0 14px; } .p-next .actions { display: flex; gap: 10px; }
@@ -284,13 +280,13 @@ html.tv .player #pfull { display: none; }
 .p-seek { position: relative; display: flex; align-items: center; height: 28px; cursor: pointer; touch-action: none; }
 .p-seek .p-rail { transition: height .15s var(--ease); } .p-seek:hover .p-rail, .p-seek.on .p-rail { height: 6px; }
 /* The frame picture shown above the bar while scrubbing (the seconds are labelled under it). */
-.p-tip { position: absolute; bottom: 30px; left: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 3; }
+.p-tip { position: absolute; bottom: 36px; left: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 3; }
 .p-tip[hidden] { display: none; }
 .p-tip .p-tipshot { display: block; width: 160px; aspect-ratio: 16 / 9; border-radius: 8px; background-color: rgba(0,0,0,.55); background-repeat: no-repeat; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 10px 26px rgba(0,0,0,.6); }
 /* No sheet for this episode (it is still downloading): the bar on its own. The element is never laid out until there is a
    picture to put in it, so nothing moves when one arrives either. */
 .p-tip .p-tipshot:not(.has) { display: none; }
-.p-tip b { font-size: 12px; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,.74); padding: 2px 7px; border-radius: 999px; }
+.p-tip b { font-size: 14px; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,.74); padding: 2px 7px; border-radius: 999px; }
 .p-rail { position: relative; width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,.2); }
 .p-buf { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: rgba(255,255,255,.34); }
 .p-have { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: rgba(255,255,255,.14); transition: width .6s linear; }
@@ -310,6 +306,10 @@ html.tv .player #pfull { display: none; }
 .p-btn { display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 0; border-radius: 50%; background: none; color: #fff; opacity: .94; cursor: pointer; }
 .p-btn svg { width: 24px; height: 24px; }
 .p-btn:hover { background: rgba(255,255,255,.13); opacity: 1; }
+/* The button the remote or keyboard is on: solid white with dark art, impossible to miss from the sofa. Script focus() does
+   not always match :focus-visible on a television, so :focus counts there. */
+.p-btn:focus-visible, html.tv .p-btn:focus { outline: 3px solid var(--accent); outline-offset: 3px; background: #fff; color: #111; opacity: 1; transform: scale(1.12); }
+.p-btn { transition: transform .12s, background .12s; }
 .p-btn.big { width: 60px; height: 60px; background: rgba(255,255,255,.15); backdrop-filter: blur(8px); }
 .p-btn.big svg { width: 30px; height: 30px; }
 .p-btn.cc { width: auto; min-width: 44px; padding: 0 10px; border-radius: 10px; font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
@@ -410,7 +410,7 @@ form.person { grid-template-columns: 1fr; margin-top: 8px; }
 .rpill { border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); padding: 6px 12px; border-radius: 99px; font-size: 13px; font-weight: 600; transition: background .25s var(--ease), color .25s, transform .25s var(--spring), border-color .25s; }
 .rpill:active { transform: scale(.94); }
 .rpill:hover { color: var(--fg); transform: translateY(-1px); }
-.rpill[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: transparent; }
+.rpill[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 24%, var(--surface-2)); color: var(--fg); border-color: color-mix(in srgb, var(--accent) 70%, transparent); }
 @media (max-width: 760px) { .person { grid-template-columns: 1fr; } .person .pact { justify-content: flex-start; } }
 a.pill { display: inline-block; }
 .notice { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 13px; color: var(--dim); max-width: 66ch; }
@@ -459,11 +459,14 @@ a.pill { display: inline-block; }
 .tile { position: relative; }
 .new-badge { position: absolute; top: 8px; left: 8px; z-index: 2; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; color: var(--accent-fg); background: linear-gradient(100deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 12px rgba(0,0,0,.35); }
 #ml[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); }
-.hbanner { display: flex; gap: 12px; align-items: center; position: fixed; top: 66px; left: 0; right: 0; z-index: 40; padding: 8px calc(var(--gutter-r, 20px) + 8px) 8px var(--gutter, 20px); font-size: 13px; line-height: 1.4; color: #fff; text-decoration: none; box-shadow: 0 6px 18px rgba(0,0,0,.25); max-width: 100%; overflow-wrap: anywhere; }
+.hbanner { display: flex; gap: 12px; align-items: center; position: sticky; top: 66px; margin-top: 66px; z-index: 40; padding: 8px calc(var(--gutter-r, 20px) + 8px) 8px var(--gutter, 20px); font-size: 13px; line-height: 1.4; color: #fff; text-decoration: none; box-shadow: 0 6px 18px rgba(0,0,0,.25); max-width: 100%; overflow-wrap: anywhere; }
 .hbanner .hbmain { flex: 1 1 auto; min-width: 0; color: inherit; text-decoration: none; }
 .hbanner .hbx { flex: 0 0 auto; background: none; border: 0; color: inherit; font: inherit; font-size: 20px; line-height: 1; padding: 0 6px; cursor: pointer; opacity: .85; }
 .hbanner .hbx:hover, .hbanner .hbx:focus-visible { opacity: 1; }
-.hbanner.bad { background: #b3263a; } .hbanner.warn { background: #9a5b00; } .hbanner span { opacity: .8; }
+/* Dark mode: a tinted strip with a coloured edge rather than a slab of saturated red across the top of every page. */
+.hbanner.bad { background: color-mix(in srgb, var(--bad) 20%, var(--bg-2)); box-shadow: inset 3px 0 0 var(--bad), 0 6px 18px rgba(0,0,0,.35); }
+.hbanner.warn { background: color-mix(in srgb, var(--warn) 18%, var(--bg-2)); box-shadow: inset 3px 0 0 var(--warn), 0 6px 18px rgba(0,0,0,.35); }
+.hbanner b { color: #fff; } .hbanner span { opacity: .8; }
 .statusbox { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 12px; margin-top: 18px; }
 .issues { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .iss { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline; font-size: 14px; }
@@ -474,7 +477,11 @@ a.pill { display: inline-block; }
 /* ---------- player extras ---------- */
 .p-menu { position: relative; } .p-menu .menu { top: 52px; right: 0; background: rgba(20,22,30,.96); color: #fff; }
 .p-menu .menu button[aria-current] { color: var(--accent); }
-.player video::cue { background: rgba(0,0,0,.72); color: #fff; font-size: 1.35em; line-height: 1.35; text-shadow: none; }
+/* Captions: no box behind them, a modern sans, a little smaller, and a soft dark outline instead. A cue can only be styled
+   with text-shadow, so the outline is a ring of small shadows in every direction (kept faint so it reads as an edge, not a
+   hard stroke) with a wide soft one under it for busy backgrounds. */
+.player video::cue { background: none; background-color: transparent; color: #fff; font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Display", "Segoe UI", Inter, Roboto, sans-serif; font-weight: 600; font-size: 1.1em; line-height: 1.3;
+  text-shadow: 1.5px 0 0 rgba(0,0,0,.55), -1.5px 0 0 rgba(0,0,0,.55), 0 1.5px 0 rgba(0,0,0,.55), 0 -1.5px 0 rgba(0,0,0,.55), 1.1px 1.1px 0 rgba(0,0,0,.5), -1.1px 1.1px 0 rgba(0,0,0,.5), 1.1px -1.1px 0 rgba(0,0,0,.5), -1.1px -1.1px 0 rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.55); }
 .player.idle .p-top .icon-btn, .player.idle .p-top .chip { pointer-events: none; }
 @media (max-width: 560px) { .p-top { gap: 8px; } .p-top .icon-btn { width: 40px; height: 40px; } }
 
@@ -484,7 +491,13 @@ a.pill { display: inline-block; }
 /* No zoom on a television: the page is laid out at 1280 CSS pixels (see index.html) and the panel fits that to its own
    width, so a further zoom here only made every control a third bigger again on top of an already scaled layout. */
 html.tv :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: none; box-shadow: none; }
+/* The ring is drawn by the poster, which has the rounded corners, so it hugs the picture instead of a square box around the
+   tile; the poster swells a little, and the title brightens. Transform and shadow only, so it stays smooth on a TV's GPU. */
+html.tv .tile { outline: none !important; }
+html.tv .poster { transition: transform .22s var(--ease), box-shadow .22s var(--ease); will-change: transform; }
+html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: scale(1.07); box-shadow: 0 0 0 3px var(--fg), 0 18px 38px rgba(0,0,0,.6); }
+html.tv .tile:focus .tt { color: var(--fg); }
+html.tv .tile .tt { color: var(--dim); }
 /* A remote moves the highlight by calling focus() from script, and :focus-visible never matches that, so the ring has to
    come from :focus as well -- otherwise the arrow keys moved something the eye could not find. Desktop keeps the
    :focus-visible rule on its own, so a mouse click still rings nothing. */
@@ -492,7 +505,9 @@ html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: no
    smudge rather than a selection. The stroke sits on the tile itself rather than on the poster inside it, so it encloses the
    picture and its title as one unit with no line between them, and the tile -- not the poster -- is what lifts. */
 html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus, html.tv .tile:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
-html.tv .tile:focus { transform: translateY(-2px); }
+html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus { transition: transform .15s var(--ease), background .15s, box-shadow .15s; }
+html.tv .btn:focus, html.tv .pill:focus, html.tv .icon-btn:focus { transform: scale(1.06); }
+html.tv .row-scroll { scroll-snap-type: none; }
 html.tv * { cursor: none; }
 
 
@@ -559,7 +574,7 @@ html.tv * { cursor: none; }
 .ssec { scroll-margin-top: 130px; padding-top: 22px; }
 .ssec .ssec { padding-top: 14px; }
 .snav { position: sticky; top: 66px; z-index: 45; margin: 0 calc(var(--gutter-r) * -1) 0 calc(var(--gutter) * -1); padding: 6px var(--gutter-r) 0 var(--gutter);
-  background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
+  background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
 .snav .pills { flex-wrap: nowrap; padding: 4px 0 10px; }
 @media (max-width: 480px) { .snav .pills { gap: 5px; } .snav .pill { padding: 7px 10px; font-size: 12.5px; } }
 
@@ -678,3 +693,133 @@ html.tv * { cursor: none; }
 .lp-list .btn.lp-keep { border-color: var(--accent); }
 .lp-done { color: var(--dim); }
 .lp-done .lp-name { font-weight: 500; color: var(--dim); }
+
+/* ---------- the show page on a television ---------- */
+/* An episode row lifts and lights up the way the pointer's hover does -- the thumbnail's play badge fills, the row slides in
+   a little -- with a ring that follows its rounded corners. Transform, colour and shadow only. */
+html.tv .ep { outline: none !important; transition: transform .2s var(--ease), background .2s, box-shadow .2s, border-color .2s; }
+html.tv .ep:focus:not(:disabled) { transform: translateX(6px); background: var(--surface-2); box-shadow: 0 0 0 3px var(--fg), 0 14px 32px rgba(0,0,0,.45); border-radius: var(--radius); }
+html.tv .ep:focus:not(:disabled) .play { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; transform: scale(1.1); }
+html.tv .ep:focus .eo { -webkit-line-clamp: 4; }
+/* Season pills: the focused one is filled, so it reads from across the room even when it is not the chosen season. */
+html.tv .pill { outline: none !important; transition: transform .15s var(--ease), background .15s, color .15s, box-shadow .15s; }
+html.tv .pill:focus { transform: scale(1.08); box-shadow: 0 0 0 3px var(--fg); color: var(--fg); }
+/* Cast and the trailer button take the focus so a long cast row can be walked and scrolled, and ring the same way. */
+html.tv .actor { outline: none !important; border-radius: var(--radius); transition: transform .2s var(--ease), box-shadow .2s; }
+html.tv .actor:focus { transform: scale(1.06); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .tr-play:focus { box-shadow: 0 0 0 3px var(--fg); filter: brightness(1.1); }
+html.tv .tr-play:focus svg { transform: scale(1.12); }
+html.tv .dlb:focus { box-shadow: 0 0 0 3px var(--fg); border-radius: 999px; color: var(--fg); }
+
+/* ---------- settings and downloads on a television ---------- */
+html.tv .field:focus { border-color: var(--fg); box-shadow: 0 0 0 3px var(--fg); }
+html.tv select:focus, html.tv summary:focus, html.tv .stat:focus, html.tv .tcard:focus { outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 10px; }
+html.tv input[type="checkbox"], html.tv input[type="radio"] { width: 22px; height: 22px; accent-color: var(--accent); }
+html.tv input[type="checkbox"]:focus, html.tv input[type="radio"]:focus { outline: 3px solid var(--fg); outline-offset: 3px; }
+html.tv .snav .pill:focus { background: var(--fg); color: var(--bg); box-shadow: none; transform: scale(1.06); }
+html.tv .btn:focus { box-shadow: 0 0 0 3px var(--fg); }
+html.tv .btn.primary:focus { box-shadow: 0 0 0 3px var(--fg), 0 14px 34px color-mix(in srgb, var(--accent) 50%, transparent); }
+html.tv summary { padding: 6px 4px; }
+.btn.danger { background: #c62828; border-color: transparent; color: #fff; }
+
+/* ---------- profile pickers and sign-in on a television ---------- */
+html.tv .who-tile { outline: none !important; width: 170px; font-size: 20px; }
+html.tv .who-av { width: 150px; height: 150px; font-size: 64px; border-radius: 28px; }
+html.tv .who-tile:focus { color: var(--fg); }
+html.tv .who-tile:focus .who-av { transform: scale(1.12); box-shadow: 0 0 0 4px var(--fg), 0 18px 40px rgba(0,0,0,.55); }
+html.tv .who-grid { gap: 36px; max-width: 1100px; }
+html.tv .avpick { outline: none !important; }
+html.tv .avpick:focus { transform: scale(1.1); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .auth { width: min(460px, 100%); gap: 18px; }
+html.tv .auth .field, html.tv .pform .field, html.tv .pin-box .field { font-size: 20px; padding: 16px 18px; }
+html.tv .auth .btn, html.tv .pin-box .btn { padding: 14px 20px; font-size: 18px; }
+html.tv .pin-box { width: min(420px, 100%); }
+html.tv .pin-box input { font-size: 32px; }
+html.tv .pin-modal .btn:focus { transform: scale(1.06); }
+
+/* ---------- the top bar, menus and notices on a television ---------- */
+html.tv a.brand:focus { outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 12px; }
+html.tv .search:focus-within { border-color: var(--fg); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .search input:focus { outline: none; box-shadow: none; }
+html.tv .avatar:focus { outline: none; transform: scale(1.1); box-shadow: 0 0 0 3px var(--fg); }
+html.tv .menu a:focus, html.tv .menu button:focus { outline: none; background: var(--fg); color: var(--bg); border-radius: 8px; }
+html.tv .menu { animation: rise .2s var(--ease); }
+html.tv .menu a, html.tv .menu button { padding: 12px 14px; font-size: 17px; }
+html.tv .lp-x:focus, html.tv .hbx:focus, html.tv .lp-name:focus { outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 8px; opacity: 1; }
+html.tv .empty .btn:focus { box-shadow: 0 0 0 3px var(--fg); }
+
+/* ---------- the home billboard on a television ---------- */
+/* Shorter, so the first row of shows shows beneath it instead of being a scroll away; the text is set for a sofa. */
+html.tv .hero { min-height: min(52vh, 440px); }
+html.tv .hero-in { padding-top: 96px; padding-bottom: 40px; }
+html.tv .hero h1 { font-size: clamp(40px, 5.4vw, 64px); text-shadow: 0 2px 28px rgba(0,0,0,.6); }
+html.tv .hero .sub { font-size: 19px; }
+html.tv .hero .actions .btn { padding: 14px 26px; font-size: 18px; }
+html.tv .hero .actions .btn:focus { transform: scale(1.08); }
+
+/* ---------- the player's other controls on a television ---------- */
+html.tv .p-top .icon-btn:focus, html.tv .p-top .icon-btn:focus-visible { outline: none; background: #fff; color: #111; transform: scale(1.12); box-shadow: 0 0 0 3px var(--accent); }
+html.tv .p-top .icon-btn, html.tv .p-top .icon-btn { transition: transform .12s, background .12s; }
+html.tv .p-top .icon-btn { width: 48px; height: 48px; }
+html.tv .p-more:focus { color: #fff; outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 6px; }
+html.tv .p-wait .btn:focus, html.tv .p-wait .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; transform: scale(1.06); }
+html.tv .p-ctl .p-menu .menu button, html.tv .p-top .p-menu .menu button { padding: 12px 16px; font-size: 17px; }
+html.tv .p-seek:focus-visible .p-rail, html.tv .p-seek:focus .p-rail { box-shadow: 0 0 0 3px #fff; height: 8px; }
+
+/* ---------- casting screens ---------- */
+.castnote { animation: rise .3s var(--ease); }
+.cast-splash .btn:focus-visible, html.tv .cast-splash .btn:focus { outline: none; box-shadow: 0 0 0 3px #fff; transform: scale(1.06); }
+@media (min-width: 1100px) { .cs-where { font-size: 18px; } .cs-mark { width: 120px; height: 120px; border-radius: 26px; } }
+html.tv .castnote { font-size: 18px; padding: 14px 20px; bottom: 120px; }
+@media (prefers-reduced-motion: reduce) { .cs-mark, .castnote { animation: none; } }
+
+/* ---------- search results on a television ---------- */
+html.tv .grid { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 34px 24px; }
+html.tv .grid .tile { padding-top: 6px; }
+html.tv .empty .btn { margin-top: 4px; }
+
+/* ---------- the offline screen on a television ---------- */
+html.tv .auth[data-offline] { width: min(560px, 100%); }
+html.tv .auth[data-offline] h1 { font-size: 32px; }
+html.tv .auth[data-offline] p, html.tv .auth[data-offline] .dim { font-size: 18px !important; line-height: 1.5; }
+html.tv .auth[data-offline] .btn:focus { box-shadow: 0 0 0 3px #fff; transform: scale(1.04); }
+
+/* ---------- the admin panels on a television ---------- */
+/* Everything a remote can press is big enough to see from the sofa and rings the same way as the rest of the app. */
+html.tv .person .btn, html.tv .tcard .btn, html.tv .tfoot .btn, html.tv .pact .btn, html.tv .row-form .btn { min-height: 44px; padding: 10px 18px !important; font-size: 16px; }
+html.tv .rpill { padding: 9px 16px; font-size: 15px; outline: none !important; transition: transform .15s var(--ease), box-shadow .15s; }
+html.tv .rpill:focus { transform: scale(1.08); box-shadow: 0 0 0 3px var(--fg); color: var(--fg); }
+html.tv .person { padding: 18px; }
+html.tv table { font-size: 16px; } html.tv td, html.tv th { padding: 14px 10px; }
+html.tv .tcard { padding: 20px; } html.tv .tcard:focus-within { border-color: color-mix(in srgb, var(--fg) 40%, var(--line)); }
+html.tv .stat { padding: 14px 22px; } html.tv .stat span { font-size: 15px; }
+html.tv .dim, html.tv .tcard .dim { font-size: max(1em, 15px); }
+html.tv .hist summary { font-size: 17px; padding: 8px 4px; }
+html.tv .pwrow { gap: 12px; }
+html.tv .chart-wrap { min-height: 220px; }
+
+/* The health strip sits in the page under the header and pushes the page down, instead of floating over its first heading;
+   the page's own gap for the header is no longer needed beneath it. */
+.hbanner + .page-top, .hbanner + .pad.page-top { padding-top: 24px; }
+.hbanner + .hero .hero-in { padding-top: 56px; }
+
+/* ---------- loading skeletons ---------- */
+.skeleton { animation: fadein .35s var(--ease) .05s both; }
+.skel { animation-delay: calc(var(--k, 0) * -0.12s); }
+html.tv .skel { animation-duration: 1.8s; }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
+/* ---------- the billboard's trailer ---------- */
+/* Behind the gradient and the title (the hero's ::after and .hero-in sit above it), covering the billboard the way the
+   still does: a 16:9 picture centred and cropped, a touch larger than needed so the player's own edges stay out of sight. */
+.hero-tr { position: absolute; inset: 0; opacity: 0; transition: opacity 1.4s var(--ease); pointer-events: none; overflow: hidden; }
+.hero-tr.on { opacity: 1; }
+.hero-tr iframe { position: absolute; left: 50%; top: 50%; width: max(100%, 177.78vh); height: max(56.25vw, 100%); min-width: 100%; min-height: 100%; transform: translate(-50%, -50%) scale(1.3); border: 0; }
+.prefrow { display: flex; gap: 14px; align-items: flex-start; max-width: 70ch; cursor: pointer; line-height: 1.45; }
+.prefrow input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex: none; }
+.prefrow b { color: var(--fg); }
+
+/* The grey play button a WebView draws on a video that has no picture yet (its default poster) must never show through the
+   moment the logo lifts: the video has an empty poster of its own, and its native start button is hidden outright. */
+video { background: #000; }
+video::-webkit-media-controls-start-playback-button, video::-webkit-media-controls-overlay-play-button { display: none !important; -webkit-appearance: none; }
