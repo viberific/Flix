@@ -722,7 +722,7 @@ async function homeView(q, local = false) {
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
     // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
     artShow?.stop?.()
-    const art = (artShow = artSlideshow([...(featured ? [featured] : []), ...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])]))
+    const art = (artShow = artSlideshow([...(featured ? [featured] : []), ...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked ?? []), ...(home.myList ?? [])]))
     const beforeCleanup = cleanup
     cleanup = () => { beforeCleanup?.(); art?.stop?.(); if (artShow === art) artShow = null }
     const hs = !q && featured
@@ -1179,7 +1179,7 @@ function playView(seriesId, season, label) {
       if (idleArt) { if (run === artRun) idleArt.start(); return }
       const home = await warmArt()
       if (!home || !alive || run !== artRun) return
-      idleArt = artSlideshow([...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])], { manual: true, parent: pl })
+      idleArt = artSlideshow([...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked ?? []), ...(home.myList ?? [])], { manual: true, parent: pl })
       if (run === artRun) idleArt?.start()
     }
     // The idle timer is for the show being stopped, not merely untouched: the artwork only belongs up while nothing is
