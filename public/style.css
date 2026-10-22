@@ -490,7 +490,13 @@ a.pill { display: inline-block; }
 /* No zoom on a television: the page is laid out at 1280 CSS pixels (see index.html) and the panel fits that to its own
    width, so a further zoom here only made every control a third bigger again on top of an already scaled layout. */
 html.tv :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: none; box-shadow: none; }
+/* The ring is drawn by the poster, which has the rounded corners, so it hugs the picture instead of a square box around the
+   tile; the poster swells a little, and the title brightens. Transform and shadow only, so it stays smooth on a TV's GPU. */
+html.tv .tile { outline: none !important; }
+html.tv .poster { transition: transform .22s var(--ease), box-shadow .22s var(--ease); will-change: transform; }
+html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: scale(1.07); box-shadow: 0 0 0 3px var(--fg), 0 18px 38px rgba(0,0,0,.6); }
+html.tv .tile:focus .tt { color: var(--fg); }
+html.tv .tile .tt { color: var(--dim); }
 /* A remote moves the highlight by calling focus() from script, and :focus-visible never matches that, so the ring has to
    come from :focus as well -- otherwise the arrow keys moved something the eye could not find. Desktop keeps the
    :focus-visible rule on its own, so a mouse click still rings nothing. */
@@ -498,7 +504,9 @@ html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: no
    smudge rather than a selection. The stroke sits on the tile itself rather than on the poster inside it, so it encloses the
    picture and its title as one unit with no line between them, and the tile -- not the poster -- is what lifts. */
 html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus, html.tv .tile:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
-html.tv .tile:focus { transform: translateY(-2px); }
+html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus { transition: transform .15s var(--ease), background .15s, box-shadow .15s; }
+html.tv .btn:focus, html.tv .pill:focus, html.tv .icon-btn:focus { transform: scale(1.06); }
+html.tv .row-scroll { scroll-snap-type: none; }
 html.tv * { cursor: none; }
 
 

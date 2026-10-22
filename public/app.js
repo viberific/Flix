@@ -2660,14 +2660,27 @@ function focusRows(stops) {
     that had already jumped. On a television both are instant: a glide is a 300ms smear on a remote. */
 function revealStop(el) {
   const r = el.getBoundingClientRect()
-  let cut = r.top < 0 || r.bottom > innerHeight
-  for (let p = el.parentElement; !cut && p && p !== document.documentElement; p = p.parentElement) {
+  // Sideways first, on the rail itself: the tile is brought in with a tile's width to spare on the side it came from,
+  // so the next one is always visible beyond it and the rail never stops with the highlight hard against the edge.
+  for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
     if (p.scrollWidth <= p.clientWidth + 1 || !/auto|scroll|overlay|hidden/.test(getComputedStyle(p).overflowX)) continue
-    const pr = p.getBoundingClientRect()
-    cut = r.left < pr.left - 1 || r.right > pr.right + 1
+    const pr = p.getBoundingClientRect(), pad = Math.min(r.width * 0.6, 90)
+    const dxs = r.left < pr.left + pad ? r.left - pr.left - pad : r.right > pr.right - pad ? r.right - pr.right + pad : 0
+    if (dxs) p.scrollBy({ left: dxs, behavior: isTv ? 'auto' : smooth() })
+    break
   }
-  if (cut) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: isTv ? 'instant' : smooth() })
+  // Then the page: only when the row is near an edge, and then by enough to put it a little above the middle, with room
+  // for its title below -- rather than the least that shows the poster, which left the row jammed against the bottom
+  // with its name cut off. A short eased glide; the highlight itself has already moved, so it never lags the remote.
+  const edge = Math.min(140, innerHeight * 0.16)
+  if (r.top < edge || r.bottom > innerHeight - edge - 40) {
+    const want = r.top + r.height / 2 - innerHeight * 0.42
+    scrollBy({ top: want, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  }
 }
+// The column the highlight was last moved along, kept across Up and Down so a trip over a short row and back lands where
+// it started instead of drifting toward the middle. Cleared by any sideways move or by focus arriving from elsewhere.
+let stickyX = null, stickyEl = null
 
 addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey || $('.player')) return
@@ -2684,7 +2697,8 @@ addEventListener('keydown', (e) => {
   if (!rows.length) return
   const [dx, dy] = dir
   const from = onThing ? el.getBoundingClientRect() : { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 }
-  const ox = from.left + from.width / 2, oy = from.top + from.height / 2
+  const oy = from.top + from.height / 2
+  const ox = dy && stickyX != null && stickyEl === el ? stickyX : from.left + from.width / 2
   // The row the highlight is on; with nothing focused yet (a television that has just drawn the page) the row nearest the
   // middle of the screen stands in for it, so a first press still lands somewhere.
   const cur = (onThing && rows.find((row) => row.items.some((s) => s.el === el))) || rows.reduce((a, b) => (Math.abs(b.cy - oy) < Math.abs(a.cy - oy) ? b : a))
@@ -2716,6 +2730,7 @@ addEventListener('keydown', (e) => {
   if (!best) return
   e.preventDefault()
   best.focus({ preventScroll: true })
+  stickyX = dy ? ox : null; stickyEl = dy ? best : null
   revealStop(best)
   // A remote's OK on a text field has to raise the on-screen keyboard: the focus above happens inside a key event, which
   // is what lets a WebView show it, but a field that already had focus never raises it again.
