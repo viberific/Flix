@@ -263,6 +263,14 @@ function renderTop() {
         castNote('No TV found. Check the TV is on and on the same network as this box.')
       }
     }
+  // The logo always means home. When the address is already `#/` (or a live search has rewritten it), a plain link would not
+  // fire hashchange, so the tap did nothing: go there explicitly, clear the search and return to the top.
+  $('.brand').onclick = (e) => {
+    e.preventDefault()
+    $('#q').value = ''
+    const open = $('.menu'); if (open) closeMenu(open)
+    if (location.hash === '#/') { window.scrollTo({ top: 0, behavior: 'instant' }); route() } else go('#/')
+  }
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
   if (cur) q.value = cur
@@ -965,11 +973,14 @@ async function seriesView(id) {
       if (!dl.supported() || !list.length) { box.innerHTML = ''; return }
       const left = list.filter((e) => !saved.has(dl.idOf(id, e.season, e.label)))
       const done = list.length - left.length
+      // The button fills as the season saves: finished episodes plus how far the one in flight has got.
+      const inFlight = list.reduce((n, e) => n + (dl.active.get(dl.idOf(id, e.season, e.label))?.pct ?? 0), 0)
+      const frac = Math.min(1, (done + inFlight) / list.length)
       const label = seasonRun ? `Stop · ${done} of ${list.length} saved`
         : !left.length ? `${I.check} Season saved`
         : done ? `${I.dl} Save the rest · ${left.length} left`
         : `${I.dl} Download season`
-      box.innerHTML = `<button class="btn dls${!left.length && !seasonRun ? ' done' : ''}${seasonRun ? ' run' : ''}" id="sdl" aria-label="${!left.length ? 'This season is saved on this device' : seasonRun ? 'Stop saving this season' : 'Save every episode of this season on this device'}">${label}</button>`
+      box.innerHTML = `<button class="btn dls${!left.length && !seasonRun ? ' done' : ''}${seasonRun ? ' run' : ''}" id="sdl" style="--fill:${Math.round(frac * 100)}%" aria-label="${!left.length ? 'This season is saved on this device' : seasonRun ? 'Stop saving this season' : 'Save every episode of this season on this device'}">${label}</button>`
       $('#sdl').onclick = () => {
         if (seasonRun) { seasonRun++; paintSeason(); return } // a second tap stops it after the episode in flight
         if (!left.length) return go('#/downloads')
@@ -1000,20 +1011,36 @@ async function seriesView(id) {
         if (e.locked) return flashNote(`Watch ${shortEp(e.after)} first`)
         go1(e)
       })
-      $('#eps').querySelectorAll('.dlb').forEach((b) => {
-        const act = (ev) => {
-          ev.stopPropagation(); ev.preventDefault()
-          const e = seasons.get(cur)[+b.closest('.ep').dataset.i], did = dl.idOf(id, e.season, e.label)
-          if (saved.has(did) || dl.active.has(did)) return go('#/downloads')
-          dl.start({ seriesId: +id, season: e.season, label: e.label, title: e.title, seriesName: series.name },
-            () => api('/api/watch', { seriesId: +id, season: e.season ?? null, label: e.label }))
-        }
-        b.onclick = act; b.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') act(ev) }
+      paintSeason()
+    }
+    // The per-episode download buttons act through one listener, so they can be swapped in place without redrawing the list.
+    const dlAct = (ev) => {
+      const b = ev.target.closest?.('.dlb'); if (!b) return
+      if (ev.type === 'keydown' && ev.key !== 'Enter' && ev.key !== ' ') return
+      ev.stopPropagation(); ev.preventDefault()
+      const e = seasons.get(cur)[+b.closest('.ep').dataset.i], did = dl.idOf(id, e.season, e.label)
+      if (saved.has(did) || dl.active.has(did)) return go('#/downloads')
+      saveEp(e)
+    }
+    $('#eps').addEventListener('click', dlAct, true); $('#eps').addEventListener('keydown', dlAct, true)
+    // Progress ticks arrive many times a second. Only the download buttons and the season button change, so the list itself
+    // (thumbnails, entrance animation, scroll position) is left alone.
+    const paintDl = () => {
+      $('#eps').querySelectorAll('.ep').forEach((b) => {
+        const side = b.querySelector('.eside'), e = seasons.get(cur)?.[+b.dataset.i]
+        if (!side || !e) return
+        const old = side.querySelector('.dlb'), t = document.createElement('template')
+        t.innerHTML = dlButton(e)
+        const next = t.content.firstElementChild
+        if (old && next && old.className === next.className) { if (old.innerHTML !== next.innerHTML) old.innerHTML = next.innerHTML; if (old.title !== next.title) old.title = next.title }
+        else if (old && next) old.replaceWith(next)
+        else if (old) old.remove()
+        else if (next) side.appendChild(next)
       })
       paintSeason()
     }
     paint()
-    const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paint() }
+    const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
     // A page a person flicks past is not intent, and the catalogue is browsed by opening pages and leaving them, so the
     // first episode starts only once this show has actually been on screen for a while. The server fetches one episode
