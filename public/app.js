@@ -548,10 +548,10 @@ async function homeView(q, local = false) {
     if (!q && featured) {
       const s = featured
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">Featured</div>
-        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">Tap to see episodes</p>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${isTv ? 'Press OK to see episodes' : 'Tap to see episodes'}</p>
         <div class="actions rise" style="--i:3"><a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>
         <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
-        <a class="btn" href="#/series/${s.id}">${I.info} Details</a></div></div></section>`
+        ${isTv ? '' : `<a class="btn" href="#/series/${s.id}">${I.info} Details</a>`}</div></div></section>`
     } else html += '<div class="page-top"></div>'
     html += '<div class="pad">'
     if (lpShow.length) html += leavingPrompt(lpShow)
@@ -577,6 +577,8 @@ async function homeView(q, local = false) {
     const beforeCleanup = cleanup
     cleanup = () => { beforeCleanup?.(); art?.stop?.(); if (artShow === art) artShow = null }
     const hs = !q && featured
+    // A remote starts on the billboard's Watch now: one press of OK plays, one press of Down goes to the first row.
+    if (isTv && hs && !document.activeElement?.closest?.('#app')) $('.hero .btn.primary')?.focus({ preventScroll: true })
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
