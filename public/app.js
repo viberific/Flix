@@ -2643,16 +2643,32 @@ addEventListener('online', () => syncDownloads().catch(() => {}))
 function offlineView(why, isGate) {
   const admin = `https://${location.hostname}/`
   top.hidden = true
-  app.innerHTML = `<div class="auth-wrap"><div class="auth" role="alert"><div class="brand">${I.logo}<span>Flix</span></div>
+  // The retry runs again every few seconds. Drawing the whole card each time replayed its entrance and dropped the
+  // highlight, so a second look at the same problem only updates the words and the countdown.
+  const same = $('.auth[data-offline]')?.dataset.offline === (isGate ? 'gate' : 'down')
+  if (same) $('#owhy').textContent = why
+  else {
+    app.innerHTML = `<div class="auth-wrap"><div class="auth" role="alert" data-offline="${isGate ? 'gate' : 'down'}"><div class="brand">${I.logo}<span>Flix</span></div>
     <h1 style="text-align:center">${isGate ? 'Umbrel signed you out' : 'Can’t reach Flix'}</h1>
     <p class="dim" style="text-align:center;margin:0">${isGate
       ? 'Flix is installed behind Umbrel’s own login. Sign in to Umbrel, then open Flix again.'
       : 'The Flix server isn’t answering. Check that the Flix app is running in Umbrel, and that this device is online.'}</p>
-    <p class="dim" style="text-align:center;margin:0;font-size:13px">${esc(why)}</p>
+    <p class="dim" style="text-align:center;margin:0;font-size:13px" id="owhy">${esc(why)}</p>
     ${isGate ? `<a class="btn primary" style="width:100%;display:block;text-align:center;box-sizing:border-box" href="${esc(admin)}">Sign in to Umbrel</a><div style="height:8px"></div>` : ''}
-    <button class="btn${isGate ? '' : ' primary'}" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px">Retrying automatically…</div></div></div>`
+    <button class="btn${isGate ? '' : ' primary'}" id="rt" style="width:100%">Try again</button><div class="dim" style="text-align:center;font-size:13px" id="ocd" aria-live="off"></div></div></div>`
+    // A remote starts on the button that does something.
+    if (isTv) (isGate ? $('.auth a.btn') : $('#rt'))?.focus({ preventScroll: true })
+  }
   $('#rt').onclick = () => route()
-  clearTimeout(retryT); retryT = setTimeout(route, isGate ? 15000 : 5000)
+  // Counts down to the next try instead of saying "retrying" for ever, so it is plain that something is still happening.
+  let left = isGate ? 15 : 5
+  clearTimeout(retryT)
+  const tick = () => {
+    const el = $('#ocd'); if (el) el.textContent = left > 0 ? `Trying again in ${left}s` : 'Trying now…'
+    if (left-- <= 0) return route()
+    retryT = setTimeout(tick, 1000)
+  }
+  tick()
 }
 
 /** Admins see a red/amber strip on any page when something needs attention (BTN refused us, disk full, engine down). */

@@ -776,3 +776,9 @@ html.tv .castnote { font-size: 18px; padding: 14px 20px; bottom: 120px; }
 html.tv .grid { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 34px 24px; }
 html.tv .grid .tile { padding-top: 6px; }
 html.tv .empty .btn { margin-top: 4px; }
+
+/* ---------- the offline screen on a television ---------- */
+html.tv .auth[data-offline] { width: min(560px, 100%); }
+html.tv .auth[data-offline] h1 { font-size: 32px; }
+html.tv .auth[data-offline] p, html.tv .auth[data-offline] .dim { font-size: 18px !important; line-height: 1.5; }
+html.tv .auth[data-offline] .btn:focus { box-shadow: 0 0 0 3px #fff; transform: scale(1.04); }
