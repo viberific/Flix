@@ -798,3 +798,19 @@ html.tv .chart-wrap { min-height: 220px; }
    the page's own gap for the header is no longer needed beneath it. */
 .hbanner + .page-top, .hbanner + .pad.page-top { padding-top: 24px; }
 .hbanner + .hero .hero-in { padding-top: 56px; }
+
+/* ---------- loading skeletons ---------- */
+.skeleton { animation: fadein .35s var(--ease) .05s both; }
+.skel { animation-delay: calc(var(--k, 0) * -0.12s); }
+html.tv .skel { animation-duration: 1.8s; }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
+/* ---------- the billboard's trailer ---------- */
+/* Behind the gradient and the title (the hero's ::after and .hero-in sit above it), covering the billboard the way the
+   still does: a 16:9 picture centred and cropped, a touch larger than needed so the player's own edges stay out of sight. */
+.hero-tr { position: absolute; inset: 0; opacity: 0; transition: opacity 1.4s var(--ease); pointer-events: none; overflow: hidden; }
+.hero-tr.on { opacity: 1; }
+.hero-tr iframe { position: absolute; left: 50%; top: 50%; width: max(100%, 177.78vh); height: max(56.25vw, 100%); min-width: 100%; min-height: 100%; transform: translate(-50%, -50%) scale(1.3); border: 0; }
+.prefrow { display: flex; gap: 14px; align-items: flex-start; max-width: 70ch; cursor: pointer; line-height: 1.45; }
+.prefrow input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex: none; }
+.prefrow b { color: var(--fg); }

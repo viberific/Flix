@@ -114,8 +114,18 @@ async function swap(fn) {
   once()
 }
 
-function skeleton() {
-  return `<div class="pad page-top"><div class="skel" style="height:min(46vh,380px);margin-bottom:28px"></div><div style="display:flex;gap:18px;overflow:hidden">${'<div class="skel" style="flex:none;width:168px;aspect-ratio:2/3"></div>'.repeat(8)}</div></div>`
+/** What a page looks like before it has arrived: the same shapes in the same places, so nothing jumps when the real one lands.
+    The pieces shimmer one after another (--k) rather than all at once, and the whole thing fades in so a quick load never flashes it. */
+function skeleton(kind) {
+  const bar = (w, h = 14, k = 0, extra = '') => `<div class="skel" style="width:${w};height:${h}px;--k:${k};${extra}"></div>`
+  if (kind === 'series') {
+    return `<div class="skeleton"><section class="s-hero"><div class="s-in pad"><div class="skel" style="width:200px;aspect-ratio:2/3;flex:none"></div>
+      <div class="s-meta" style="flex:1;display:grid;gap:14px;align-content:end">${bar('55%', 44)}${bar('38%', 16, 1)}${bar('260px', 46, 2, 'border-radius:999px')}</div></div></section>
+      <div class="pad">${bar('70ch', 14, 1, 'max-width:100%;margin-top:26px')}${bar('60ch', 14, 2, 'max-width:100%;margin-top:10px')}
+      <div style="margin-top:34px;display:grid;gap:12px">${[0, 1, 2, 3, 4].map((i) => `<div class="skel" style="height:92px;--k:${i}"></div>`).join('')}</div></div></div>`
+  }
+  const row = (n) => `<div class="skel" style="width:180px;height:20px;margin:26px 0 12px;--k:${n}"></div><div style="display:flex;gap:18px;overflow:hidden">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => `<div style="flex:none;width:168px"><div class="skel" style="aspect-ratio:2/3;--k:${i + n}"></div>${bar('70%', 12, i + n, 'margin-top:10px')}</div>`).join('')}</div>`
+  return `<div class="skeleton"><div class="skel" style="height:min(${isTv ? 52 : 66}vh,${isTv ? 440 : 560}px);border-radius:0;position:relative"><div class="pad" style="position:absolute;left:0;right:0;bottom:40px;display:grid;gap:14px">${bar('34%', 46, 1, 'background:rgba(255,255,255,.07)')}${bar('18%', 16, 2, 'background:rgba(255,255,255,.07)')}<div style="display:flex;gap:12px">${bar('150px', 46, 3, 'border-radius:999px;background:rgba(255,255,255,.1)')}${bar('130px', 46, 4, 'border-radius:999px;background:rgba(255,255,255,.07)')}</div></div></div><div class="pad">${row(0)}${row(2)}</div></div>`
 }
 
 /* ---------- casting ----------
@@ -588,11 +598,60 @@ async function homeView(q, local = false) {
     // A remote starts on the billboard's Watch now: one press of OK plays, one press of Down goes to the first row.
     if (isTv && hs && !document.activeElement?.closest?.('#app')) $('.hero .btn.primary')?.focus({ preventScroll: true })
     if (hs) backdrop($('#hbd'), `/api/art/${hs.id}/banner`, `/api/art/${hs.id}/poster`)
+    if (hs) {
+      const stopTrailer = heroTrailer($('.hero'), hs.id)
+      if (stopTrailer) { const prev = cleanup; cleanup = () => { prev?.(); stopTrailer() } }
+    }
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { alert(e.message) }
     }
   }
+}
+
+/* ---------- the billboard's trailer ---------- */
+/**
+ * A few seconds after the billboard has been on screen, the show's trailer fades in behind the title -- muted, no controls,
+ * just the picture moving -- and fades back to the still when it ends. It runs only where there is a screen to watch from
+ * (a television or a big window), never with reduced motion, never in a hidden tab, and it pauses whenever the billboard
+ * scrolls out of view. It talks to YouTube (the privacy-friendly nocookie host), so it can be turned off per device on the
+ * Profile page. Returns the function that tears it down, or null when it must not run.
+ */
+function heroTrailer(hero, seriesId) {
+  if (!hero || rmq.matches || !bigScreen() || !store.get('previews', true) || !navigator.onLine) return null
+  let dead = false, player = null, box = null, io = null, visible = true, timer = setTimeout(start, 5000)
+  const fade = (on) => box?.classList.toggle('on', on)
+  async function start() {
+    if (dead || document.hidden) return
+    let ids
+    try { ids = (await api(`/api/trailer/${seriesId}`)).ids } catch { return }
+    if (dead || !ids?.length) return
+    try { await ytApi() } catch { return }
+    if (dead) return
+    box = document.createElement('div'); box.className = 'hero-tr'; box.setAttribute('aria-hidden', 'true')
+    box.innerHTML = '<div id="htp"></div>'
+    $('.bd', hero)?.after(box)
+    let n = 0
+    const next = () => { if (++n < ids.length) player.loadVideoById({ videoId: ids[n] }); else gone() }
+    player = new YT.Player('htp', { videoId: ids[0], host: 'https://www.youtube-nocookie.com',
+      playerVars: { autoplay: 1, mute: 1, controls: 0, disablekb: 1, fs: 0, rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3, cc_load_policy: 0 },
+      events: {
+        onReady: (e) => { e.target.mute(); if (visible) e.target.playVideo() },
+        // Only a picture that is really moving is shown; the still stays up through buffering and any error.
+        onStateChange: (e) => { if (e.data === 1) fade(true); else if (e.data === 0) { fade(false); setTimeout(() => !dead && gone(), 1200) } },
+        onError: next,
+      } })
+    // Off screen, it stops: nothing plays under the rows, and it picks up again when the billboard is back.
+    io = new IntersectionObserver(([en]) => {
+      visible = en.isIntersecting && en.intersectionRatio > 0.35
+      try { if (visible) player.playVideo?.(); else player.pauseVideo?.() } catch { /* not ready yet */ }
+    }, { threshold: [0, 0.35, 0.6] })
+    io.observe(hero)
+    document.addEventListener('visibilitychange', onVis)
+  }
+  const onVis = () => { try { document.hidden ? player?.pauseVideo?.() : visible && player?.playVideo?.() } catch { /* not ready */ } }
+  function gone() { try { player?.destroy?.() } catch { /* already gone */ } player = null; box?.remove(); box = null }
+  return () => { dead = true; clearTimeout(timer); io?.disconnect(); document.removeEventListener('visibilitychange', onVis); gone() }
 }
 
 /* ---------- the idle sit-back slideshow ---------- */
@@ -2522,11 +2581,14 @@ function profileView() {
       <h2 class="sec" style="margin-top:0">Your creature</h2>
       <div class="avgrid">${AVATARS.map((id) => `<button class="avpick" data-av="${id}" aria-pressed="${me.avatar === id}" aria-label="${id}">${avSvg(id)}</button>`).join('')}</div>
       <p class="dim" id="avmsg" style="margin:8px 0 0;font-size:14px">Tap one to use it beside your name.</p>
+      <h2 class="sec">Home screen</h2>
+      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', true) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard, on this device. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
       <h2 class="sec">Name</h2>
       <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
       <h2 class="sec">Password</h2>
       <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
 
+    $('#pprev').onchange = (e) => store.set('previews', e.target.checked)
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
       const before = me.avatar
@@ -2837,7 +2899,40 @@ addEventListener('keydown', (e) => {
 // The page the player was opened from, kept across one episode handing over to the next, so leaving the player can step
 // back to it instead of stacking another copy of the show page on the history.
 let lastHash = null, playerOrigin = null
+// Where each page was left: how far it was scrolled and what had the highlight, so Back lands exactly where you were
+// (the row, the tile, the episode) instead of at the top with nothing selected.
+try { history.scrollRestoration = 'manual' } catch { /* the browser decides */ }
+const viewState = new Map()
+let navIdx = 0
+function captureView() {
+  const el = document.activeElement
+  let at = null
+  if (el && el !== document.body && app.contains(el)) {
+    const cell = el.closest('.row-scroll > *'), wrap = el.closest('.rowwrap')
+    if (cell && wrap) at = { row: [...app.querySelectorAll('.rowwrap')].indexOf(wrap), idx: [...wrap.querySelectorAll('.row-scroll > *')].indexOf(cell) }
+    else {
+      const q = (v) => JSON.stringify(String(v))
+      const sel = el.id ? '#' + CSS.escape(el.id) : el.dataset.id ? `[data-id=${q(el.dataset.id)}]` : el.matches('.ep[data-i]') ? `.ep[data-i=${q(el.dataset.i)}]`
+        : el.dataset.k ? `.pill[data-k=${q(el.dataset.k)}]` : el.dataset.s && el.matches('.pill') ? `.pill[data-s=${q(el.dataset.s)}]` : el.getAttribute('href') ? `[href=${q(el.getAttribute('href'))}]` : null
+      if (sel) at = { sel }
+    }
+  }
+  return { y: scrollY, at }
+}
+function restoreView(v) {
+  window.scrollTo({ top: v.y, behavior: 'instant' })
+  let el = null
+  try { el = v.at?.sel ? app.querySelector(v.at.sel) : v.at ? app.querySelectorAll('.rowwrap')[v.at.row]?.querySelectorAll('.row-scroll > *')[v.at.idx] : null } catch { /* a selector that no longer parses */ }
+  if (!el) return
+  el.focus({ preventScroll: true })
+  el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'instant' }) // the rail it sits in is brought round to it
+}
 async function route() {
+  if (lastHash != null && !$('.player')) viewState.set(lastHash, captureView())
+  // A new page is a new history entry with no state; Back and Forward arrive with the number this code gave them.
+  const hst = history.state
+  const arrived = hst && typeof hst.flix === 'number'
+  if (arrived) navIdx = hst.flix; else { try { history.replaceState({ flix: ++navIdx }, '') } catch { /* no history */ } }
   cleanup?.(); cleanup = null
   clearTimeout(retryT)
   const fromHash = lastHash
@@ -2872,7 +2967,7 @@ async function route() {
   // A shared device asks who is watching each time the app is opened.
   if (profiles().length > 1 && !picked() && parts[0] !== 'play' && parts[0] !== 'offplay') { markPicked(); return swap(profilesView()) }
   // Opening a show can take a moment on the server. Show the placeholder at once rather than leave the old page up, which looks like the tap did nothing.
-  const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton() } }, app.innerHTML.trim() ? 120 : 200)
+  const slow = setTimeout(() => { if (token === navToken) { window.scrollTo({ top: 0, behavior: 'instant' }); app.innerHTML = skeleton(parts[0] === 'series' ? 'series' : 'home') } }, app.innerHTML.trim() ? 120 : 200)
   try {
     let render
     if (parts[0] === 'series') render = await seriesView(parts[1])
@@ -2885,6 +2980,7 @@ async function route() {
     clearTimeout(slow)
     if (token !== navToken) return
     await swap(render)
+    if (arrived && viewState.has(location.hash) && parts[0] !== 'play') restoreView(viewState.get(location.hash))
     if (me.is_admin && parts[0] !== 'play') healthBanner()
   } catch (e) {
     clearTimeout(slow)
