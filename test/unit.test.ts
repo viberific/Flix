@@ -228,6 +228,13 @@ test('seasons: with the real season length known, one episode is not a season, a
   assert.deepEqual(withLen([ep(1, 1, 2)], { 1: 2 }), [[1, 'episodes']]) // a double episode covers both
 })
 
+test('seasons: a dead pack gives way to whole singles, but stays when there is nothing else', () => {
+  const dead = { ...pack(1), alive: false }
+  assert.deepEqual(seasons([dead, ep(1, 1), ep(1, 2)]), [[1, 'episodes']])
+  assert.deepEqual(seasons([dead, ep(1, 1), ep(1, 3)]), [[1, 'pack']]) // singles have a hole
+  assert.deepEqual(seasons([dead, { ...pack(1), alive: true }, ep(1, 1), ep(1, 2)]), [[1, 'pack']]) // one live pack is enough
+})
+
 test('seasons: double episodes cover both numbers; specials and date shows never count', () => {
   assert.deepEqual(seasons([ep(1, 1, 2), ep(1, 3)]), [[1, 'episodes']])
   assert.deepEqual(seasons([ep(0, 1), ep(1, 1)]), [[1, 'episodes']])
