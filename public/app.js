@@ -1621,7 +1621,7 @@ function playView(seriesId, season, label) {
       if (castingOnly) return // the TV has it; nothing plays here
       hls?.destroy(); hls = null
       if (!v) {
-        $('#vw').innerHTML = '<video autoplay playsinline></video>'
+        $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
         if (fill) v.style.objectFit = 'cover'
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
@@ -2679,7 +2679,7 @@ async function offlinePlayView(id) {
     if (!m) { go('#/downloads'); return }
     top.hidden = true
     app.innerHTML = `<div class="player" id="pl"><div class="p-top"><a class="icon-btn" href="#/downloads" aria-label="Back">${I.back}</a><div class="p-title"><b>${esc(m.seriesName || '')}</b><span>${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span></div></div>
-      <div id="vw"><video controls autoplay playsinline>${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
+      <div id="vw"><video controls autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
     const pl = $('#pl'), v = $('video')
     let idleT = null, last = 0
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (!v.paused) pl.classList.add('idle') }, 3000) }

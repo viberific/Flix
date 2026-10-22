@@ -814,3 +814,8 @@ html.tv .skel { animation-duration: 1.8s; }
 .prefrow { display: flex; gap: 14px; align-items: flex-start; max-width: 70ch; cursor: pointer; line-height: 1.45; }
 .prefrow input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex: none; }
 .prefrow b { color: var(--fg); }
+
+/* The grey play button a WebView draws on a video that has no picture yet (its default poster) must never show through the
+   moment the logo lifts: the video has an empty poster of its own, and its native start button is hidden outright. */
+video { background: #000; }
+video::-webkit-media-controls-start-playback-button, video::-webkit-media-controls-overlay-play-button { display: none !important; -webkit-appearance: none; }

@@ -64,6 +64,12 @@ export function audioDirect(p: Probe, can?: Set<string>) {
 
 const DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1'])
 const DIRECT_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis'])
+/** Every episode's sound goes through this on its way to stereo AAC. A 5.1 mix folded down to two channels, and most
+    streaming-era mixes anyway, sit far below where a television expects dialogue, so the volume had to be wound up to
+    hear anyone and then a loud scene took the roof off. dynaudnorm lifts quiet stretches toward a steady level (at most
+    about 15 dB, so room tone is not blown up), leaves what is already loud alone, and its peak target keeps it from
+    clipping. It looks at about two seconds at a time, so a piece started from the middle of the file settles at once. */
+export const AUDIO_LEVEL = ['-af', 'dynaudnorm=f=250:g=9:p=0.9:m=6']
 /** Codecs an MP4 can hold with the picture copied. server.ts remuxes to MP4, so it uses this same set. */
 export const MP4_CARRY = new Set(['h264', 'hevc', 'av1'])
 /**
@@ -421,7 +427,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     mkdirSync(dir, { recursive: true })
     const input = ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
-    const audioOut = ['-c:a', 'aac', '-ac', '2', '-b:a', '160k']
+    const audioOut = [...AUDIO_LEVEL, '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
     // Decided once per file: the profile does not change while it plays. The GPU when the container has one (see pickEncoder).
     const enc = !hdr && !copy ? await videoEncode(outH, p.fps, filters, SEG, { capped: maxH > 0 }) : null
     if (enc) diag('encode', `converting with ${enc.encoder} at ${enc.profile}`, { torrentId, fileIndex, height: outH, ...(maxH ? { quality: maxH } : {}) })
