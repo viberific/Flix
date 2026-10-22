@@ -236,7 +236,7 @@ img.fade.in { opacity: 1; }
   background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); transition: bottom .35s var(--ease); }
 /* Clear of the player's own bar. The bar is ~110px tall (10px padding, 24px seek, 4px gap, a 60px button, 12px below), so
    the card sits over it rather than under it at 960x540 and 1280x720, and drops back into the corner while the bar is away. */
-.player.idle .p-next { bottom: max(28px, env(safe-area-inset-bottom, 0px)); }
+.player.idle .p-next, .player.p-quiet .p-next { bottom: max(28px, env(safe-area-inset-bottom, 0px)); }
 /* Paused: what you are watching, centre-left over the dimmed frame -- the episode's title with its age rating beside
    it, the episode's own description under that, then the people in it. No artwork behind it: the frame itself, dimmed,
    is always right (see the paused block above). */

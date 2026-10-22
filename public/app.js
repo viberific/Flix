@@ -1564,6 +1564,9 @@ function playView(seriesId, season, label) {
         // otherwise leave the artwork sitting over a show that is playing again.
         v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
         v.ontimeupdate = () => {
+          // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
+          // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
+          if (started && !holding && !castingOnly && !v.paused && v.currentTime > 0.5) $('#wait')?.classList.add('gone')
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.
