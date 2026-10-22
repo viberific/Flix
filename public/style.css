@@ -21,7 +21,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 header#top { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 66px; display: flex; align-items: center; gap: 18px;
   padding: 0 var(--gutter-r) 0 var(--gutter); view-transition-name: hdr;
   background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 88%, transparent), transparent); transition: background .35s var(--ease), backdrop-filter .35s, box-shadow .35s; }
-header#top.solid { background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
+header#top.solid { background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 23px; letter-spacing: -.045em; line-height: 1; }
 .brand svg { width: 30px; height: 30px; flex: none; border-radius: 8px; box-shadow: 0 6px 18px -4px color-mix(in srgb, var(--accent-2) 60%, transparent), inset 0 0 0 1px rgba(255,255,255,.12);
   transition: transform .35s var(--ease); }
@@ -410,7 +410,7 @@ form.person { grid-template-columns: 1fr; margin-top: 8px; }
 .rpill { border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); padding: 6px 12px; border-radius: 99px; font-size: 13px; font-weight: 600; transition: background .25s var(--ease), color .25s, transform .25s var(--spring), border-color .25s; }
 .rpill:active { transform: scale(.94); }
 .rpill:hover { color: var(--fg); transform: translateY(-1px); }
-.rpill[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: transparent; }
+.rpill[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 24%, var(--surface-2)); color: var(--fg); border-color: color-mix(in srgb, var(--accent) 70%, transparent); }
 @media (max-width: 760px) { .person { grid-template-columns: 1fr; } .person .pact { justify-content: flex-start; } }
 a.pill { display: inline-block; }
 .notice { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 13px; color: var(--dim); max-width: 66ch; }
@@ -463,7 +463,10 @@ a.pill { display: inline-block; }
 .hbanner .hbmain { flex: 1 1 auto; min-width: 0; color: inherit; text-decoration: none; }
 .hbanner .hbx { flex: 0 0 auto; background: none; border: 0; color: inherit; font: inherit; font-size: 20px; line-height: 1; padding: 0 6px; cursor: pointer; opacity: .85; }
 .hbanner .hbx:hover, .hbanner .hbx:focus-visible { opacity: 1; }
-.hbanner.bad { background: #b3263a; } .hbanner.warn { background: #9a5b00; } .hbanner span { opacity: .8; }
+/* Dark mode: a tinted strip with a coloured edge rather than a slab of saturated red across the top of every page. */
+.hbanner.bad { background: color-mix(in srgb, var(--bad) 20%, var(--bg-2)); box-shadow: inset 3px 0 0 var(--bad), 0 6px 18px rgba(0,0,0,.35); }
+.hbanner.warn { background: color-mix(in srgb, var(--warn) 18%, var(--bg-2)); box-shadow: inset 3px 0 0 var(--warn), 0 6px 18px rgba(0,0,0,.35); }
+.hbanner b { color: #fff; } .hbanner span { opacity: .8; }
 .statusbox { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 12px; margin-top: 18px; }
 .issues { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .iss { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline; font-size: 14px; }
@@ -567,7 +570,7 @@ html.tv * { cursor: none; }
 .ssec { scroll-margin-top: 130px; padding-top: 22px; }
 .ssec .ssec { padding-top: 14px; }
 .snav { position: sticky; top: 66px; z-index: 45; margin: 0 calc(var(--gutter-r) * -1) 0 calc(var(--gutter) * -1); padding: 6px var(--gutter-r) 0 var(--gutter);
-  background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
+  background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: saturate(1.4) blur(18px); -webkit-backdrop-filter: saturate(1.4) blur(18px); box-shadow: 0 1px 0 var(--line); }
 .snav .pills { flex-wrap: nowrap; padding: 4px 0 10px; }
 @media (max-width: 480px) { .snav .pills { gap: 5px; } .snav .pill { padding: 7px 10px; font-size: 12.5px; } }
 
