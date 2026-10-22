@@ -1228,6 +1228,12 @@ function playView(seriesId, season, label) {
     }
     goLandscape()
     pl.addEventListener('pointerup', goLandscape)
+    // Leaving the app drops the page out of fullscreen (the WebView does it on its own, sometimes only after the page is
+    // already hidden), and with landscape still set nothing ever asked again: back in the app the picture sat in the
+    // padded page, and the fill button only filled that box. Losing fullscreen while away, or coming back without it,
+    // lets the next tap ask again.
+    const lostFull = () => { if (document.hidden && !document.fullscreenElement) landscape = false }
+    document.addEventListener('fullscreenchange', lostFull)
 
     // A list opened from the remote: the button opens it, then the focus is put on the entry already chosen (or the first),
     // because a d-pad cannot point at anything that is not focused.
@@ -1440,8 +1446,13 @@ function playView(seriesId, season, label) {
         left > 30 ? `${Math.round(left / 60)} min left · ends ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''].filter(Boolean)
       $('#pim').textContent = bits.join('  ·  '); $('#pim').hidden = !bits.length
       const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 8)
-      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b>${c.role ? `<em>${esc(c.role)}</em>` : ''}</span>`).join('')
-      $('#pic').hidden = !cast.length
+      // Only rebuilt when the people change: every pause repaints the card, and a fresh row would jump back to its start.
+      const pic = $('#pic'), faces = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none';this.closest('.p-info-c').onscroll()"><b>${esc(c.name)}</b>${c.role ? `<em>${esc(c.role)}</em>` : ''}</span>`).join('')
+      if (pic.dataset.faces !== faces) { pic.innerHTML = faces; pic.dataset.faces = faces; pic.scrollLeft = 0 }
+      pic.hidden = !cast.length
+      // The right edge fades while there are more faces past it.
+      pic.onscroll = () => pic.classList.toggle('more', pic.scrollWidth - pic.scrollLeft - pic.clientWidth > 2)
+      pic.onscroll()
     }
     function wirePlayer() {
       const bar = $('#pseek')
@@ -1593,7 +1604,7 @@ function playView(seriesId, season, label) {
     }
     // Named, so leaving the player really removes it: the old arrow function could never be taken off again, and every
     // episode ever opened left one more listener behind.
-    const onVisible = () => { if (!document.hidden) revive() }
+    const onVisible = () => { if (document.hidden) return lostFull(); if (!document.fullscreenElement) { landscape = false; goLandscape() } revive() }
     addEventListener('visibilitychange', onVisible)
     /**
      * Let go of the picture for good. Taking a <video> off the page does NOT stop it: it keeps its decoder and its open
@@ -1611,7 +1622,7 @@ function playView(seriesId, season, label) {
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
-      alive = false; removeEventListener('visibilitychange', onVisible); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
