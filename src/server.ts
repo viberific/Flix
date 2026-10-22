@@ -291,7 +291,13 @@ app.get('/api/home', auth, async (req) => {
   // A show in Continue Watching is not shown again anywhere else on the screen.
   const resume = new Set<number>(continueWatching(req.user!).map((c: any) => c.seriesId))
   const myList = listed.filter((l) => !resume.has(l.series_id)).map((l) => { const r = all.find((x) => x.id === l.series_id); return r && { ...clean(r), hasNew: l.seen_at !== null && r.latest > l.seen_at } }).filter(Boolean) as any[]
-  const taken = new Set<number>([...resume, ...myList.map((r) => r.id)])
+  // Ready to Watch: every show with at least one download on the server, newest download first. Shows already in Continue
+  // Watching or on My List are drawn there instead.
+  const onList = new Set(listed.map((l) => l.series_id))
+  const ready = (db.prepare(`SELECT r.series_id AS id, MAX(d.added_at) AS at FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id
+      WHERE d.state = 'active' AND r.series_id IS NOT NULL GROUP BY r.series_id ORDER BY at DESC`).all() as { id: number }[])
+    .filter((d) => !resume.has(d.id) && !onList.has(d.id)).map((d) => all.find((x) => x.id === d.id)).filter(Boolean).map((r) => clean(r)) as any[]
+  const taken = new Set<number>([...resume, ...myList.map((r) => r.id), ...ready.map((r) => r.id)])
 
   // "Because you watched X": other shows sharing X's genres that this person has not started.
   let because: { name: string; liked: boolean; series: any[] } | null = null
@@ -323,7 +329,7 @@ app.get('/api/home', auth, async (req) => {
   }
   const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
   const listIds = listed.map((l) => l.series_id)
-  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, because, picked }
+  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, ready, because, picked }
 })
 
 /** Thumbs up (1), thumbs down (-1) or clear (0) for a show. Feeds the home screen's picks. */

@@ -43,3 +43,10 @@ test('a Queue with something to resume but no suggestions is still drawn', () =>
   const q = queueOf([resume(1)], { myList: [], picked: null, because: null, sections: [] })
   assert.ok(q && q.sugg.length === 0 && q.used === null)
 })
+
+test('shows with downloads are their own group and are not suggested again', () => {
+  const q = queueOf([], { myList: [], ready: shows(100, 2), picked: shows(100, 10), sections: [] })
+  assert.deepEqual(q.ready.map((s: any) => s.id), [100, 101])
+  assert.ok(![...q.sugg, ...q.pool].some((s: any) => s.id === 100 || s.id === 101))
+  assert.equal(queueOf([], { myList: [], ready: [], picked: null, sections: [] }), null)
+})
