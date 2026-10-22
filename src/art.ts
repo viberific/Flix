@@ -228,13 +228,28 @@ const sizes = new Map<string, { w: number; h: number } | null>()
  * is a 758x140 logo strip, which stretched across the page is the blur, so anything that thin, or under 900px
  * wide, is skipped in favour of the next source (TMDB's backdrop, then the poster the page blurs).
  */
-async function usableAsBackdrop(path: string): Promise<boolean> {
+async function sizeOf(path: string) {
   let s = sizes.get(path)
   if (s === undefined) {
     try { s = pixelSize(await readFile(path)) } catch { s = null }
     sizes.set(path, s)
   }
+  return s
+}
+
+async function usableAsBackdrop(path: string): Promise<boolean> {
+  const s = await sizeOf(path)
   return !s || (s.w >= 900 && s.w / s.h >= 1.5)
+}
+
+/**
+ * YouTube answers a missing thumbnail with a grey 120x90 placeholder (a play button on grey) instead of an error, and
+ * the fallback sizes are always at least 480 wide, so anything narrower is that placeholder. Better no picture --
+ * the page's own gradient -- than that one stretched across the trailer card.
+ */
+async function usableAsTrailerThumb(path: string): Promise<boolean> {
+  const s = await sizeOf(path)
+  return !s || s.w >= 400
 }
 
 /** Cached artwork for a series, downloading it on first use and trying the backup sources when one fails. Null when there is none. */
@@ -243,6 +258,7 @@ export async function getArt(seriesId: number, kind: Exclude<ArtKind, 'still'>) 
     const got = await fetchCached(url, seriesId, kind)
     if (!got) continue
     if (kind === 'banner' && !(await usableAsBackdrop(got.path))) continue
+    if (kind === 'trailer' && !(await usableAsTrailerThumb(got.path))) continue
     return got
   }
   return null

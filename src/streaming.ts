@@ -30,7 +30,7 @@ async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix', needB
     // Already in the engine but not ours (downloaded by hand in the Downloads folder): take it over rather than fetch a second copy.
     if (!db.prepare(`SELECT 1 FROM downloads WHERE torrent_id = ? AND state = 'active'`).get(rel.torrent_id)) { from = 'adopted'; await qb.addTags(hash, 'flix').catch(() => {}) }
   } else {
-    assertSpace(needBytes) // for a season pack, just the episode that will be fetched: the rest of the pack stays switched off
+    assertSpace(needBytes) // a season pack is fetched whole
     const file = await fetchTorrentFile(rel.torrent_link)
     try {
       heldBack = !!rel.is_pack
@@ -76,16 +76,8 @@ function pickFromPack(files: QbFile[], userId: number, torrentId: number, label?
   return vids.find((f) => !done.has(f.index)) ?? vids[0]
 }
 
-/** Disk a play will take: the whole release, or for a season pack only the one episode file (by index or S01E02 tag, else the biggest one). */
-function bytesToFetch(rel: Release, fileIndex?: number, label?: string): number {
-  if (!rel.is_pack) return Number(rel.size ?? 0)
-  const tag = label ? parseEpisodeTag(label) : null
-  const f = (fileIndex !== undefined
-    ? db.prepare('SELECT size FROM pack_files WHERE torrent_id = ? AND idx = ?').get(rel.torrent_id, fileIndex)
-    : tag ? db.prepare('SELECT size FROM pack_files WHERE torrent_id = ? AND season = ? AND episode <= ? AND COALESCE(episode_end, episode) >= ?').get(rel.torrent_id, tag.season, tag.episode, tag.episode)
-    : db.prepare('SELECT MAX(size) AS size FROM pack_files WHERE torrent_id = ?').get(rel.torrent_id)) as { size: number | null } | undefined
-  return f?.size ?? Number(rel.size ?? 0)
-}
+/** Disk a play will take: always the whole release -- a season is fetched whole, so a pack counts in full. */
+const bytesToFetch = (rel: Release): number => Number(rel.size ?? 0)
 
 /** Start (or join) a download for a user and return the file to play. */
 export async function startPlayback(userId: number, torrentId: number, fileIndex?: number, opts: { episodeLabel?: string; auto?: boolean } = {}) {
@@ -97,31 +89,25 @@ export async function startPlayback(userId: number, torrentId: number, fileIndex
     throw new Error('This copy would have to be converted, and Flix is set never to convert the picture, so it is not downloaded.')
   }
   let p = adding.get(torrentId)
-  if (!p) { p = ensureAdded(rel, opts.auto ? 'auto' : 'flix', bytesToFetch(rel, fileIndex, opts.episodeLabel)).finally(() => adding.delete(torrentId)); adding.set(torrentId, p) }
+  if (!p) { p = ensureAdded(rel, opts.auto ? 'auto' : 'flix', bytesToFetch(rel)).finally(() => adding.delete(torrentId)); adding.set(torrentId, p) }
   await p
 
   const files = await qb.files(rel.info_hash)
   const file = fileIndex !== undefined ? files.find((f) => f.index === fileIndex) : rel.is_pack ? pickFromPack(files, userId, torrentId, opts.episodeLabel) : pickVideo(files)
   if (!file) throw new Error('No playable video file in this torrent')
 
-  // Fetch only what somebody asked to watch, one episode at a time (a torrent can also hold extras). In a season pack
-  // that means the pack is NOT pulled in whole: BTN requires 130 h of seeding (or 1:1) before a byte may be removed, so
-  // downloading episodes nobody has asked for would pin the disk and the upload for days. Playing the next episode of
-  // the same pack runs this again and enables that one file inside the same torrent, and the files already held stay
-  // enabled, so what has been fetched keeps seeding normally.
-  const wanted = new Set(
-    (db.prepare('SELECT file_index FROM interests WHERE torrent_id = ? AND watched_at IS NULL AND released_at IS NULL').all(torrentId) as any[]).map((r) => r.file_index),
-  )
+  // A season pack is fetched whole, front to back: that is how seasons are packaged, a half-downloaded pack cannot be
+  // seeded, and BTN's seeding requirement is per torrent. The episode somebody tapped goes first (highest priority);
+  // everything else is enabled behind it in file order, and the torrent downloads sequentially, so earlier episodes
+  // land before later ones. A single-episode release is just that one file.
+  const wanted = new Set<number>()
+  if (rel.is_pack) for (const f of files) wanted.add(f.index)
   wanted.add(file.index)
   for (const f of files) if (SUBFILE.test(f.name)) wanted.add(f.index) // tiny, and the player offers them as subtitles
   const toEnable = files.filter((f) => wanted.has(f.index) && f.priority === 0).map((f) => f.index)
-  // Never set a file that already has bytes back to skipped: a part-fetched episode stays fetchable instead of being
-  // abandoned mid-file (and its pieces keep seeding either way).
-  const toSkip = files.filter((f) => !wanted.has(f.index) && f.priority !== 0 && f.progress === 0).map((f) => f.index)
-  await qb.filePrio(rel.info_hash, toSkip, 0)
   await qb.filePrio(rel.info_hash, toEnable, 1)
   await qb.filePrio(rel.info_hash, [file.index], 7)
-  if (rel.is_pack) { // a pack is added stopped so that not one byte of the rest of the season is fetched before its files are chosen
+  if (rel.is_pack) { // a pack is added stopped so that its files are chosen before the first byte is fetched
     await qb.resume(rel.info_hash)
     if (!opts.auto) { void qb.reannounce(rel.info_hash); void qb.prioritize(rel.info_hash) }
   }

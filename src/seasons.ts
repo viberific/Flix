@@ -7,19 +7,23 @@ import { db } from './db.ts'
  * - After that only the next sequential season can follow: the first season that is missing or incomplete ends the list,
  *   so a show with seasons 1 and 3 shows season 1 only.
  * - A season is complete when it has a season pack (a pack is the whole season by definition), or when single episodes
- *   run from E01 to its last episode with nothing missing. Single episodes are only trusted over a pack when they reach
- *   the season's known length (`expected`, from TMDB/TVmaze): "just E01" is not a whole season. When the length is not
- *   known, a pack wins, and singles alone count when they run unbroken from E01.
+ *   run from E01 to its last episode with nothing missing. A living pack always wins (a dead one gives way to whole singles): seasons are downloaded whole, and single
+ *   episodes are only the fallback for a season that has no pack. Singles count when they reach the season's known length
+ *   (`expected`, from TMDB/TVmaze): "just E01" is not a whole season. When the length is not known they count when they
+ *   run unbroken from E01.
  */
-export interface SeasonRow { season: number | null; episode: number | null; episode_end?: number | null; is_pack: number | boolean }
+export interface SeasonRow { season: number | null; episode: number | null; episode_end?: number | null; is_pack: number | boolean
+  /** Whether somebody is seeding it, or we hold it. Left out = alive. */
+  alive?: boolean }
 export type SeasonSource = 'episodes' | 'pack'
 
 export function visibleSeasons(rows: SeasonRow[], expected?: Map<number, number>): Map<number, SeasonSource> {
   const covered = new Map<number, Set<number>>()
   const packs = new Set<number>()
+  const livePacks = new Set<number>()
   for (const r of rows) {
     if (r.season === null || r.season < 1) continue // specials and unnumbered releases never count
-    if (r.is_pack) { packs.add(r.season); continue }
+    if (r.is_pack) { packs.add(r.season); if (r.alive !== false) livePacks.add(r.season); continue }
     if (r.episode === null) continue // date-named releases carry no episode number, so completeness can't be judged
     const set = covered.get(r.season) ?? covered.set(r.season, new Set()).get(r.season)!
     for (let e = r.episode; e <= Math.max(r.episode, r.episode_end ?? r.episode); e++) set.add(e)
@@ -33,9 +37,11 @@ export function visibleSeasons(rows: SeasonRow[], expected?: Map<number, number>
       whole = true
       for (let e = 1; e <= last; e++) if (!eps.has(e)) { whole = false; break }
       const want = expected?.get(n)
-      if (whole) whole = want !== undefined ? last >= want : !packs.has(n)
+      if (whole && want !== undefined) whole = last >= want
     }
-    if (whole) out.set(n, 'episodes')
+    // A dead pack (nobody seeding, nothing on disk) gives way to whole single episodes; with no such singles it stays listed.
+    if (livePacks.has(n)) out.set(n, 'pack')
+    else if (whole) out.set(n, 'episodes')
     else if (packs.has(n)) out.set(n, 'pack')
     else break
   }
@@ -76,10 +82,11 @@ function netFacts(): Map<number, { lang: string | null; counts: Map<number, numb
 export function listable(): Map<number, Map<number, SeasonSource>> {
   if (cache?.v === version) return cache.map
   const by = new Map<number, SeasonRow[]>()
-  for (const r of db.prepare(`SELECT series_id, season, episode, episode_end, is_pack FROM releases
+  for (const r of db.prepare(`SELECT series_id, season, episode, episode_end, is_pack,
+        (COALESCE(seeders, 0) > 0 OR EXISTS(SELECT 1 FROM downloads d WHERE d.torrent_id = releases.torrent_id AND d.state = 'active')) AS alive FROM releases
       WHERE series_id IN (SELECT series_id FROM series_sync)`).all() as any[]) {
     const l = by.get(r.series_id) ?? by.set(r.series_id, []).get(r.series_id)!
-    l.push(r)
+    l.push({ ...r, alive: !!r.alive })
   }
   const facts = netFacts()
   const map = new Map<number, Map<number, SeasonSource>>()

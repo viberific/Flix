@@ -153,6 +153,13 @@ public class MainActivity extends Activity {
 
                 @Override
                 public void onHideCustomView() { leaveFullscreen(); }
+
+                // A <video> with no picture of its own is given this one by the WebView: by default a low-res grey play button,
+                // which showed through while an episode loaded. Fully transparent instead, so the player's own black is all there is.
+                @Override
+                public android.graphics.Bitmap getDefaultVideoPoster() {
+                    return android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888);
+                }
             });
             root.addView(stage, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             stage.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));

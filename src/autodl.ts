@@ -3,13 +3,13 @@ import { config } from './config.ts'
 import { diskInfo, freeFloor } from './health.ts'
 import { qb } from './qb.ts'
 import { buildEpisodes, type Episode } from './episodes.ts'
-import { withFileProgress } from './wanted.ts'
 import { getRelease, startPlayback } from './streaming.ts'
 
 /**
- * The only download Flix starts before anyone presses play: the NEXT episode of the show someone is watching, once they are
- * past 60% of the current one (or the current one has finished downloading). Always one whole episode file, never part of one:
- * an episode that has started downloading is never skipped or dropped half-way (see startPlayback), so it can always be watched in full.
+ * Nothing downloads because somebody looked at a show: a download starts only when an episode is tapped. The one thing
+ * Flix lines up on its own after that is the NEXT episode of a show someone is watching, once they are past 60% of the
+ * current one (or the current one has finished downloading) -- relevant for shows fetched as single episodes, since a
+ * season pack is already coming whole. Always one whole episode file, never part of one.
  * A download has to seed 130 h (or 1:1) before it may be deleted, so this stays small: a few episodes per person, nothing below
  * 25% free disk, and one nobody opens lapses in a week. Something a person pressed play on is never held back by any of this.
  */
@@ -71,30 +71,6 @@ export async function autoNext(userId: number, seriesId: number, season: number 
   const i = eps.findIndex((e) => e.season === season && e.label === label)
   const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
   return next ? autoFetch(userId, next, why) : false
-}
-
-/**
- * Somebody has been looking at a show's page for a while, which is as close to intent as browsing gets: fetch the
- * episode the Play button would start, and only that one file. Nothing already on disk is touched -- opening a page
- * must never create a claim on an episode that is already here -- and movies are deliberately left out: a film is one
- * file of 8-30 GB with no single episode to take, so prefetching one on a page view is how a box fills up. Everything
- * is still held to the ordinary automatic-download limits (config.auto: off when storage is low, a few per person,
- * dropped after a week if nobody watches).
- */
-export async function autoFirst(userId: number, seriesId: number, why = 'first episode, page open'): Promise<boolean> {
-  try {
-    const eps = buildEpisodes(seriesId, userId)
-    // The first episode this person has not watched is the one their Play button starts, and it cannot be gated: a
-    // predecessor that is unwatched would itself be the first unwatched one.
-    const first = eps.find((e) => e.available && !e.watched && e.episode !== null)
-    if (!first) return false
-    const [p] = await withFileProgress([first])
-    if (p?.onServer) return false
-    return await autoFetch(userId, first, why)
-  } catch (e: any) {
-    console.log(`[auto] skipped: ${e.message}`)
-    return false
-  }
 }
 
 /** Every few minutes: whoever is partway through an episode that has now finished downloading gets the next one lined up. */
