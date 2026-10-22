@@ -925,7 +925,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
-        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
+        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
@@ -1198,8 +1198,13 @@ function playView(seriesId, season, label) {
       const ep = meta?.episodes?.find((e) => e.label === play?.title && e.season === (season === 'x' ? null : +season))
       const desc = ep?.overview || s?.overview || ''
       $('#pio').textContent = desc; $('#pio').hidden = !desc
-      const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 6)
-      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b></span>`).join('')
+      // Score, year and genres, then how long is left and when it would finish if resumed now.
+      const left = totalT() - nowT()
+      const bits = [s?.score ? `★ ${s.score.toFixed(1)}` : '', s?.year || '', (s?.genres ?? []).slice(0, 3).join(' · '),
+        left > 30 ? `${Math.round(left / 60)} min left · ends ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''].filter(Boolean)
+      $('#pim').textContent = bits.join('  ·  '); $('#pim').hidden = !bits.length
+      const cast = (s?.cast ?? []).filter((c) => c.photo).slice(0, 8)
+      $('#pic').innerHTML = cast.map((c) => `<span class="p-cast"><img src="${c.photo}" alt="" loading="lazy" onerror="this.closest('.p-cast').style.display='none'"><b>${esc(c.name)}</b>${c.role ? `<em>${esc(c.role)}</em>` : ''}</span>`).join('')
       $('#pic').hidden = !cast.length
     }
     function wirePlayer() {
@@ -1211,6 +1216,9 @@ function playView(seriesId, season, label) {
       // means the bar on its own, with no picture and nothing moving.
       const tip = $('#ptip'), tipShot = $('#ptipimg'), tipLab = $('#ptipt')
       let shot = null, shotFor = '', shotAsked = false, tipHide = 0
+      // The sheet's tiles are 160 px wide; the preview is drawn bigger than that (up to 400 px, a fifth of a wide screen),
+      // with the sheet scaled to match.
+      const tipW = () => Math.round(Math.max(240, Math.min(400, innerWidth * 0.22, (bar.clientWidth || 300) - 8)))
       async function loadSheet(forWhat) {
         if (!play) return
         const m = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/sprite/meta`).catch(() => null)
@@ -1236,7 +1244,7 @@ function playView(seriesId, season, label) {
         const pct = Math.max(0, Math.min(100, (t / d) * 100))
         // Kept inside the bar's own width, so the picture never hangs off the edge of a narrow screen.
         const w = bar.clientWidth || 1
-        const half = Math.min(88, w / 2)
+        const half = Math.min(tipW() / 2 + 4, w / 2)
         tip.style.left = Math.max(half, Math.min(w - half, (pct / 100) * w)) + 'px'
         tip.hidden = false
         tipLab.textContent = fmtT(Math.max(0, t))
@@ -1245,8 +1253,10 @@ function playView(seriesId, season, label) {
         if (!shot) return
         const i = Math.max(0, Math.min(shot.count - 1, Math.floor(Math.max(0, t) / Math.max(0.5, shot.interval))))
         // The element is exactly one tile, so the sheet is laid out at its full size and shifted to the tile asked for.
-        tipShot.style.backgroundSize = `${shot.cols * shot.tileW}px ${shot.rows * shot.tileH}px`
-        tipShot.style.backgroundPosition = `${-((i % shot.cols) * shot.tileW)}px ${-(Math.floor(i / shot.cols) * shot.tileH)}px`
+        const k = tipW() / shot.tileW
+        tipShot.style.width = tipW() + 'px'
+        tipShot.style.backgroundSize = `${shot.cols * shot.tileW * k}px ${shot.rows * shot.tileH * k}px`
+        tipShot.style.backgroundPosition = `${-((i % shot.cols) * shot.tileW * k)}px ${-(Math.floor(i / shot.cols) * shot.tileH * k)}px`
       }
       // Dragging paints the bar and the picture over it. A source that is all here (a finished file, or its single-file
       // copy) also moves the picture itself as the finger goes -- one seek at a time, the next only once the last has

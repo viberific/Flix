@@ -247,10 +247,12 @@ img.fade.in { opacity: 1; }
    card's right edge and sat alone there across three lines of title; inline after the last word it stays with it, and a
    long title that wraps takes it to the end of the last line rather than leaving it stranded. */
 .p-info-rate { display: inline-block; vertical-align: middle; margin-left: 10px; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; border: 1px solid rgba(255,255,255,.45); }
+.p-info-m { margin: 8px 0 0; font-size: 14px; font-weight: 600; color: rgba(255,255,255,.7); text-shadow: 0 1px 14px rgba(0,0,0,.8); }
+.p-cast em { font-style: normal; font-size: 10px; color: rgba(255,255,255,.5); line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .p-info-o { margin: 10px 0 0; font-size: 15px; line-height: 1.5; color: rgba(255,255,255,.85); max-width: 54ch; text-shadow: 0 1px 14px rgba(0,0,0,.8); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .p-info-c { display: flex; gap: 14px; margin-top: 18px; flex-wrap: wrap; }
-.p-cast { display: grid; justify-items: center; gap: 6px; width: 64px; font-size: 11px; color: rgba(255,255,255,.75); text-align: center; }
-.p-cast img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
+.p-cast { display: grid; justify-items: center; gap: 6px; width: 84px; font-size: 12px; color: rgba(255,255,255,.75); text-align: center; }
+.p-cast img { width: 76px; height: 76px; border-radius: 50%; object-fit: cover; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
 .p-cast b { font-weight: 600; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 @media (max-width: 640px) { .p-info { top: auto; bottom: 128px; transform: none; max-width: calc(100vw - 32px); } .p-info-o { font-size: 13px; -webkit-line-clamp: 3; } .p-cast { width: 52px; } .p-cast img { width: 44px; height: 44px; } }
 .p-next small { color: rgba(255,255,255,.65); } .p-next b { display: block; font-size: 20px; margin: 2px 0 14px; } .p-next .actions { display: flex; gap: 10px; }
@@ -284,13 +286,13 @@ html.tv .player #pfull { display: none; }
 .p-seek { position: relative; display: flex; align-items: center; height: 28px; cursor: pointer; touch-action: none; }
 .p-seek .p-rail { transition: height .15s var(--ease); } .p-seek:hover .p-rail, .p-seek.on .p-rail { height: 6px; }
 /* The frame picture shown above the bar while scrubbing (the seconds are labelled under it). */
-.p-tip { position: absolute; bottom: 30px; left: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 3; }
+.p-tip { position: absolute; bottom: 36px; left: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 3; }
 .p-tip[hidden] { display: none; }
 .p-tip .p-tipshot { display: block; width: 160px; aspect-ratio: 16 / 9; border-radius: 8px; background-color: rgba(0,0,0,.55); background-repeat: no-repeat; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 10px 26px rgba(0,0,0,.6); }
 /* No sheet for this episode (it is still downloading): the bar on its own. The element is never laid out until there is a
    picture to put in it, so nothing moves when one arrives either. */
 .p-tip .p-tipshot:not(.has) { display: none; }
-.p-tip b { font-size: 12px; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,.74); padding: 2px 7px; border-radius: 999px; }
+.p-tip b { font-size: 14px; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,.74); padding: 2px 7px; border-radius: 999px; }
 .p-rail { position: relative; width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,.2); }
 .p-buf { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: rgba(255,255,255,.34); }
 .p-have { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: rgba(255,255,255,.14); transition: width .6s linear; }
