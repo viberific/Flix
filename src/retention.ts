@@ -4,6 +4,7 @@ import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
 import { syncFolder, tidyAfterRemoval } from './folder.ts'
 import { recordStorage } from './storage.ts'
+import { diskInfo } from './health.ts'
 import { wantedBytes } from './wanted.ts'
 import { canView, getRating, parseAllowed } from './ratings.ts'
 
@@ -285,12 +286,91 @@ export async function recheckMissingFiles(): Promise<{ rechecked: number; failed
 const absentSince = new Map<number, number>()
 const ABSENT_FOR_SEC = 600
 
-/** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled. */
+/** Someone touched a download this recently: it may be playing right now, so it is never deleted for space. */
+export const PRUNE_BUSY_SEC = 1800
+
+/** A download that has passed every gate in whyKept() and is only waiting for disk pressure. */
+export interface PruneCandidate {
+  torrentId: number
+  hash: string
+  /** downloads.added_at: the oldest goes first. */
+  addedAt: number
+  /** Bytes it holds, so the storage graph can be corrected once it goes. */
+  bytes: number
+  /** whyKept().deletable -- every hard gate (seeding met, no pending viewers, not outside Flix) already passed. */
+  deletable: boolean
+}
+
+/** Where pruneUnderPressure reads the world from. Tests hand in their own. */
+export interface PruneHooks {
+  /** Free and total bytes on the download volume, or null when it cannot be read. */
+  free: () => { free: number; total: number } | null
+  /** True when an interest in this torrent was touched in the last PRUNE_BUSY_SEC: somebody may be watching it. */
+  busy: (torrentId: number) => boolean
+  /** Removes one download, files and all. May throw (removeDownload refuses when it cannot prove the seed state). */
+  remove: (c: PruneCandidate) => Promise<void>
+}
+
+/** Free space as a share of the volume, or null when it cannot be read. */
+function freeShare(d: { free: number; total: number } | null): number | null {
+  return d && d.total > 0 ? (d.free / d.total) * 100 : null
+}
+
+const pruneHooks: PruneHooks = {
+  free: () => { try { return diskInfo() } catch { return null } },
+  busy: (id) => !!db.prepare('SELECT 1 FROM interests WHERE torrent_id = ? AND updated_at > ?').get(id, now() - PRUNE_BUSY_SEC),
+  remove: async (c) => { await removeDownload(c.torrentId, c.hash, 'disk pressure: free space below PRUNE_FREE_PCT and nothing is waiting on it') },
+}
+
+/**
+ * Delete the least-wanted downloads, oldest first, until the download volume is back above PRUNE_TARGET_PCT.
+ *
+ * Only ever called when config.pruneFreePct > 0, and only with candidates that have already passed whyKept(). Nothing is
+ * deleted while free space is at or above PRUNE_FREE_PCT, and nothing at all when free space cannot be read (fail
+ * closed: a refusal costs disk, a wrong delete can cost the BTN account). A download somebody touched in the last
+ * PRUNE_BUSY_SEC is left alone -- deleting mid-playback is not acceptable -- and one whose BTN seeding goal is unmet is
+ * never a candidate, whatever the pressure.
+ *
+ * Free space is re-measured after every deletion. If the volume has not reflected the space just freed, the pass stops
+ * rather than deleting the next one on a reading that has not caught up (qBittorrent can return before the bytes are
+ * unlinked, and that would otherwise delete every candidate in one sweep); the next sweep picks it up.
+ */
+export async function pruneUnderPressure(cands: PruneCandidate[], hooks: PruneHooks = pruneHooks): Promise<string[]> {
+  const removed: string[] = []
+  const start = freeShare(hooks.free())
+  if (start === null) { console.warn('[retention] prune: free space cannot be read; deleting nothing'); return removed }
+  if (start >= config.pruneFreePct) return removed // above the trigger: this pass deletes nothing
+  const queue = cands.filter((c) => c.deletable && !hooks.busy(c.torrentId)).sort((a, b) => a.addedAt - b.addedAt)
+  if (!queue.length) return removed
+  console.log(`[retention] prune: ${start.toFixed(1)}% free is below ${config.pruneFreePct}%; ${queue.length} download(s) can go, oldest first`)
+  for (const c of queue) {
+    const before = freeShare(hooks.free())
+    if (before === null) { console.warn('[retention] prune: free space cannot be read; deleting nothing more'); break }
+    if (before >= config.pruneTargetPct) break
+    try {
+      await hooks.remove(c)
+    } catch (e: any) {
+      console.warn(`[retention] prune: kept ${c.hash}: ${e.message}`)
+      continue // it stays; try the next one rather than giving up on the pass
+    }
+    removed.push(c.hash)
+    console.log(`[retention] prune: deleted ${c.hash} (${(c.bytes / 1e9).toFixed(1)} GB), ${before.toFixed(1)}% free`)
+    const after = freeShare(hooks.free())
+    if (after !== null && after <= before) {
+      console.log('[retention] prune: the volume has not reflected the space freed yet; stopping this pass')
+      break
+    }
+  }
+  return removed
+}
+
+/** One sweep: delete torrents nobody still needs AND whose seeding obligation is fulfilled -- or, when pruning is on, only under disk pressure. */
 export async function sweep(): Promise<string[]> {
   const removed: string[] = []
   await syncFolder().catch((e) => console.warn(`[folder] ${e.message}`)) // adopt what was downloaded by hand, move old hash-named folders, tidy leftovers
   const rows = db.prepare(`SELECT torrent_id, info_hash, added_at FROM downloads WHERE state = 'active'`).all() as { torrent_id: number; info_hash: string; added_at: number }[]
   let onDisk = 0 // what the engine holds for Flix's downloads, for the storage graph
+  const pruneable: PruneCandidate[] = [] // deletable, held only until disk pressure (pruneFreePct > 0)
   // An engine that has just started answers with an empty list for a while, as it reads its torrents back in. Taking that
   // at its word marked every download "missing from engine": they stopped counting as on the server and, no longer
   // active, were never swept again once seeded. So a torrent only counts as gone when the engine is plainly holding
@@ -312,10 +392,23 @@ export async function sweep(): Promise<string[]> {
     onDisk += held
     if (d.added_at > now() - config.sweepGraceSec) continue // just added: its first viewer's interest may not be written yet
     updateLeaving(d.torrent_id, t)
-    if (whyKept(t, d.torrent_id).deletable) {
+    const why = whyKept(t, d.torrent_id)
+    if (config.pruneFreePct > 0) {
+      // Deleting on release is off: a download that can go is held, still seeding, until disk pressure decides.
+      if (why.deletable) pruneable.push({ torrentId: d.torrent_id, hash: d.info_hash, addedAt: d.added_at, bytes: held, deletable: true })
+      continue
+    }
+    if (why.deletable) {
       await removeDownload(d.torrent_id, d.info_hash, 'all viewers done and seeding requirement met')
       removed.push(d.info_hash)
       onDisk -= held
+    }
+  }
+  if (config.pruneFreePct > 0) {
+    for (const h of await pruneUnderPressure(pruneable)) {
+      removed.push(h)
+      const c = pruneable.find((p) => p.hash === h)
+      if (c) onDisk -= c.bytes
     }
   }
   try { recordStorage(onDisk) } catch (e: any) { console.warn(`[storage] ${e.message}`) }

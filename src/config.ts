@@ -74,6 +74,15 @@ export const config = {
   minFreePct: num('MIN_FREE_PCT', 10),
   /** Warn the admin below this share free. */
   warnFreePct: num('WARN_FREE_PCT', 20),
+  /**
+   * When to delete for space, as a share of the download volume's disk. 0 (the default) means off: a finished, fully
+   * seeded download nobody needs is removed the moment it is deletable, as Flix has always done. Above 0, nothing is
+   * removed on that basis any more -- a download that can go is held (still seeding, still accounted for) until free
+   * space falls below this share, and then the oldest of them are deleted until PRUNE_TARGET_PCT is free again.
+   */
+  pruneFreePct: num('PRUNE_FREE_PCT', 0),
+  /** Where a prune pass stops: the share free to climb back to, so it lands clear of the refuse floor below. */
+  pruneTargetPct: num('PRUNE_TARGET_PCT', 10),
   /** Downloads Flix starts on its own, ahead of anyone pressing play. They are conservative because a download must seed 130 h / 1:1 before it can be deleted. */
   auto: {
     enabled: env.AUTO_DOWNLOADS !== 'false',
