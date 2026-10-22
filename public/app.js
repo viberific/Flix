@@ -1633,7 +1633,7 @@ function playView(seriesId, season, label) {
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
@@ -1924,6 +1924,7 @@ function playView(seriesId, season, label) {
       t.kind = 'subtitles'; t.label = s.label; t.dataset.n = s.n; t.src = s.url + '?r=' + Date.now()
       if (s.lang && s.lang !== 'und') t.srclang = s.lang.length === 2 ? s.lang : ''
       v.appendChild(t)
+      liftCues(t)
       t.track.mode = 'disabled' // applySubs turns on the one that is chosen
     }
 
@@ -2681,6 +2682,7 @@ async function offlinePlayView(id) {
     app.innerHTML = `<div class="player" id="pl"><div class="p-top"><a class="icon-btn" href="#/downloads" aria-label="Back">${I.back}</a><div class="p-title"><b>${esc(m.seriesName || '')}</b><span>${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span></div></div>
       <div id="vw"><video controls autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
     const pl = $('#pl'), v = $('video')
+    v.querySelectorAll('track').forEach(liftCues)
     let idleT = null, last = 0
     const wake = () => { pl.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (!v.paused) pl.classList.add('idle') }, 3000) }
     pl.addEventListener('mousemove', wake); pl.addEventListener('touchstart', wake, { passive: true }); wake()
@@ -2994,6 +2996,17 @@ async function route() {
 addEventListener('hashchange', route)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
 route()
+
+/**
+ * Captions sit one line up from the very bottom of the picture. The browser puts a cue with no position of its own on the
+ * last line, which with the smaller outlined captions read as hugging the edge of the screen. A cue that carries a
+ * position from the file (a sign, a speaker on the left) keeps it. Runs once the track's cues have loaded.
+ */
+function liftCues(el) {
+  el.addEventListener('load', () => {
+    for (const c of el.track?.cues ?? []) if (c.line === 'auto') { c.snapToLines = true; c.line = -2 }
+  })
+}
 
 /**
  * Report what the player felt, so a hitch has a time on both ends: the browser knows it ran dry and when, the server knows
