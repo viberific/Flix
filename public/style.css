@@ -310,6 +310,10 @@ html.tv .player #pfull { display: none; }
 .p-btn { display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 0; border-radius: 50%; background: none; color: #fff; opacity: .94; cursor: pointer; }
 .p-btn svg { width: 24px; height: 24px; }
 .p-btn:hover { background: rgba(255,255,255,.13); opacity: 1; }
+/* The button the remote or keyboard is on: solid white with dark art, impossible to miss from the sofa. Script focus() does
+   not always match :focus-visible on a television, so :focus counts there. */
+.p-btn:focus-visible, html.tv .p-btn:focus { outline: 3px solid var(--accent); outline-offset: 3px; background: #fff; color: #111; opacity: 1; transform: scale(1.12); }
+.p-btn { transition: transform .12s, background .12s; }
 .p-btn.big { width: 60px; height: 60px; background: rgba(255,255,255,.15); backdrop-filter: blur(8px); }
 .p-btn.big svg { width: 30px; height: 30px; }
 .p-btn.cc { width: auto; min-width: 44px; padding: 0 10px; border-radius: 10px; font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: .06em; }

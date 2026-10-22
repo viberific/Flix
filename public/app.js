@@ -959,10 +959,14 @@ function playView(seriesId, season, label) {
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
     // started only by the player's own idle timer (manual mode), and any input at all brings the film back at once.
     let idleArt = null, artRun = 0
+    // The list of shows is asked for as soon as the show is paused, so that 30 seconds later the artwork is already
+    // on its way rather than only then starting a request.
+    let homeP = null
+    const warmArt = () => (homeP ??= api('/api/home').catch(() => { homeP = null; return null }))
     const startIdleArt = async () => {
       const run = ++artRun
       if (idleArt) { if (run === artRun) idleArt.start(); return }
-      const home = await api('/api/home').catch(() => null)
+      const home = await warmArt()
       if (!home || !alive || run !== artRun) return
       idleArt = artSlideshow([...(home.sections || []).flatMap((sec) => sec.series), ...(home.picked?.series ?? []), ...(home.myList ?? [])], { manual: true, parent: pl })
       if (run === artRun) idleArt?.start()
@@ -1074,6 +1078,21 @@ function playView(seriesId, season, label) {
           return
         }
       }
+      // The bar's buttons are walked with the arrow keys, like on any TV: up from the picture lands on play/pause, left and
+      // right move along the row (back 10, play/pause, forward 10, quality, captions, fill), down returns to the picture.
+      // Enter presses the highlighted button. With nothing highlighted, left and right still skip 10 seconds.
+      const inBar = e.target.closest?.('#pctl .p-btn') && !e.target.closest('.menu')
+      if (inBar && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+        e.preventDefault()
+        const b = [...pl.querySelectorAll('#pctl .p-btn')].filter((x) => !x.hidden && !x.closest('.menu'))
+        const i = b.indexOf(e.target.closest('.p-btn'))
+        const n = i + (k === 'ArrowRight' ? 1 : -1)
+        if (n >= 0 && n < b.length) b[n].focus()
+        wake()
+        return
+      }
+      if (inBar && k === 'ArrowDown') { e.preventDefault(); e.target.blur(); wake(); return }
+      if (k === 'ArrowUp' && !inBar && !e.target.closest?.('a, button')) { e.preventDefault(); $('#ppp')?.focus(); wake(); return }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
       if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
       else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
@@ -1087,7 +1106,6 @@ function playView(seriesId, season, label) {
       else if (k === 'End') { e.preventDefault(); setT(Math.max(0, totalT() - 5)) }
       // The volume is the phone's or the television's own, from its buttons or its remote: Flix has no volume of its own.
       // On a television, up opens the captions list instead (up and down walk it once it is open, above).
-      else if (isTv && k === 'ArrowUp' && !$('#pcc').hidden) { e.preventDefault(); openFromKey($('#pcc')) }
       else if (k === 'z') setFill(!fill)
       else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : pl.requestFullscreen?.()
       else if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); return leavePlayer() }
@@ -1158,7 +1176,7 @@ function playView(seriesId, season, label) {
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
       $('#pfull').setAttribute('aria-pressed', String(fill))
-      if (paused || castingOnly) wake()
+      if (paused || castingOnly) { wake(); if (bigScreen()) warmArt() }
       fillPause()
       syncBar()
     }
