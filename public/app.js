@@ -2090,6 +2090,7 @@ async function settingsView(section = 'torrents') {
     const prev = cleanup; cleanup = () => { prev?.(); removeEventListener('scroll', onScroll) }
     if (section !== 'torrents') requestAnimationFrame(() => jump(section, false))
     onScroll()
+    if (isTv) (pills.find((p) => p.dataset.s === section) || pills[0])?.focus({ preventScroll: true }) // a remote starts on the section bar
   }
 }
 
@@ -2533,17 +2534,25 @@ async function downloadsView(offline = false) {
           : act.length ? '' : `<div class="empty">Nothing is saved on this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap the download arrow next to an episode.</span></div>`}</div>`
       app.querySelectorAll('.dl-item').forEach((el) => {
         const open = () => go('#/offplay/' + el.dataset.id)
-        el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter') open() }
+        el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter' && e.target === el) open() }
       })
       app.querySelectorAll('.dl-rm').forEach((b) => b.onclick = async (e) => {
         e.stopPropagation()
-        if (!confirm('Delete this download from this device?')) return
-        await dl.remove(b.dataset.id); if (alive) paint(await dl.list())
+        // A second press confirms. The browser's own confirm() box is unreliable on a television (some WebViews never draw
+        // it, and a remote cannot always reach its buttons), so the button itself asks and goes back after a few seconds.
+        if (b.dataset.armed !== '1') {
+          b.dataset.armed = '1'; b.textContent = 'Press again to delete'; b.classList.add('danger')
+          setTimeout(() => { if (b.isConnected) { b.dataset.armed = ''; b.textContent = 'Delete'; b.classList.remove('danger') } }, 4000)
+          return
+        }
+        const rows = [...app.querySelectorAll('.dl-item')], at = rows.indexOf(b.closest('.dl-item'))
+        await dl.remove(b.dataset.id); if (alive) { await paint(await dl.list()); if (isTv) (app.querySelectorAll('.dl-item')[Math.min(at, app.querySelectorAll('.dl-item').length - 1)] || $('.stitle'))?.focus?.({ preventScroll: true }) }
       })
       const rt = $('#rt'); if (rt) rt.onclick = () => route()
     }
     top.hidden = offline || !me
     paint(items)
+    if (isTv) (app.querySelector('.dl-item') || $('#rt'))?.focus({ preventScroll: true }) // something for a remote to start from
     const on = async () => { if (alive) paint(await dl.list()) }
     addEventListener('flix-dl', on)
     cleanup = () => { alive = false; removeEventListener('flix-dl', on); top.hidden = !me }
@@ -2675,7 +2684,7 @@ function revealStop(el) {
   // Then the page: only when the row is near an edge, and then by enough to put it a little above the middle, with room
   // for its title below -- rather than the least that shows the poster, which left the row jammed against the bottom
   // with its name cut off. A short eased glide; the highlight itself has already moved, so it never lags the remote.
-  const edge = Math.min(140, innerHeight * 0.16)
+  const edge = isTv ? Math.max(180, innerHeight * 0.2) : Math.min(140, innerHeight * 0.16)
   if (r.top < edge || r.bottom > innerHeight - edge - 40) {
     const want = r.top + r.height / 2 - innerHeight * 0.42
     scrollBy({ top: want, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })

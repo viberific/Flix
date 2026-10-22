@@ -709,3 +709,14 @@ html.tv .actor:focus { transform: scale(1.06); box-shadow: 0 0 0 3px var(--fg); 
 html.tv .tr-play:focus { box-shadow: 0 0 0 3px var(--fg); filter: brightness(1.1); }
 html.tv .tr-play:focus svg { transform: scale(1.12); }
 html.tv .dlb:focus { box-shadow: 0 0 0 3px var(--fg); border-radius: 999px; color: var(--fg); }
+
+/* ---------- settings and downloads on a television ---------- */
+html.tv .field:focus { border-color: var(--fg); box-shadow: 0 0 0 3px var(--fg); }
+html.tv select:focus, html.tv summary:focus, html.tv .stat:focus, html.tv .tcard:focus { outline: none; box-shadow: 0 0 0 3px var(--fg); border-radius: 10px; }
+html.tv input[type="checkbox"], html.tv input[type="radio"] { width: 22px; height: 22px; accent-color: var(--accent); }
+html.tv input[type="checkbox"]:focus, html.tv input[type="radio"]:focus { outline: 3px solid var(--fg); outline-offset: 3px; }
+html.tv .snav .pill:focus { background: var(--fg); color: var(--bg); box-shadow: none; transform: scale(1.06); }
+html.tv .btn:focus { box-shadow: 0 0 0 3px var(--fg); }
+html.tv .btn.primary:focus { box-shadow: 0 0 0 3px var(--fg), 0 14px 34px color-mix(in srgb, var(--accent) 50%, transparent); }
+html.tv summary { padding: 6px 4px; }
+.btn.danger { background: #c62828; border-color: transparent; color: #fff; }
