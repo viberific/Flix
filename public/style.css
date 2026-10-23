@@ -316,6 +316,10 @@ img.fade.in { opacity: 1; }
 .player #vw { position: absolute; inset: 0; z-index: 1; }
 .player .p-mark { flex: none; display: grid; place-items: center; width: 34px; height: 34px; }
 .player .p-mark svg { width: 100%; height: 100%; }
+/* The logo belongs to the loading screen, not to the show: once the picture is up it fades out of the top bar, and the
+   space it took closes after it, so nothing of Flix's own sits over the episode. It comes back if the wait screen does. */
+.player .p-mark { transition: opacity .6s var(--ease), width .35s var(--ease) .6s, margin .35s var(--ease) .6s; }
+.player.live .p-mark { opacity: 0; width: 0; margin-right: -14px; pointer-events: none; }
 .player .p-rate { flex: none; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; line-height: 1.2; color: #fff; border: 1px solid rgba(255,255,255,.45); }
 .player .p-rate[hidden] { display: none; }
 
@@ -588,7 +592,9 @@ html.tv * { cursor: none; }
   .ep.dl-item .eside { flex-direction: row; width: auto; gap: 8px; }
   .ep .eside .tick { font-size: 0; gap: 0; }
   .ep .eside .tick svg { width: 18px; height: 18px; }
-  .ep .eside .dlb { width: 42px; height: 42px; padding: 0; justify-content: center; gap: 0; font-size: 0; }
+  /* max-width is in ch, and with the words hidden (font-size 0) a ch is nothing: without this the button shrank to a hairline. */
+  .ep .eside .dlb { width: 42px; height: 42px; max-width: none; padding: 0; justify-content: center; gap: 0; font-size: 0; }
+  .ep .eside .dlb .dlt { display: none; }
   .ep .eside .dlb svg { width: 19px; height: 19px; }
   .ep.dl-item .eside .btn { font-size: 12px; padding: 8px 10px; }
 }
@@ -696,20 +702,31 @@ html.tv * { cursor: none; }
 
 /* ---------- downloads ---------- */
 .eside { display: flex; align-items: center; gap: 10px; }
-.dlb.busy svg { animation: dlspin 1.1s linear infinite; }
-@keyframes dlspin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .dlb.busy svg { animation: none; } }
 .eps-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .eps-head h2.sec { margin-bottom: 14px; }
 .dlb { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); font-size: 13px; font-weight: 600; cursor: pointer; max-width: 22ch; text-align: left; }
 .dlb svg { width: 18px; height: 18px; } .dlb:hover { color: var(--fg); }
 .dlb.done { color: var(--ok); } .dlb.busy { color: var(--fg); } .dlb.err { color: #ff8a80; }
-.dl-active { display: grid; gap: 10px; margin-bottom: 8px; }
-.dl-row { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; }
-.dl-row.err .dl-t span { color: #ff8a80; }
-.dl-t { display: flex; flex-direction: column; gap: 2px; } .dl-t span { color: var(--dim); font-size: 13px; }
-.prog-line { height: 4px; border-radius: 2px; background: var(--surface-2); margin-top: 10px; overflow: hidden; }
-.prog-line i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s; }
+/* A download on its way: a ring that fills around a stop square, the same in the episode row and on the Download button.
+   The ring and the square share the first cell, so the square sits inside the ring; the words (if any) go beside it. */
+.dlb.busy, .hdl.busy { display: inline-grid; grid-auto-flow: column; align-items: center; column-gap: 8px; }
+.dlb.busy > svg, .hdl.busy > svg { grid-row: 1; grid-column: 1; }
+.dlb.busy > .dlt, .hdl.busy > span { grid-row: 1; grid-column: 2; }
+.dl-ring { width: 24px !important; height: 24px !important; transform: rotate(-90deg); }
+.dl-ring circle { fill: none; stroke: color-mix(in srgb, currentColor 22%, transparent); stroke-width: 3; }
+.dl-ring circle.on { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .5s var(--ease); }
+.dlb.busy > svg:not(.dl-ring), .hdl.busy > svg:not(.dl-ring) { width: 24px; height: 24px; opacity: .55; }
+.dlb.armed > svg:not(.dl-ring) { opacity: 1; color: #ff8a80; }
+.dlb.armed .dl-ring circle.on { stroke: #ff8a80; }
+.dlb.err { color: #ff8a80; } .dlb .dlt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hdl.done { color: var(--ok); }
+svg.inl { width: 1.1em; height: 1.1em; vertical-align: -.2em; }
+@media (max-width: 640px) {
+  /* Netflix on a phone: Play, then Download under it, each the full width; My List and the thumbs share the row below. */
+  .s-meta #hp, .s-meta .hdl { flex: 1 1 100%; }
+  .ep .eside .dlb.busy { display: inline-grid; place-items: center; }
+  .ep .eside .dl-ring { width: 30px !important; height: 30px !important; }
+}
 .dl-item { cursor: pointer; }
 
 /* ---------- the idle sit-back slideshow: the top shows' art, one at a time, on a television left alone ---------- */

@@ -91,3 +91,49 @@ test('settling cancels the delayed visibility transition in Chromium', { skip: !
     await browser.close()
   }
 })
+
+test('the Flix logo leaves the player with the wait screen, so it never sits over the show', async () => {
+  // Revealing the picture marks the player live; the wait screen coming back takes that away again.
+  assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?pl\.classList\.add\('live'\)/)
+  assert.match(app, /function restoreWait\(\)\s*\{[\s\S]*?pl\.classList\.remove\('live'\)/)
+  // The big mark on the wait screen dissolves on reveal.
+  assert.match(css, /\.p-wait\.gone \.mark \{ animation: markOut/)
+  const executablePath = ['/opt/pw-browsers/chromium', process.env.CHROMIUM_PATH].find((p) => p && existsSync(p))
+  if (!executablePath) return
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox'] })
+  try {
+    const page = await browser.newPage()
+    await page.setContent(`<style>${css}</style><div class="player" id="pl"><div class="p-top"><span class="p-mark"><svg></svg></span></div></div>`)
+    assert.equal(await page.$eval('.p-mark', (e) => getComputedStyle(e).opacity), '1', 'the logo is up while the episode loads')
+    await page.$eval('#pl', (e) => e.classList.add('live'))
+    await page.waitForTimeout(1200)
+    const after = await page.$eval('.p-mark', (e) => ({ opacity: getComputedStyle(e).opacity, width: getComputedStyle(e).width }))
+    assert.deepEqual(after, { opacity: '0', width: '0px' }, 'the logo has faded out of the top bar once the show is playing')
+  } finally { await browser.close() }
+})
+
+test('Downloads lists only what is saved on this device, and the phone download button keeps its size', () => {
+  const view = app.slice(app.indexOf('async function downloadsView'), app.indexOf('async function offlinePlayView'))
+  assert.doesNotMatch(view, /dl\.active\.entries\(\)|dl-active|Downloading on the server/, 'nothing in progress is listed on Downloads')
+  assert.doesNotMatch(read('public/downloads.js'), /on the server/, 'progress never mentions the server fetching the episode')
+  // A max-width in ch is zero at font-size 0, which shrank the phone button to a hairline.
+  assert.match(css, /\.ep \.eside \.dlb \{[^}]*max-width: none;[^}]*font-size: 0;/)
+})
+
+test('the logo glides up when the line and the bar arrive under it, instead of jumping', () => {
+  assert.match(app, /function glideWait\(\)/)
+  assert.match(app, /\n    glideWait\(\)\n/)
+  // Moves from where it was (FLIP), picks up a glide already running, and steps aside for the mark's exit.
+  assert.match(app, /const from = was \+ at - now/)
+  assert.match(app, /if \(layer\.classList\.contains\('gone'\)\) \{ for \(const el of kids\(\)\) glides\(el\)\.forEach\(\(a\) => a\.cancel\(\)\)/)
+})
+
+test('a television has no downloads: no page, no buttons, nothing kept in its storage', () => {
+  assert.match(app, /const canDownload = !isTv && dl\.supported\(\)/)
+  assert.match(app, /if \(isTv\) dl\.clear\(\)/)
+  assert.match(app, /\$\{canDownload \? '<a href="#\/downloads">Downloads<\/a>' : ''\}/)
+  assert.match(app, /const canSave = \(e\) => canDownload && /)
+  assert.match(app, /\(parts\[0\] === 'downloads' \|\| parts\[0\] === 'offplay'\) && !canDownload\) \{ clearTimeout\(slow\); go\('#\/'\); return \}/)
+  assert.match(app, /if \(!e\.gate && canDownload && \(await dl\.list\(\)\)\.length\)/)
+  assert.match(read('public/downloads.js'), /export async function clear\(\)/)
+})
