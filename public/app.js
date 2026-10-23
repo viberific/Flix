@@ -966,6 +966,7 @@ async function seriesView(id) {
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
         <button class="btn hdl" id="hdl" hidden></button>
+        ${episodes.some((e) => e.available && !e.watched) ? `<button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${keys.length > 1 ? 'Download all seasons' : 'Download all episodes'}</span></button>` : ''}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
@@ -1049,6 +1050,15 @@ async function seriesView(id) {
     }
     paint(); heroDl()
     const hdl = $('#hdl'); if (hdl) hdl.onclick = () => dlTap(hero)
+    // Asks the server to fetch every episode that can be played (on a television too: this is the server's disk, not the device's).
+    const hall = $('#hall'); if (hall) hall.onclick = async () => {
+      const label = $('span', hall)
+      hall.disabled = true; label.textContent = 'Starting…'
+      try {
+        const r = await api(`/api/series/${id}/download-all`, {})
+        hall.classList.add('done'); hall.innerHTML = `${I.saved} <span>${r.episodes ? `Downloading ${r.episodes} episode${r.episodes === 1 ? '' : 's'}` : 'Nothing left to download'}</span>`
+      } catch (e) { hall.disabled = false; label.textContent = keys.length > 1 ? 'Download all seasons' : 'Download all episodes'; flashNote(e.message) }
+    }
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
     addEventListener('flix-dl', onDl)
@@ -1458,7 +1468,31 @@ function playView(seriesId, season, label) {
     const setT = (t) => {
       t = Math.max(0, Math.min(totalT() || 1e9, t))
       userSeeked = true
-      if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) v.currentTime = t
+      if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) { const was = !v.paused; v.currentTime = t; guardSeek(t, was) }
+    }
+    /**
+     * A seek on a TV's WebView sometimes lands and then sits there: the picture frozen, or paused with nobody having pressed
+     * pause. Playing again when the seek lands covers the first; a picture that is still waiting for data after a few seconds
+     * is nudged (the playlist is asked to load from there), and after ten it is started again from that spot, once.
+     */
+    let seekGuard = 0
+    function guardSeek(t, wasPlaying) {
+      const id = ++seekGuard, el = v
+      const live = () => id === seekGuard && alive && v === el && !castingOnly
+      const resume = () => { if (live() && wasPlaying && el.paused && !holding) el.play().catch(() => {}) }
+      el.addEventListener('seeked', resume, { once: true })
+      setTimeout(() => {
+        if (!live()) return
+        if (el.readyState >= 3 || el.ended) return resume()
+        if (hls) { try { hls.startLoad(t) } catch { /* gone */ } }
+        resume()
+      }, 4000)
+      setTimeout(() => {
+        if (!live() || el.readyState >= 3 || el.ended || !wasPlaying) return
+        hls?.destroy(); hls = null
+        releaseVideo(el)
+        loadInfo(info?.audioIndex ?? 0, t).catch((e) => fail(e.message))
+      }, 10_000)
     }
     // Skip presses not yet sent to the picture (see wirePlayer, where the picture over the bar is drawn for them).
     let pendingT = null
@@ -1676,7 +1710,7 @@ function playView(seriesId, season, label) {
     }
     // Named, so leaving the player really removes it: the old arrow function could never be taken off again, and every
     // episode ever opened left one more listener behind.
-    const onVisible = () => { if (document.hidden) return lostFull(); if (!document.fullscreenElement) { landscape = false; goLandscape() } revive() }
+    const onVisible = () => { if (document.hidden) { if (v && play && !castingOnly && canReport()) report(); return lostFull() }; if (!document.fullscreenElement) { landscape = false; goLandscape() } revive() }
     addEventListener('visibilitychange', onVisible)
     /**
      * Let go of the picture for good. Taking a <video> off the page does NOT stop it: it keeps its decoder and its open
@@ -1976,7 +2010,21 @@ function playView(seriesId, season, label) {
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(v.currentTime || startAt) } else fail('Something went wrong playing this. Go back and try again.')
         })
       } else v.src = url
-      if (startAt > 5 && !(viaHls)) v.addEventListener('loadedmetadata', () => { v.currentTime = startAt }, { once: true })
+      // Open at the resume point. Some TV WebViews ignore a jump made before the picture can play, so it is tried again as the
+      // picture becomes playable, until it has taken (or the viewer has moved it themselves, or a few tries have gone by).
+      if (startAt > 5) {
+        const el = v
+        let tries = 0
+        const jump = () => {
+          if (!alive || v !== el || userSeeked || tries >= 6 || el.currentTime >= startAt - 5) return stop()
+          tries++
+          try { el.currentTime = startAt } catch { /* not seekable yet */ }
+        }
+        const evs = ['loadedmetadata', 'canplay', 'playing']
+        const stop = () => evs.forEach((ev) => el.removeEventListener(ev, jump))
+        evs.forEach((ev) => el.addEventListener(ev, jump))
+        if (!viaHls) jump() // an hls.js playlist opens at startPosition itself; the listeners above only catch a miss
+      }
       v.play?.().catch(() => {})
       // A finished file that has not started playing half a minute after it was handed over is stuck, not slow: nothing
       // is being waited for. Ask /info once more (a fresh link, and the box's fresh view of the file) and play that.
@@ -3233,7 +3281,9 @@ function restoreView(v) {
   el.focus({ preventScroll: true })
   el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'instant' }) // the rail it sits in is brought round to it
 }
+let staleShell = false
 async function route() {
+  if (staleShell && !location.hash.startsWith('#/play/')) return location.reload()
   if (lastHash != null && !$('.player')) viewState.set(lastHash, captureView())
   // A new page is a new history entry with no state; Back and Forward arrive with the number this code gave them.
   const hst = history.state
@@ -3299,7 +3349,17 @@ async function route() {
   }
 }
 addEventListener('hashchange', route)
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
+if ('serviceWorker' in navigator) {
+  // A new version takes over (sw.js skips waiting) while this page is still running the old code against the new server, which
+  // is what needed the app force-closed. Start over on the new one -- at the next page change when a film is playing.
+  const hadWorker = !!navigator.serviceWorker.controller
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadWorker || staleShell) return
+    staleShell = true
+    if (!$('.player')) location.reload()
+  })
+  navigator.serviceWorker.register('/sw.js').catch(() => {})
+}
 route()
 
 /**

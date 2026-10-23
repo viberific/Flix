@@ -62,8 +62,9 @@ export const config = {
   // already allowed (a private IPv4 literal, an mDNS .local name, and whatever LAN_URL names). Comma-separated,
   // e.g. "flix.home.arpa,media.lan" — for a router DNS name or a phone book name the LAN happens to resolve.
   lanHosts: (env.LAN_HOSTS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
-  // A show counts as watched only when it has played to the end (within a few seconds, for the credits' last frame); lower this to count e.g. 0.9 as watched.
-  watchedThreshold: num('WATCHED_THRESHOLD', 1),
+  // A show counts as watched once this fraction of it has played. Credits (and often an intro) are skipped or left running, so
+  // requiring 100% meant an episode was never finished and never freed its disk. 1 = only the very end (within a few seconds).
+  watchedThreshold: num('WATCHED_THRESHOLD', 0.92),
   // A viewer who has not touched a half-watched show for this many days stops holding it (0 = never), so one abandoned show can't pin storage forever.
   abandonDays: num('ABANDON_DAYS', 14),
   // A finished, fully seeded season pack that some allowed viewers never opened is shown to them as "Leaving soon" for this many days, then removed (0 = off).

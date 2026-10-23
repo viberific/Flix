@@ -214,7 +214,8 @@ app.get('/api/series/:id', auth, async (req) => {
   const sync = ensureSynced(id)
   if (!have || !synced) await sync
   if (!seasonsOf(id)) throw notFound('This show is not available yet')
-  await ensurePackFiles(id)
+  // Reading a season pack's .torrent can be slow; the page does not wait on it past a few seconds (it carries on in the background).
+  await Promise.race([ensurePackFiles(id), new Promise((r) => setTimeout(r, 4000))])
   const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
   if (!info) throw notFound()
   // First visit: give the lookup a moment so the trailer is already there; otherwise it finishes in the background.
@@ -465,6 +466,33 @@ app.post('/api/prefetch', auth, async (req) => {
   if (!canViewSeries(req.user, Number(seriesId))) return { ok: false }
   void autoNext(req.user!.id, Number(seriesId), season ?? null, String(label ?? ''))
   return { ok: true }
+})
+
+/**
+ * "Download all seasons": put every episode that can be played on the server's disk now, for this person, instead of one at
+ * a time as they are watched. One start per torrent (a season pack already brings all of its files), the unwatched ones
+ * only, one after the other so BTN and the disk are not hit all at once. The disk guard in ensureAdded still applies, so a
+ * nearly full disk refuses the rest rather than filling up. Answers at once with what will be queued; it carries on behind.
+ */
+app.post('/api/series/:id/download-all', auth, async (req) => {
+  const id = Number((req.params as any).id)
+  if (!canViewSeries(req.user, id)) throw notFound()
+  await Promise.race([ensurePackFiles(id), new Promise((r) => setTimeout(r, 4000))])
+  const uid = req.user!.id
+  const todo = new Map<number, { label: string; isPack: boolean; episode: number | null }>()
+  let episodes = 0
+  for (const e of buildEpisodes(id, uid)) {
+    if (!e.available || e.watched) continue
+    episodes++
+    if (!todo.has(e.torrentId)) todo.set(e.torrentId, { label: e.label, isPack: e.isPack, episode: e.episode })
+  }
+  void (async () => {
+    for (const [torrentId, e] of todo) {
+      try { await startPlayback(uid, torrentId, undefined, { episodeLabel: e.isPack && e.episode === null ? undefined : e.label }) } // an explicit request, so it is held like a pressed Play, not lapsed like an automatic one
+      catch (err: any) { if (err.message !== 'already finished') console.log(`[download-all] ${id}: ${err.message}`) }
+    }
+  })()
+  return { ok: true, episodes, torrents: todo.size }
 })
 
 /**
@@ -837,8 +865,9 @@ async function lineUpNext(userId: number, torrentId: number, fileIndex: number) 
 app.post('/api/progress', auth, async (req) => {
   const { torrentId, fileIndex, position, duration, ended } = req.body as any
   const frac = duration > 0 ? position / duration : 0
-  // "Watched" means played to the end: the player says so when the video ends, and the last few seconds count as the end
-  // (the reported length and the playing position rarely agree to the frame). Anything less keeps the file for the viewer.
+  // "Watched" means played past the threshold (92% by default: the credits are rarely sat through), or to the end -- the player says
+  // so when the video ends, and the last few seconds count as the end (the reported length and the playing position rarely
+  // agree to the frame). A threshold of 1 keeps the strict reading.
   const done = !!ended || (config.watchedThreshold >= 1 ? duration > 0 && duration - position <= 3 : frac >= config.watchedThreshold)
   db.prepare(`UPDATE interests SET position=?, duration=?, updated_at=?, watched_at = CASE WHEN ? THEN COALESCE(watched_at, ?) ELSE watched_at END
     WHERE user_id=? AND torrent_id=? AND file_index=?`).run(position, duration, now(), done ? 1 : 0, now(), req.user!.id, torrentId, fileIndex)
