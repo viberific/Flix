@@ -25,6 +25,9 @@ export async function list() {
 export async function get(id) { try { return await (await (await open()).match(metaUrl(id)))?.json() } catch { return null } }
 async function putMeta(c, m) { await c.put(metaUrl(m.id), new Response(JSON.stringify(m), { headers: { 'content-type': 'application/json' } })) }
 
+/** Throw away every saved episode on this device (a television keeps none). */
+export async function clear() { if ('caches' in self && await caches.has(CACHE)) await caches.delete(CACHE) }
+
 export async function remove(id) {
   const c = await open()
   for (const k of await c.keys()) if (new URL(k.url).pathname.slice(P.length).split('/')[1] === id) await c.delete(k)

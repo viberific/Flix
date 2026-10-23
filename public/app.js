@@ -303,7 +303,7 @@ function renderTop() {
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}<a href="#/downloads">Downloads</a>${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}${canDownload ? '<a href="#/downloads">Downloads</a>' : ''}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
@@ -380,6 +380,11 @@ function flixSting() {
 // (a TV is the one place with no install button and no cast button: it is the thing a phone casts to).
 const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
 if (isTv) document.documentElement.classList.add('tv')
+// Downloads are for taking an episode away from the internet, and a television never leaves the house: a TV has no
+// Downloads page, no download buttons, and keeps no episodes in its own storage (anything an older version saved is
+// cleared, since a TV's storage is small and the episode streams from the server anyway).
+const canDownload = !isTv && dl.supported()
+if (isTv) dl.clear().catch(() => {})
 // What this player can decode, asked once of the player itself. Only the device knows whether the screen behind it has an
 // HEVC or AV1 decoder, and the box used to assume nobody did above 1080p -- which refused 4K files that play perfectly as
 // they are and told the viewer they would need converting.
@@ -945,7 +950,7 @@ async function seriesView(id) {
   const keys = [...seasons.keys()]
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
-  const saved = new Set((await dl.list()).map((m) => m.id))
+  const saved = new Set(canDownload ? (await dl.list()).map((m) => m.id) : [])
   return () => {
     
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
@@ -963,7 +968,7 @@ async function seriesView(id) {
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <div class="eps-head"><h2 class="sec">Episodes</h2></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
-    const canSave = (e) => dl.supported() && e?.available && !(e.isPack && e.episode === null)
+    const canSave = (e) => canDownload && e?.available && !(e.isPack && e.episode === null)
     // The ring fills as the episode is saved; tapping it once arms a stop, a second tap cancels.
     const ring = (a) => `<svg class="dl-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15.5" pathLength="100"/><circle class="on" cx="18" cy="18" r="15.5" pathLength="100" style="stroke-dasharray:${Math.max(3, Math.round(a.pct * 100))} 100"/></svg>`
     const dlButton = (e) => {
@@ -3235,7 +3240,7 @@ async function route() {
   try { st = await api('/api/me', null, 'GET', 15000) } catch (e) {
     if (token !== navToken) return
     // Can't reach Flix but there are episodes saved on this device: that is what the app shows, and they play without the server.
-    if (!e.gate && (await dl.list()).length) {
+    if (!e.gate && canDownload && (await dl.list()).length) {
       const [p0, p1] = location.hash.slice(1).split('?')[0].split('/').filter(Boolean)
       const render = p0 === 'offplay' && p1 ? await offlinePlayView(p1) : await downloadsView(true)
       if (token !== navToken) return
@@ -3265,6 +3270,7 @@ async function route() {
     if (parts[0] === 'series') render = await seriesView(parts[1])
     else if (parts[0] === 'play') render = playView(parts[1], parts[2], parts[3])
     else if (parts[0] === 'profile') render = profileView()
+    else if ((parts[0] === 'downloads' || parts[0] === 'offplay') && !canDownload) { clearTimeout(slow); go('#/'); return }
     else if (parts[0] === 'downloads') render = await downloadsView()
     else if (parts[0] === 'offplay' && parts[1]) render = await offlinePlayView(parts[1])
     else if ((parts[0] === 'settings' || parts[0] === 'admin') && me.is_admin) render = await settingsView(parts[0] === 'admin' ? LEGACY_SECTION[parts[1] ?? ''] ?? 'torrents' : SETTINGS_PILLS.some(([id]) => id === parts[1]) ? parts[1] : 'torrents')

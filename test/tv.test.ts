@@ -127,3 +127,13 @@ test('the logo glides up when the line and the bar arrive under it, instead of j
   assert.match(app, /const from = was \+ at - now/)
   assert.match(app, /if \(layer\.classList\.contains\('gone'\)\) \{ for \(const el of kids\(\)\) glides\(el\)\.forEach\(\(a\) => a\.cancel\(\)\)/)
 })
+
+test('a television has no downloads: no page, no buttons, nothing kept in its storage', () => {
+  assert.match(app, /const canDownload = !isTv && dl\.supported\(\)/)
+  assert.match(app, /if \(isTv\) dl\.clear\(\)/)
+  assert.match(app, /\$\{canDownload \? '<a href="#\/downloads">Downloads<\/a>' : ''\}/)
+  assert.match(app, /const canSave = \(e\) => canDownload && /)
+  assert.match(app, /\(parts\[0\] === 'downloads' \|\| parts\[0\] === 'offplay'\) && !canDownload\) \{ clearTimeout\(slow\); go\('#\/'\); return \}/)
+  assert.match(app, /if \(!e\.gate && canDownload && \(await dl\.list\(\)\)\.length\)/)
+  assert.match(read('public/downloads.js'), /export async function clear\(\)/)
+})
