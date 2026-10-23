@@ -120,6 +120,9 @@ async function swap(fn) {
     clearTimeout(guard)
   }
   once()
+  // A television gets no cross-fade (two snapshots of the whole screen), but a page that simply appears reads as a jolt:
+  // the new one eases in on opacity alone, which the compositor does without repainting anything.
+  if (isTv && !rmq.matches && app.animate) app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' })
 }
 
 /** What a page looks like before it has arrived: the same shapes in the same places, so nothing jumps when the real one lands.
@@ -499,7 +502,7 @@ function authView(needsSetup) {
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div>${s.leechers ? `<div class="ts">${s.leechers} leeching</div>` : ''}</a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
@@ -540,6 +543,9 @@ function queueOf(cont, home) {
   else if (home.because?.series?.length) { pool = home.because.series; title = `Because you ${home.because.liked ? 'liked' : 'watched'} ${home.because.name}`; used = 'because' }
   else if (home.sections?.[0]?.series?.length) { pool = home.sections[0].series; title = home.sections[0].title; used = 'section' }
   const have = new Set([...list.map((s) => s.id), ...ready.map((s) => s.id), ...cont.map((c) => c.seriesId)])
+  // What the most peers are downloading comes first (the server holds these shows back from every other row): seeding them is
+  // how the ratio grows. With no peer counts yet the usual picks stand in.
+  if (home.grab?.length) { pool = home.grab; title = 'Most wanted right now'; used = null }
   pool = pool.filter((s) => !have.has(s.id))
   return { resume: cont, ready: [...ready], list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
 }
@@ -1171,7 +1177,7 @@ function playView(seriesId, season, label) {
               <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-haspopup="true" hidden>CC</button></div>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
-      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div>`
+      <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div class="p-under"><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div></div>`
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
@@ -1194,48 +1200,25 @@ function playView(seriesId, season, label) {
       layer.classList.add('gone')
       if (settled) layer.classList.add('settled')
       pl.classList.add('live') // the logo leaves the top bar with the wait screen
+      // The fade-out hands the layer over to `visibility: hidden` by a delayed transition, and a TV's WebView sometimes never
+      // finishes one -- the mark and the black were left up over the picture. So the layer is settled by the clock as well.
+      setTimeout(() => { if (alive && layer.classList.contains('gone')) layer.classList.add('settled') }, 1300)
     }
     function restoreWait() {
       $('#wait').classList.remove('gone', 'settled')
       pl.classList.remove('live')
     }
-    // The wait screen is a centred column, so the line and the bar arriving under the logo pushed it up in one frame.
-    // Each change now plays as a glide instead (FLIP): whatever was already there -- the logo first of all -- moves from
-    // where it was to where it now belongs, and what has just appeared fades in under it. A glide that is still running
-    // when the next change comes is picked up from wherever it has got to, so a second line never makes it jump either.
-    function glideWait() {
+    // The last line of defence for the logo: whatever path put the wait screen back up (a stall, a swapped source, a missed
+    // `playing` event), a picture that is plainly moving takes it down. Cheap -- one read of the clock a second.
+    let seenT = -1
+    const liveWatch = setInterval(() => {
+      if (!alive || !pl.isConnected) { clearInterval(liveWatch); return }
       const layer = $('#wait')
-      if (!layer?.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return
-      const kids = () => [...layer.children]
-      const offset = (el) => { const t = getComputedStyle(el).transform; return t && t !== 'none' ? new DOMMatrixReadOnly(t).m42 : 0 }
-      const where = (el) => (el.offsetHeight > 0 ? el.getBoundingClientRect().top - offset(el) : null)
-      const glides = (el) => el.getAnimations().filter((a) => a.id === 'glide')
-      let last = new Map(kids().map((el) => [el, where(el)]))
-      const mo = new MutationObserver(() => {
-        if (!layer.isConnected) { mo.disconnect(); return }
-        // Leaving: the mark plays its own exit, which a glide's transform would hold back.
-        if (layer.classList.contains('gone')) { for (const el of kids()) glides(el).forEach((a) => a.cancel()); last = new Map(kids().map((el) => [el, where(el)])); return }
-        const next = new Map()
-        for (const el of kids()) {
-          const was = last.get(el), at = offset(el), now = where(el)
-          next.set(el, now)
-          if (now == null) continue
-          if (was == null) {
-            const a = el.animate([{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }], { duration: 520, delay: 160, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' })
-            a.id = 'glide'
-            continue
-          }
-          const from = was + at - now
-          if (Math.abs(from) < 0.5) continue
-          glides(el).forEach((a) => a.cancel())
-          const a = el.animate([{ transform: `translateY(${from}px)` }, { transform: 'none' }], { duration: 680, easing: 'cubic-bezier(.22,1,.36,1)' })
-          a.id = 'glide'
-        }
-        last = next
-      })
-      mo.observe(layer, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'class'] })
-    }
-    glideWait()
+      if (!layer || !v || castingOnly || holding || layer.classList.contains('settled')) { seenT = -1; return }
+      const t = v.currentTime, moving = !v.paused && !v.ended && v.readyState >= 3 && seenT >= 0 && t > seenT + 0.2
+      seenT = t
+      if (moving && !$('#again')) revealWait(true)
+    }, 1000)
     const avoid = []
     // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
@@ -3096,6 +3079,29 @@ function focusRows(stops) {
     scroller, so the tile can be off the rail while the rail is on screen; the page then moves by the least that shows
     it. The old block/inline 'center' glide re-centred the page on every press, so the picture drifted under a highlight
     that had already jumped. On a television both are instant: a glide is a 300ms smear on a remote. */
+/** One eased scroll for a television, in place of the browser's smooth scroll. The native glide queues a press behind the
+    one before it and, with the highlight already moved, trails after it; this one is retargeted from wherever it has got
+    to on every press, so holding an arrow key is one continuous slide. 220ms of ease-out, scrollTop/scrollLeft only. */
+const scrollRuns = new WeakMap()
+function easeScroll(box, prop, to) {
+  const sc = box === window ? document.scrollingElement : box
+  const view = box === window ? innerHeight : prop === 'scrollTop' ? sc.clientHeight : sc.clientWidth
+  const size = prop === 'scrollTop' ? sc.scrollHeight : sc.scrollWidth
+  to = Math.max(0, Math.min(size - view, to))
+  const runs = scrollRuns.get(sc) || {}
+  scrollRuns.set(sc, runs)
+  if (runs[prop]) cancelAnimationFrame(runs[prop])
+  const from = sc[prop]
+  if (rmq.matches || Math.abs(to - from) < 2) { sc[prop] = to; return }
+  const t0 = performance.now()
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / 220)
+    sc[prop] = from + (to - from) * (1 - Math.pow(1 - k, 3))
+    runs[prop] = k < 1 ? requestAnimationFrame(step) : 0
+  }
+  runs[prop] = requestAnimationFrame(step)
+}
+
 function revealStop(el) {
   const r = el.getBoundingClientRect()
   // Sideways first, on the rail itself: the tile is brought in with a tile's width to spare on the side it came from,
@@ -3104,7 +3110,7 @@ function revealStop(el) {
     if (p.scrollWidth <= p.clientWidth + 1 || !/auto|scroll|overlay|hidden/.test(getComputedStyle(p).overflowX)) continue
     const pr = p.getBoundingClientRect(), pad = Math.min(r.width * 0.6, 90)
     const dxs = r.left < pr.left + pad ? r.left - pr.left - pad : r.right > pr.right - pad ? r.right - pr.right + pad : 0
-    if (dxs) p.scrollBy({ left: dxs, behavior: isTv ? 'auto' : smooth() })
+    if (dxs) { if (isTv) easeScroll(p, 'scrollLeft', p.scrollLeft + dxs); else p.scrollBy({ left: dxs, behavior: smooth() }) }
     break
   }
   // Then the page: only when the row is near an edge, and then by enough to put it a little above the middle, with room
@@ -3114,7 +3120,8 @@ function revealStop(el) {
   const edge = isTv ? Math.max(180, innerHeight * 0.2) : Math.min(140, innerHeight * 0.16)
   if (r.top < edge || r.bottom > innerHeight - edge - 40) {
     const want = r.top + r.height / 2 - innerHeight * 0.42
-    scrollBy({ top: want, behavior: isTv || matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+    if (isTv) easeScroll(window, 'scrollTop', scrollY + want)
+    else scrollBy({ top: want, behavior: rmq.matches ? 'auto' : 'smooth' })
   }
 }
 // The column the highlight was last moved along, kept across Up and Down so a trip over a short row and back lands where
@@ -3135,7 +3142,9 @@ addEventListener('keydown', (e) => {
   const dir = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]
   // A remote's Up and Down must be able to leave a text field (to the next field or the button under it); Left and Right stay
   // with the caret. A dropdown keeps both, because Up and Down change its value.
-  const leaves = typing && isTv && dir && dir[0] === 0 && el.tagName === 'INPUT'
+  // Left and Right leave it too once the caret has nowhere left to go, or the logo beside the search bar could never be reached.
+  const atEdge = () => { try { const { selectionStart: a, selectionEnd: b, value } = el; return a == null || (a === b && (dir[0] < 0 ? a === 0 : a === value.length)) } catch { return true } }
+  const leaves = typing && isTv && dir && el.tagName === 'INPUT' && (dir[0] === 0 || atEdge())
   if (!dir || (typing && !leaves)) return
   const onThing = el && el !== document.body
   if (!onThing && !isTv) return // on a computer with nothing focused, arrows keep scrolling the page

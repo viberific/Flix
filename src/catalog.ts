@@ -6,9 +6,9 @@ import { catalogChanged } from './seasons.ts'
 
 const upsert = db.prepare(`INSERT INTO releases (torrent_id, group_id, series_id, series, series_poster, series_banner, tvdb_id, imdb_id,
   group_name, release_name, season, episode, label, is_pack, resolution, codec, container, source, origin, size, seeders, time,
-  info_hash, torrent_link, genres, fetched_at, youtube_trailer, episode_end)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  ON CONFLICT(torrent_id) DO UPDATE SET seeders=excluded.seeders, torrent_link=excluded.torrent_link, series_poster=excluded.series_poster,
+  info_hash, torrent_link, genres, fetched_at, youtube_trailer, episode_end, leechers)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(torrent_id) DO UPDATE SET seeders=excluded.seeders, leechers=excluded.leechers, torrent_link=excluded.torrent_link, series_poster=excluded.series_poster,
     series_banner=excluded.series_banner, youtube_trailer=excluded.youtube_trailer, fetched_at=excluded.fetched_at, episode_end=excluded.episode_end`)
 
 /** BTN gives either a bare video id or a URL; only ever keep a youtube.com watch link we build ourselves. */
@@ -31,7 +31,7 @@ export function storeTorrents(list: BtnTorrent[]) {
         int(x.TvdbID), x.ImdbID ?? null, x.GroupName, x.ReleaseName ?? null, p.season, p.episode, p.label, p.isPack ? 1 : 0,
         x.Resolution ?? null, x.Codec ?? null, x.Container ?? null, x.Source ?? null, x.Origin ?? null,
         int(x.Size), int(x.Seeders), int(x.Time), x.InfoHash.toLowerCase(), x.TorrentLink ?? null,
-        JSON.stringify(x.Genres ?? []), t, youtubeUrl(x.YoutubeTrailer), p.episodeEnd)
+        JSON.stringify(x.Genres ?? []), t, youtubeUrl(x.YoutubeTrailer), p.episodeEnd, int(x.Leechers))
     }
     db.exec('COMMIT')
     catalogChanged()

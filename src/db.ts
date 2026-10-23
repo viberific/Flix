@@ -87,6 +87,8 @@ db.exec('CREATE TABLE IF NOT EXISTS pin_fails (user_id INTEGER NOT NULL, at INTE
 try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT') } catch { /* already present */ }
 try { db.exec('ALTER TABLE my_list ADD COLUMN seen_at INTEGER') } catch { /* already present */ }
 try { db.exec('ALTER TABLE releases ADD COLUMN youtube_trailer TEXT') } catch { /* already present */ }
+// How many peers were downloading it when BTN last reported (the home screen's Queue leads with the most wanted).
+try { db.exec('ALTER TABLE releases ADD COLUMN leechers INTEGER') } catch { /* already present */ }
 // Last episode a multi-episode file covers (S01E01E02 -> 2); null for everything else.
 try { db.exec('ALTER TABLE releases ADD COLUMN episode_end INTEGER') } catch { /* already present */ }
 // The videos inside a season pack, read from its .torrent, so a pack lists as individual episodes before anything is downloaded.

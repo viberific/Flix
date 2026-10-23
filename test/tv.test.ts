@@ -120,12 +120,25 @@ test('Downloads lists only what is saved on this device, and the phone download 
   assert.match(css, /\.ep \.eside \.dlb \{[^}]*max-width: none;[^}]*font-size: 0;/)
 })
 
-test('the logo glides up when the line and the bar arrive under it, instead of jumping', () => {
-  assert.match(app, /function glideWait\(\)/)
-  assert.match(app, /\n    glideWait\(\)\n/)
-  // Moves from where it was (FLIP), picks up a glide already running, and steps aside for the mark's exit.
-  assert.match(app, /const from = was \+ at - now/)
-  assert.match(app, /if \(layer\.classList\.contains\('gone'\)\) \{ for \(const el of kids\(\)\) glides\(el\)\.forEach\(\(a\) => a\.cancel\(\)\)/)
+test('the loading logo never moves when the line and the bar arrive: they hang from a row of their own', () => {
+  assert.doesNotMatch(app, /glideWait/, 'no script chases the layout any more')
+  assert.match(app, /<div class="p-under"><div id="msg" role="status"><\/div>.*id="cnc" hidden>Cancel<\/button><\/div><\/div><\/div>`/)
+  assert.match(css, /\.p-wait \{[^}]*display: grid; grid-template-rows: minmax\(0, 1fr\) auto minmax\(0, 1fr\);/)
+  assert.match(css, /\.p-wait > \.mark \{ grid-row: 2; \}/)
+  assert.match(css, /\.p-under \{ grid-row: 3; align-self: start;/)
+})
+
+test('a remote reaches the logo: Left and Right leave a text field at the edge of its text', () => {
+  assert.match(app, /const leaves = typing && isTv && dir && el\.tagName === 'INPUT' && \(dir\[0\] === 0 \|\| atEdge\(\)\)/)
+})
+
+test('a television eases its own scrolling and animates the focus ring on the compositor only', () => {
+  assert.match(app, /function easeScroll\(box, prop, to\)/)
+  assert.match(app, /if \(isTv\) easeScroll\(window, 'scrollTop', scrollY \+ want\)/)
+  assert.match(app, /if \(isTv\) easeScroll\(p, 'scrollLeft', p\.scrollLeft \+ dxs\)/)
+  assert.match(css, /html\.tv, html\.tv \.row-scroll \{ scroll-behavior: auto; \}/)
+  assert.match(css, /html\.tv \.tile:focus \.poster \{ transform: scale\(1\.07\); will-change: transform;/)
+  assert.doesNotMatch(css, /html\.tv \.poster \{[^}]*will-change: transform/, 'not a layer per poster')
 })
 
 test('a television has no downloads: no page, no buttons, nothing kept in its storage', () => {
@@ -136,4 +149,20 @@ test('a television has no downloads: no page, no buttons, nothing kept in its st
   assert.match(app, /\(parts\[0\] === 'downloads' \|\| parts\[0\] === 'offplay'\) && !canDownload\) \{ clearTimeout\(slow\); go\('#\/'\); return \}/)
   assert.match(app, /if \(!e\.gate && canDownload && \(await dl\.list\(\)\)\.length\)/)
   assert.match(read('public/downloads.js'), /export async function clear\(\)/)
+})
+
+test('the logo cannot stay up over a playing show: the layer is settled by the clock and a watchdog takes it down', () => {
+  assert.match(app, /setTimeout\(\(\) => \{ if \(alive && layer\.classList\.contains\('gone'\)\) layer\.classList\.add\('settled'\) \}, 1300\)/)
+  assert.match(app, /const liveWatch = setInterval\(/)
+  assert.match(app, /if \(moving && !\$\('#again'\)\) revealWait\(true\)/)
+})
+
+test('the Queue leads with the shows the most peers are downloading, and holds them back from the other rows', () => {
+  const server = read('src/server.ts'), catalog = read('src/catalog.ts')
+  assert.match(catalog, /leechers=excluded\.leechers/)
+  assert.match(catalog, /int\(x\.Leechers\)\)/)
+  assert.match(server, /MAX\(leechers\) AS n FROM releases WHERE leechers > 0 AND COALESCE\(seeders, 0\) > 0 AND fetched_at > \?/)
+  assert.match(server, /\.sort\(\(a, b\) => peers\.get\(b\.id\)! - peers\.get\(a\.id\)! \|\| b\.latest - a\.latest\)/)
+  assert.match(server, /grab\.forEach\(\(r\) => taken\.add\(r\.id\)\)/)
+  assert.match(app, /if \(home\.grab\?\.length\) \{ pool = home\.grab; title = 'Most wanted right now'; used = null \}/)
 })
