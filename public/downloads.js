@@ -48,8 +48,12 @@ export async function syncPending(send) {
 
 export async function usage() { try { const e = await navigator.storage?.estimate?.(); return e ? { used: e.usage ?? 0, quota: e.quota ?? 0 } : null } catch { return null } }
 
-/** Downloads in progress, by id: { text, pct, error }. Views listen for `flix-dl` on window. */
+/** Downloads in progress, by id: { text, pct, error }. Views listen for `flix-dl` on window. `pct` covers the whole save,
+    from the server fetching the episode to the last byte landing on this device, so one ring can show it. */
 export const active = new Map()
+const aborts = new Map()
+/** Stop a download in progress and throw away whatever of it was already written. */
+export function cancel(id) { aborts.get(id)?.abort() }
 // Anything queued up wanting to know when one download has finished: the season button uses this to start the next episode
 const waiters = new Map()
 const settle = (id, ok) => { const w = waiters.get(id); if (w) { waiters.delete(id); w(ok) } }
@@ -69,34 +73,43 @@ const json = async (r) => { const d = await r.json().catch(() => ({})); if (!r.o
 export function start(ep, watch) {
   const id = idOf(ep.seriesId, ep.season, ep.label), name = [ep.seriesName, ep.label].filter(Boolean).join(' · ')
   if (active.has(id)) return id
-  tick(id, { text: 'Asking the server…', pct: 0 }, name)
+  tick(id, { text: 'Waiting to download…', pct: 0 }, name)
+  const ac = new AbortController(), signal = ac.signal
+  aborts.set(id, ac)
   ;(async () => {
     const c = await open(), made = []
     const put = async (url, res) => { made.push(url); await c.put(url, res) }
     try {
       navigator.storage?.persist?.().catch(() => {})
       const play = await watch()
+      if (signal.aborted) throw new DOMException('Cancelled', 'AbortError')
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
       // 1. wait until the server has the whole episode and has made the 1080p copy
       for (;;) {
-        const s = await fetch(base + '/offline', { cache: 'no-store' }).then(json)
+        const s = await fetch(base + '/offline', { cache: 'no-store', signal }).then(json)
         if (s.state === 'ready') break
         if (s.state === 'error') throw new Error(s.message)
-        tick(id, s.state === 'waiting'
-          ? { text: `Downloading on the server… ${Math.round(s.progress * 100)}%`, pct: 0 }
-          : { text: `Preparing a 1080p copy… ${Math.round(s.progress * 100)}%`, pct: 0 })
+        // Where the server gets the episode from is its own business: here it is one download, from 0 to 100.
+        const pct = s.state === 'waiting' ? 0.6 * s.progress : 0.6 + 0.15 * s.progress
+        tick(id, { text: `Downloading ${Math.round(pct * 100)}%`, pct })
         await sleep(2000)
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError')
       }
       // 2. the file itself, written to storage as it arrives
-      const res = await fetch(base + '/offline/file', { cache: 'no-store' })
+      const res = await fetch(base + '/offline/file', { cache: 'no-store', signal })
       if (!res.ok || !res.body) throw new Error('The server could not send the video.')
       const total = Number(res.headers.get('content-length')) || 0
       let got = 0
-      const counter = new TransformStream({ transform(chunk, ctl) { got += chunk.byteLength; tick(id, { text: `Saving to this device… ${total ? Math.round((got / total) * 100) + '%' : (got / 1048576).toFixed(0) + ' MB'}`, pct: total ? got / total : 0 }); ctl.enqueue(chunk) } })
+      const counter = new TransformStream({ transform(chunk, ctl) {
+        got += chunk.byteLength
+        const pct = 0.75 + 0.25 * (total ? got / total : 0)
+        tick(id, { text: `Downloading ${Math.round(pct * 100)}%`, pct })
+        ctl.enqueue(chunk)
+      } })
       await put(videoUrl(id), new Response(res.body.pipeThrough(counter), { headers: { 'content-type': res.headers.get('content-type') || 'video/mp4', 'content-length': String(total || '') } }))
       if (total && got !== total) throw new Error('The download was cut off.')
       // 3. the small things: poster, subtitles
-      tick(id, { text: 'Finishing…', pct: 1 })
+      tick(id, { text: 'Downloading 100%', pct: 1 })
       const info = await fetch(base + '/info', { cache: 'no-store' }).then(json).catch(() => null)
       const subs = []
       for (const s of info?.subs ?? []) {
@@ -115,9 +128,12 @@ export function start(ep, watch) {
       const size = got
       await putMeta(c, { id, seriesId: ep.seriesId, season: ep.season, label: ep.label, seriesName: play.seriesName || ep.seriesName, episodeTitle: play.episodeTitle || ep.title || null,
         torrentId: play.torrentId, fileIndex: play.fileIndex, duration: info?.duration ?? null, size, subs, position: 0, savedAt: Date.now() })
+      aborts.delete(id)
       tick(id, null)
     } catch (e) {
+      aborts.delete(id)
       for (const u of made) await c.delete(u).catch(() => {})
+      if (signal.aborted) { active.delete(id); settle(id, false); window.dispatchEvent(new Event('flix-dl')); return }
       const full = e?.name === 'QuotaExceededError' || /quota/i.test(e?.message || '')
       tick(id, { text: full ? 'This device is out of space.' : e.message || 'The download failed.', error: true, pct: 0 })
       setTimeout(() => { if (active.get(id)?.error) tick(id, null) }, 8000)

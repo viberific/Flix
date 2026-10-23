@@ -87,6 +87,9 @@ const I = {
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleY(-1)"><path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
   dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>',
+  // Saved on this device: a phone with a tick on it, the way Netflix marks a downloaded episode.
+  saved: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="m9.2 12.2 2 2 3.8-4.2"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="8.5" y="8.5" width="7" height="7" rx="1.2"/></svg>',
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
   // The F's middle arm is a play button. Same artwork as /icon.svg.
   logo: '<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="fxl-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a4c"/><stop offset=".5" stop-color="#ff3d6e"/><stop offset="1" stop-color="#b8155a"/></linearGradient><radialGradient id="fxl-hl" cx=".25" cy="0" r="1"><stop offset="0" stop-color="#fff" stop-opacity=".32"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" rx="118" fill="url(#fxl-bg)"/><rect width="512" height="512" rx="118" fill="url(#fxl-hl)"/><g fill="#fff"><rect x="140" y="116" width="76" height="280" rx="38"/><rect x="140" y="116" width="232" height="76" rx="38"/><path transform="translate(242 287) scale(.906) translate(-242 -287)" d="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z"/></g></svg>',
@@ -951,6 +954,7 @@ async function seriesView(id) {
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
+        <button class="btn hdl" id="hdl" hidden></button>
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
@@ -959,11 +963,28 @@ async function seriesView(id) {
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
       <div class="eps-head"><h2 class="sec">Episodes</h2></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
+    const canSave = (e) => dl.supported() && e?.available && !(e.isPack && e.episode === null)
+    // The ring fills as the episode is saved; tapping it once arms a stop, a second tap cancels.
+    const ring = (a) => `<svg class="dl-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15.5" pathLength="100"/><circle class="on" cx="18" cy="18" r="15.5" pathLength="100" style="stroke-dasharray:${Math.max(3, Math.round(a.pct * 100))} 100"/></svg>`
     const dlButton = (e) => {
-      if (!dl.supported() || !e.available || (e.isPack && e.episode === null)) return ''
+      if (!canSave(e)) return ''
       const did = dl.idOf(id, e.season, e.label), a = dl.active.get(did)
-      if (a) return `<span class="dlb busy${a.error ? ' err' : ''}" role="button" tabindex="0" title="${esc(a.text)}">${a.error ? esc(a.text) : esc(a.text)}</span>`
-      return saved.has(did) ? `<span class="dlb done" role="button" tabindex="0" title="Saved on this device. Open Downloads">${I.check} Saved</span>` : `<span class="dlb" role="button" tabindex="0" title="Save a 1080p copy on this device to watch offline" aria-label="Download for offline">${I.dl}</span>`
+      if (a?.error) return `<span class="dlb err" role="button" tabindex="0" title="${esc(a.text)} Tap to try again." aria-label="${esc(a.text)} Try again">${I.dl}<span class="dlt">${esc(a.text)}</span></span>`
+      if (a) return `<span class="dlb busy${armed.has(did) ? ' armed' : ''}" role="button" tabindex="0" title="${armed.has(did) ? 'Tap again to cancel' : esc(a.text)}" aria-label="${esc(a.text)}. ${armed.has(did) ? 'Press again to cancel' : 'Press to cancel'}">${ring(a)}${I.stop}<span class="dlt">${armed.has(did) ? 'Cancel?' : Math.round(a.pct * 100) + '%'}</span></span>`
+      return saved.has(did) ? `<span class="dlb done" role="button" tabindex="0" title="Downloaded to this device. Open Downloads" aria-label="Downloaded. Open Downloads">${I.saved}<span class="dlt">Downloaded</span></span>` : `<span class="dlb" role="button" tabindex="0" title="Download to this device to watch offline" aria-label="Download to this device">${I.dl}</span>`
+    }
+    // Tap a download in progress once and it asks; tap again within four seconds and it is cancelled.
+    const armed = new Set()
+    const dlTap = (e) => {
+      const did = dl.idOf(id, e.season, e.label), a = dl.active.get(did)
+      if (saved.has(did)) return go('#/downloads')
+      if (a && !a.error) {
+        if (armed.has(did)) { armed.delete(did); dl.cancel(did); return }
+        armed.add(did); paintDl()
+        setTimeout(() => { if (armed.delete(did) && alive) paintDl() }, 4000)
+        return
+      }
+      saveEp(e)
     }
     const saveEp = (e) => dl.start({ seriesId: +id, season: e.season, label: e.label, title: e.title, seriesName: series.name },
       () => api('/api/watch', { seriesId: +id, season: e.season ?? null, label: e.label }))
@@ -984,14 +1005,25 @@ async function seriesView(id) {
       const b = ev.target.closest?.('.dlb'); if (!b) return
       if (ev.type === 'keydown' && ev.key !== 'Enter' && ev.key !== ' ') return
       ev.stopPropagation(); ev.preventDefault()
-      const e = seasons.get(cur)[+b.closest('.ep').dataset.i], did = dl.idOf(id, e.season, e.label)
-      if (saved.has(did) || dl.active.has(did)) return go('#/downloads')
-      saveEp(e)
+      dlTap(seasons.get(cur)[+b.closest('.ep').dataset.i])
     }
     $('#eps').addEventListener('click', dlAct, true); $('#eps').addEventListener('keydown', dlAct, true)
     // Progress ticks arrive many times a second. Only the download buttons and the season button change, so the list itself
     // (thumbnails, entrance animation, scroll position) is left alone.
+    // The big Download button under Play, for the same episode Play would start (Netflix's "Download S1:E1").
+    const heroDl = () => {
+      const b = $('#hdl'); if (!b) return
+      if (!canSave(hero)) { b.hidden = true; return }
+      const did = dl.idOf(id, hero.season, hero.label), a = dl.active.get(did), name = hero.season != null && hero.episode != null ? `S${hero.season}:E${hero.episode}` : hero.label
+      const html = a && !a.error ? `${ring(a)}${I.stop}<span>${armed.has(did) ? 'Tap again to cancel' : `Downloading ${esc(name)} · ${Math.round(a.pct * 100)}%`}</span>`
+        : saved.has(did) ? `${I.saved}<span>Downloaded ${esc(name)}</span>`
+        : a?.error ? `${I.dl}<span>${esc(a.text)} Try again</span>` : `${I.dl}<span>Download ${esc(name)}</span>`
+      b.hidden = false
+      b.classList.toggle('busy', !!a && !a.error); b.classList.toggle('done', saved.has(did))
+      if (b.innerHTML !== html) b.innerHTML = html
+    }
     const paintDl = () => {
+      heroDl()
       $('#eps').querySelectorAll('.ep').forEach((b) => {
         const side = b.querySelector('.eside'), e = seasons.get(cur)?.[+b.dataset.i]
         if (!side || !e) return
@@ -1004,7 +1036,8 @@ async function seriesView(id) {
         else if (next) side.appendChild(next)
       })
     }
-    paint()
+    paint(); heroDl()
+    const hdl = $('#hdl'); if (hdl) hdl.onclick = () => dlTap(hero)
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
     addEventListener('flix-dl', onDl)
@@ -1155,9 +1188,11 @@ function playView(seriesId, season, label) {
       const layer = $('#wait')
       layer.classList.add('gone')
       if (settled) layer.classList.add('settled')
+      pl.classList.add('live') // the logo leaves the top bar with the wait screen
     }
     function restoreWait() {
       $('#wait').classList.remove('gone', 'settled')
+      pl.classList.remove('live')
     }
     const avoid = []
     // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
@@ -2828,25 +2863,25 @@ function profileView() {
   }
 }
 
-/** Episodes saved on this device. With no connection this is the whole app: `offline` swaps the top bar for a notice. */
+/** Episodes saved on this device. With no connection this is the whole app: `offline` swaps the top bar for a notice.
+    Only what is already on the device is listed: an episode still on its way shows its progress on its show's page, and
+    turns up here once all of it is saved. */
 async function downloadsView(offline = false) {
   const items = await dl.list()
   const space = await dl.usage()
   return () => {
     let alive = true
     const paint = async (list) => {
-      const act = [...dl.active.entries()]
       const bySeries = new Map()
       for (const m of list) { if (!bySeries.has(m.seriesId)) bySeries.set(m.seriesId, { name: m.seriesName, eps: [] }); bySeries.get(m.seriesId).eps.push(m) }
       app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Downloads</h1>
         <p class="dim" style="margin:4px 0 18px">${offline ? 'Flix can’t be reached, so this is what is saved on this device.' : 'Saved on this device in 1080p or lower, to watch without a connection.'}${space && list.length ? ` Using ${mb(space.used)}.` : ''}</p>
         ${offline ? '<div class="notice" role="status">You’re offline. <button class="btn" id="rt" style="margin-left:8px;padding:6px 14px">Try to reconnect</button></div>' : ''}
-        ${act.length ? `<div class="dl-active">${act.map(([id, a]) => `<div class="dl-row${a.error ? ' err' : ''}"><div class="dl-t"><b>${esc(a.name || 'Download')}</b><span>${esc(a.text)}</span></div>${a.error ? '' : `<div class="prog-line"><i style="width:${Math.round(a.pct * 100)}%"></i></div>`}</div>`).join('')}</div>` : ''}
         ${list.length ? [...bySeries.values()].map((g) => `<h2 class="sec">${esc(g.name || 'Show')}</h2><div class="eps">${g.eps.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true })).map((m) => `
           <div class="ep dl-item" data-id="${esc(m.id)}" role="button" tabindex="0"><span class="thumb"><img class="fade" src="${dl.imgUrl(m.id)}" alt="" onload="this.classList.add('in')" onerror="this.remove()"><span class="play">${I.play}</span>${m.position > 30 && !m.watched ? `<span class="bar"><b style="width:${pct(m.position, m.duration)}%"></b></span>` : ''}</span>
             <span class="etxt"><span class="en">${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span><span class="es">${mb(m.size)} · 1080p or lower${m.watched ? ' · Watched' : ''}</span></span>
             <span class="eside"><button class="btn dl-rm" data-id="${esc(m.id)}" aria-label="Delete from this device">Delete</button></span></div>`).join('')}</div>`).join('')
-          : act.length ? '' : `<div class="empty">Nothing is saved on this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap the download arrow next to an episode.</span></div>`}</div>`
+          : `<div class="empty">Nothing is downloaded to this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap <b>Download</b>, or the ${I.dl.replace('<svg', '<svg class="inl"')} next to an episode.${dl.active.size ? ` ${dl.active.size === 1 ? 'One episode is' : dl.active.size + ' episodes are'} on the way.` : ''}</span></div>`}</div>`
       app.querySelectorAll('.dl-item').forEach((el) => {
         const open = () => go('#/offplay/' + el.dataset.id)
         el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter' && e.target === el) open() }
@@ -2868,7 +2903,13 @@ async function downloadsView(offline = false) {
     top.hidden = offline || !me
     paint(items)
     if (isTv) (app.querySelector('.dl-item') || $('#rt'))?.focus({ preventScroll: true }) // something for a remote to start from
-    const on = async () => { if (alive) paint(await dl.list()) }
+    // Progress ticks come many times a second; the page only changes when an episode lands (or one more starts or stops).
+    let seen = items.map((m) => m.id).join() + '|' + dl.active.size
+    const on = async () => {
+      if (!alive) return
+      const list = await dl.list(), key = list.map((m) => m.id).join() + '|' + dl.active.size
+      if (key !== seen && alive) { seen = key; paint(list) }
+    }
     addEventListener('flix-dl', on)
     cleanup = () => { alive = false; removeEventListener('flix-dl', on); top.hidden = !me }
   }
