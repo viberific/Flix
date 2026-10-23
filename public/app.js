@@ -1223,10 +1223,16 @@ function playView(seriesId, season, label) {
     const liveWatch = setInterval(() => {
       if (!alive || !pl.isConnected) { clearInterval(liveWatch); return }
       const layer = $('#wait')
-      if (!layer || !v || castingOnly || holding || layer.classList.contains('settled')) { seenT = -1; return }
-      const t = v.currentTime, moving = !v.paused && !v.ended && v.readyState >= 3 && seenT >= 0 && t > seenT + 0.2
+      if (!layer || !v || castingOnly || layer.classList.contains('settled')) { seenT = -1; return }
+      // The clock moving is the proof, whatever readyState says: a WebView playing a download at the edge of what has
+      // arrived can sit at HAVE_CURRENT_DATA (2) for the whole episode, and the old `>= 3` never let this fire there.
+      const t = v.currentTime, moving = !v.paused && !v.ended && v.readyState >= 2 && seenT >= 0 && t > seenT + 0.2
       seenT = t
-      if (moving && !$('#again')) revealWait(true)
+      if (!moving || $('#again')) return
+      // A show that is playing during the intro hold means the hold's pause did not take (or something played it since):
+      // the picture is already under way behind the logo, so the hold is over now rather than when its timer says.
+      if (holding) { clearTimeout(holdT); holding = false; $('#cnc').hidden = true; wake() }
+      revealWait(true)
     }, 1000)
     const avoid = []
     // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
@@ -1759,6 +1765,9 @@ function playView(seriesId, season, label) {
       sendReport('auto', why)
       report()
       avoid.push(play.torrentId); tries++; started = false
+      // The old source's intro hold must not fire on the new one: it took the wait screen down while the new file was still
+      // being fetched, and left `holding` set for a picture that had never been held.
+      clearTimeout(holdT); holding = false
       clearInterval(timer); clearInterval(subT); clearInterval(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
       // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
       // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
@@ -1896,7 +1905,7 @@ function playView(seriesId, season, label) {
         v.addEventListener('playing', firstFrame, { once: true })
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
         // retry above was only ever allowed once, for the life of the element.
-        v.addEventListener('playing', () => { fileRetry = false })
+        v.addEventListener('playing', () => { fileRetry = false; if (started && !holding && !castingOnly) revealWait(true) })
         watchQuality(v)
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
         for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)

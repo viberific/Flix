@@ -154,7 +154,18 @@ test('a television has no downloads: no page, no buttons, nothing kept in its st
 test('the logo cannot stay up over a playing show: the layer is settled by the clock and a watchdog takes it down', () => {
   assert.match(app, /setTimeout\(\(\) => \{ if \(alive && layer\.classList\.contains\('gone'\)\) layer\.classList\.add\('settled'\) \}, 1300\)/)
   assert.match(app, /const liveWatch = setInterval\(/)
-  assert.match(app, /if \(moving && !\$\('#again'\)\) revealWait\(true\)/)
+  assert.match(app, /if \(!moving \|\| \$\('#again'\)\) return/)
+})
+
+test('a show that is playing takes the wait screen down even mid-hold, at HAVE_CURRENT_DATA, or after a source swap', () => {
+  // The watchdog no longer stands aside while the intro hold is on, and a moving clock at readyState 2 counts.
+  assert.doesNotMatch(app, /castingOnly \|\| holding \|\| layer\.classList\.contains\('settled'\)/)
+  assert.match(app, /moving = !v\.paused && !v\.ended && v\.readyState >= 2 && seenT >= 0/)
+  assert.match(app, /if \(holding\) \{ clearTimeout\(holdT\); holding = false;/)
+  // Every later 'playing' (after a stall, a retry, a reload) takes it down too, not only the first.
+  assert.match(app, /v\.addEventListener\('playing', \(\) => \{ fileRetry = false; if \(started && !holding && !castingOnly\) revealWait\(true\) \}\)/)
+  // A new source drops the old one's hold.
+  assert.match(app, /started = false\n[^\n]*\n[^\n]*\n\s*clearTimeout\(holdT\); holding = false/)
 })
 
 test('the Queue leads with the shows the most peers are downloading, and holds them back from the other rows', () => {
