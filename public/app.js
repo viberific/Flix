@@ -1940,7 +1940,9 @@ function playView(seriesId, season, label) {
             // Again whenever the answer could have changed: a runtime that has only just become known, one that moved, or a
             // better source (a measured marker arriving where the estimate stood in). Otherwise it is kept.
             if (m.at != null && (creditAt == null || Math.abs(m.dur - creditDur) > 1 || CREDIT_RANK[m.from] > CREDIT_RANK[creditFrom])) {
-              creditAt = m.at; creditDur = m.dur; creditFrom = m.from
+              // A few seconds of grace: a measured black card or a chapter boundary lands on the last frame of the scene, and the
+              // box arriving right then read as too early. Never pushed to within ten seconds of the end.
+              creditAt = m.dur > 0 ? Math.min(m.at + 5, Math.max(m.at, m.dur - 10)) : m.at; creditDur = m.dur; creditFrom = m.from
             }
             if (creditAt != null && v.currentTime >= creditAt) showUpNext()
             // Went back into the episode from the credits (to see the last scene again): the countdown would have cut it
