@@ -1194,6 +1194,43 @@ function playView(seriesId, season, label) {
       $('#wait').classList.remove('gone', 'settled')
       pl.classList.remove('live')
     }
+    // The wait screen is a centred column, so the line and the bar arriving under the logo pushed it up in one frame.
+    // Each change now plays as a glide instead (FLIP): whatever was already there -- the logo first of all -- moves from
+    // where it was to where it now belongs, and what has just appeared fades in under it. A glide that is still running
+    // when the next change comes is picked up from wherever it has got to, so a second line never makes it jump either.
+    function glideWait() {
+      const layer = $('#wait')
+      if (!layer?.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+      const kids = () => [...layer.children]
+      const offset = (el) => { const t = getComputedStyle(el).transform; return t && t !== 'none' ? new DOMMatrixReadOnly(t).m42 : 0 }
+      const where = (el) => (el.offsetHeight > 0 ? el.getBoundingClientRect().top - offset(el) : null)
+      const glides = (el) => el.getAnimations().filter((a) => a.id === 'glide')
+      let last = new Map(kids().map((el) => [el, where(el)]))
+      const mo = new MutationObserver(() => {
+        if (!layer.isConnected) { mo.disconnect(); return }
+        // Leaving: the mark plays its own exit, which a glide's transform would hold back.
+        if (layer.classList.contains('gone')) { for (const el of kids()) glides(el).forEach((a) => a.cancel()); last = new Map(kids().map((el) => [el, where(el)])); return }
+        const next = new Map()
+        for (const el of kids()) {
+          const was = last.get(el), at = offset(el), now = where(el)
+          next.set(el, now)
+          if (now == null) continue
+          if (was == null) {
+            const a = el.animate([{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }], { duration: 520, delay: 160, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' })
+            a.id = 'glide'
+            continue
+          }
+          const from = was + at - now
+          if (Math.abs(from) < 0.5) continue
+          glides(el).forEach((a) => a.cancel())
+          const a = el.animate([{ transform: `translateY(${from}px)` }, { transform: 'none' }], { duration: 680, easing: 'cubic-bezier(.22,1,.36,1)' })
+          a.id = 'glide'
+        }
+        last = next
+      })
+      mo.observe(layer, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'class'] })
+    }
+    glideWait()
     const avoid = []
     // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but

@@ -119,3 +119,11 @@ test('Downloads lists only what is saved on this device, and the phone download 
   // A max-width in ch is zero at font-size 0, which shrank the phone button to a hairline.
   assert.match(css, /\.ep \.eside \.dlb \{[^}]*max-width: none;[^}]*font-size: 0;/)
 })
+
+test('the logo glides up when the line and the bar arrive under it, instead of jumping', () => {
+  assert.match(app, /function glideWait\(\)/)
+  assert.match(app, /\n    glideWait\(\)\n/)
+  // Moves from where it was (FLIP), picks up a glide already running, and steps aside for the mark's exit.
+  assert.match(app, /const from = was \+ at - now/)
+  assert.match(app, /if \(layer\.classList\.contains\('gone'\)\) \{ for \(const el of kids\(\)\) glides\(el\)\.forEach\(\(a\) => a\.cancel\(\)\)/)
+})
