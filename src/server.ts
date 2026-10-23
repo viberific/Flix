@@ -23,7 +23,7 @@ import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
-import { artPathSql, getArt, getCastPhoto, getStill } from './art.ts'
+import { artPathSql, getArt, getCastPhoto, getPosterThumb, getStill, POSTER_WIDTHS } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching, currentEpisode } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
@@ -407,7 +407,9 @@ app.get('/api/art/:id/:kind', auth, async (req, reply) => {
   const { id, kind } = req.params as any
   if (!canViewSeries(req.user, Number(id))) return reply.code(404).send({ error: 'no artwork' })
   if (kind !== 'poster' && kind !== 'banner' && kind !== 'trailer') return reply.code(404).send({ error: 'unknown artwork' })
-  const art = await getArt(Number(id), kind)
+  // ?w= asks for a poster cut down to one of the known widths (a television's tiles); anything else gets the original.
+  const w = Number((req.query as any)?.w)
+  const art = kind === 'poster' && (POSTER_WIDTHS as readonly number[]).includes(w) ? await getPosterThumb(Number(id), w) : await getArt(Number(id), kind)
   if (!art) return reply.code(404).send({ error: 'no artwork' })
   return reply.type(art.type).header('cache-control', 'private, max-age=86400').header('x-content-type-options', 'nosniff').send(createReadStream(art.path))
 })

@@ -92,8 +92,11 @@ const I = {
   logo: '<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="fxl-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a4c"/><stop offset=".5" stop-color="#ff3d6e"/><stop offset="1" stop-color="#b8155a"/></linearGradient><radialGradient id="fxl-hl" cx=".25" cy="0" r="1"><stop offset="0" stop-color="#fff" stop-opacity=".32"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" rx="118" fill="url(#fxl-bg)"/><rect width="512" height="512" rx="118" fill="url(#fxl-hl)"/><g fill="#fff"><rect x="140" y="116" width="76" height="280" rx="38"/><rect x="140" y="116" width="232" height="76" rx="38"/><path transform="translate(242 287) scale(.906) translate(-242 -287)" d="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z"/></g></svg>',
 }
 
+/** On a television a poster tile is asked for at 342px (src/art.ts getPosterThumb): a hundred full-size posters were
+    hundreds of megabytes of decoded pictures on a set with little memory to spare, and that is what made its menus drag. */
+const tvPoster = (url) => isTv && /^\/api\/art\/\d+\/poster$/.test(url) ? url + '?w=342' : url
 /** A poster-shaped block: generated colour + title underneath, real artwork fades in over it once loaded. */
-const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" decoding="async" src="${esc(url)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
+const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" decoding="async" src="${esc(tvPoster(url))}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
 
 /** Set a hero backdrop: banner if it exists, then the trailer's still frame, otherwise a blurred poster. */
 function backdrop(el, banner, poster, still) {
