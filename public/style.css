@@ -252,7 +252,9 @@ img.fade.in { opacity: 1; }
 .p-wait.gone #msg, .p-wait.gone #pnow, .p-wait.gone #cnc { visibility: hidden; }
 /* A TV WebView may not finish the visibility transition; once playback advances, JS settles the layer immediately. */
 .p-wait.gone { visibility: hidden; transition: opacity .9s ease, visibility 0s linear 1.25s; }
-.p-wait.settled { visibility: hidden; transition: none; }
+/* Settled is out of the page altogether, not just invisible: a hidden layer keeps its looping aura, sheen and tracer running,
+   and a TV or phone WebView can keep compositing those layers over the picture after the parent is hidden. */
+.p-wait.settled { visibility: hidden; transition: none; display: none; }
 /* What a wait looks like on the picture: a bar, a plain line and how long it is. The how-fast and how-many numbers are real
    and worth keeping, so they live behind Details -- on screen they read like a torrent client, which is not what this is. */
 .p-now { display: grid; justify-items: center; gap: 10px; width: min(380px, 76vw); }
