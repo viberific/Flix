@@ -658,7 +658,10 @@ html.tv * { cursor: none; }
 .thumbs { display: inline-flex; gap: 8px; }
 .icon-thumb { padding: 0; width: 46px; height: 46px; display: inline-grid; place-items: center; border-radius: 50%; }
 .icon-thumb svg { width: 21px; height: 21px; }
-.icon-thumb[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: transparent; }
+/* Chosen: the thumb itself fills in white. (The TV rule `html.tv .btn` also sets a background, so the chosen state has to outrank it
+   or the thumb ends up dark on dark.) */
+.icon-thumb[aria-pressed="true"], html.tv .icon-thumb[aria-pressed="true"] { background: color-mix(in srgb, var(--fg) 14%, var(--surface-2)); color: #fff; border-color: #fff; }
+.icon-thumb[aria-pressed="true"] svg { fill: #fff; stroke: #fff; }
 
 /* ---------- the Flix intro: a soft aura glows up, the tile rises out of a blur, the mark settles in with the chime, gentle rings of light
    ripple outward and a sheen glides across; then it floats on its glow until playback starts and it dissolves forward ---------- */
@@ -733,6 +736,7 @@ html.tv * { cursor: none; }
 .dlb.armed .dl-ring circle.on { stroke: #ff8a80; }
 .dlb.err { color: #ff8a80; } .dlb .dlt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hdl.done { color: var(--ok); }
+.hdl-all svg { width: 18px; height: 18px; } .hdl-all.done { color: var(--ok); } .hdl-all[disabled] { opacity: .7; cursor: default; }
 svg.inl { width: 1.1em; height: 1.1em; vertical-align: -.2em; }
 @media (max-width: 640px) {
   /* Netflix on a phone: Play, then Download under it, each the full width; My List and the thumbs share the row below. */
