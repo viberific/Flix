@@ -1788,7 +1788,10 @@ function playView(seriesId, season, label) {
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
         // always, which also undoes a level an older version saved on this device (a muted episode reads as broken).
         v.volume = 1; v.muted = false
-        v.addEventListener('playing', () => {
+        // The first frame. Some TV WebViews never fire 'playing' for an episode that is plainly under way (sound and all),
+        // which left the logo and "Ready — opening it now" over the show for good -- so the clock moving counts too.
+        const firstFrame = () => {
+          if (started) return
           started = true
           startedAt = Date.now()
           clearTimeout(stuckT)
@@ -1796,7 +1799,8 @@ function playView(seriesId, season, label) {
           const left = INTRO_MS - (Date.now() - introAt)
           const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
-        }, { once: true })
+        }
+        v.addEventListener('playing', firstFrame, { once: true })
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
         // retry above was only ever allowed once, for the life of the element.
         v.addEventListener('playing', () => { fileRetry = false })
@@ -1823,10 +1827,15 @@ function playView(seriesId, season, label) {
         // paused, but a play event that finds no pause in between (a resume after a stall, a source swap) would
         // otherwise leave the artwork sitting over a show that is playing again.
         v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
+        let lastT = -1
         v.ontimeupdate = () => {
+          // Playing for real: not paused, a picture to show, and the clock has moved on since the last tick.
+          const moving = !v.paused && v.readyState >= 2 && lastT >= 0 && v.currentTime > lastT
+          lastT = v.currentTime
+          if (moving && !castingOnly) firstFrame()
           // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
           // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
-          if (started && !holding && !castingOnly && !v.paused && v.currentTime > 0.5) revealWait(true)
+          if (started && !holding && !castingOnly && !v.paused && (moving || v.currentTime > 0.5)) revealWait(true)
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.

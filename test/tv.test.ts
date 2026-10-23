@@ -55,7 +55,11 @@ test('the adaptive launcher icon is scaled to a launcher\'s crop, not the web ti
 test('TV playback settles the wait layer only after the picture advances', () => {
   assert.match(css, /\.p-wait\.settled\s*\{\s*visibility:\s*hidden;\s*transition:\s*none;/)
   assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled\) layer\.classList\.add\('settled'\)/)
-  assert.match(app, /if \(started && !holding && !castingOnly && !v\.paused && v\.currentTime > 0\.5\) revealWait\(true\)/)
+  assert.match(app, /if \(started && !holding && !castingOnly && !v\.paused && \(moving \|\| v\.currentTime > 0\.5\)\) revealWait\(true\)/)
+  // A WebView that never fires 'playing' still gets the show: the clock moving starts it.
+  assert.match(app, /v\.addEventListener\('playing', firstFrame, \{ once: true \}\)/)
+  assert.match(app, /if \(moving && !castingOnly\) firstFrame\(\)/)
+  assert.match(app, /const firstFrame = \(\) => \{\s*if \(started\) return/)
   assert.match(app, /function restoreWait\(\)\s*\{[\s\S]*?remove\('gone', 'settled'\)/)
   assert.doesNotMatch(app, /waitHideT/)
   assert.match(app, /const reveal = \(\) => \{ holding = false; if \(castingOnly\) return; revealWait\(\);/)
