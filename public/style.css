@@ -235,7 +235,16 @@ img.fade.in { opacity: 1; }
    while an episode was being found -- and a poster Flix had to invent is a flat card, which is what read as a grey play
    button behind the logo. The black belongs to this layer, so it fades out with the mark and the picture is revealed
    underneath in the same moment, rather than the black vanishing first. */
-.p-wait { position: absolute; inset: 0; z-index: 4; background: #000; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
+.p-wait { position: absolute; inset: 0; z-index: 4; background: #000; display: grid; grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); justify-items: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
+/* The mark owns the middle row and the status line, bar and Cancel button hang from the row under it, so what arrives
+   there can never move the logo: nothing is re-centred, there is nothing to animate, and no script has to chase layout.
+   The newcomers only fade in. A short screen (a phone on its side) lifts the mark a little to leave them more room. */
+.p-wait > .mark { grid-row: 2; }
+.p-under { grid-row: 3; align-self: start; width: 100%; padding-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 22px; }
+.p-under > #msg:not(:empty), .p-under > .p-now:not([hidden]), .p-under > #cnc:not([hidden]) { animation: waitIn .5s var(--ease-out) .12s backwards; }
+@keyframes waitIn { from { opacity: 0; transform: translateY(10px); } }
+@media (prefers-reduced-motion: reduce) { .p-under > * { animation: none !important; } }
+@media (max-height: 520px) { .p-wait { grid-template-rows: minmax(0, .3fr) auto minmax(0, 1fr); padding: 12px 24px; } .p-under { padding-top: 6px; gap: 12px; overflow-y: auto; } }
 /* On reveal the black lifts at once and the mark plays its exit over the first frames: a bloom (it swells and
    brightens, the aura flaring with it) then a dissolve into blur, gone in about a second -- not a plain fade of the
    whole overlay, which took the logo and the picture down together. */
@@ -556,8 +565,12 @@ html.tv :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; 
 /* The ring is drawn by the poster, which has the rounded corners, so it hugs the picture instead of a square box around the
    tile; the poster swells a little, and the title brightens. Transform and shadow only, so it stays smooth on a TV's GPU. */
 html.tv .tile { outline: none !important; }
-html.tv .poster { transition: transform .22s var(--ease), box-shadow .22s var(--ease); will-change: transform; }
-html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: scale(1.07); box-shadow: 0 0 0 3px var(--fg), 0 18px 38px rgba(0,0,0,.6); }
+/* Only the transform is animated, and only the highlighted poster is promoted to its own layer: a blurred shadow repainted
+   on every frame, or a layer for each of two hundred posters, is what a TV's GPU cannot spare. The ring arrives with the lift. */
+html.tv .poster { transition: transform .2s var(--ease); }
+html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: scale(1.07); will-change: transform; box-shadow: 0 0 0 3px var(--fg), 0 18px 38px rgba(0,0,0,.6); }
+/* Scrolling is eased by script on a television (easeScroll, public/app.js): the native smooth scroll would fight it. */
+html.tv, html.tv .row-scroll { scroll-behavior: auto; }
 html.tv .tile:focus .tt { color: var(--fg); }
 html.tv .tile .tt { color: var(--dim); }
 /* A remote moves the highlight by calling focus() from script, and :focus-visible never matches that, so the ring has to
