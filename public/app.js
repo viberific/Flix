@@ -502,7 +502,7 @@ function authView(needsSetup) {
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div></a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div>${s.leechers ? `<div class="ts">${s.leechers} leeching</div>` : ''}</a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
@@ -543,6 +543,9 @@ function queueOf(cont, home) {
   else if (home.because?.series?.length) { pool = home.because.series; title = `Because you ${home.because.liked ? 'liked' : 'watched'} ${home.because.name}`; used = 'because' }
   else if (home.sections?.[0]?.series?.length) { pool = home.sections[0].series; title = home.sections[0].title; used = 'section' }
   const have = new Set([...list.map((s) => s.id), ...ready.map((s) => s.id), ...cont.map((c) => c.seriesId)])
+  // What the most peers are downloading comes first (the server holds these shows back from every other row): seeding them is
+  // how the ratio grows. With no peer counts yet the usual picks stand in.
+  if (home.grab?.length) { pool = home.grab; title = 'Most wanted right now'; used = null }
   pool = pool.filter((s) => !have.has(s.id))
   return { resume: cont, ready: [...ready], list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
 }
@@ -1197,11 +1200,25 @@ function playView(seriesId, season, label) {
       layer.classList.add('gone')
       if (settled) layer.classList.add('settled')
       pl.classList.add('live') // the logo leaves the top bar with the wait screen
+      // The fade-out hands the layer over to `visibility: hidden` by a delayed transition, and a TV's WebView sometimes never
+      // finishes one -- the mark and the black were left up over the picture. So the layer is settled by the clock as well.
+      setTimeout(() => { if (alive && layer.classList.contains('gone')) layer.classList.add('settled') }, 1300)
     }
     function restoreWait() {
       $('#wait').classList.remove('gone', 'settled')
       pl.classList.remove('live')
     }
+    // The last line of defence for the logo: whatever path put the wait screen back up (a stall, a swapped source, a missed
+    // `playing` event), a picture that is plainly moving takes it down. Cheap -- one read of the clock a second.
+    let seenT = -1
+    const liveWatch = setInterval(() => {
+      if (!alive || !pl.isConnected) { clearInterval(liveWatch); return }
+      const layer = $('#wait')
+      if (!layer || !v || castingOnly || holding || layer.classList.contains('settled')) { seenT = -1; return }
+      const t = v.currentTime, moving = !v.paused && !v.ended && v.readyState >= 3 && seenT >= 0 && t > seenT + 0.2
+      seenT = t
+      if (moving && !$('#again')) revealWait(true)
+    }, 1000)
     const avoid = []
     // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but

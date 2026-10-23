@@ -150,3 +150,19 @@ test('a television has no downloads: no page, no buttons, nothing kept in its st
   assert.match(app, /if \(!e\.gate && canDownload && \(await dl\.list\(\)\)\.length\)/)
   assert.match(read('public/downloads.js'), /export async function clear\(\)/)
 })
+
+test('the logo cannot stay up over a playing show: the layer is settled by the clock and a watchdog takes it down', () => {
+  assert.match(app, /setTimeout\(\(\) => \{ if \(alive && layer\.classList\.contains\('gone'\)\) layer\.classList\.add\('settled'\) \}, 1300\)/)
+  assert.match(app, /const liveWatch = setInterval\(/)
+  assert.match(app, /if \(moving && !\$\('#again'\)\) revealWait\(true\)/)
+})
+
+test('the Queue leads with the shows the most peers are downloading, and holds them back from the other rows', () => {
+  const server = read('src/server.ts'), catalog = read('src/catalog.ts')
+  assert.match(catalog, /leechers=excluded\.leechers/)
+  assert.match(catalog, /int\(x\.Leechers\)\)/)
+  assert.match(server, /MAX\(leechers\) AS n FROM releases WHERE leechers > 0 AND COALESCE\(seeders, 0\) > 0 AND fetched_at > \?/)
+  assert.match(server, /\.sort\(\(a, b\) => peers\.get\(b\.id\)! - peers\.get\(a\.id\)! \|\| b\.latest - a\.latest\)/)
+  assert.match(server, /grab\.forEach\(\(r\) => taken\.add\(r\.id\)\)/)
+  assert.match(app, /if \(home\.grab\?\.length\) \{ pool = home\.grab; title = 'Most wanted right now'; used = null \}/)
+})

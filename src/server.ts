@@ -261,6 +261,8 @@ app.get('/api/still/:id/:s/:e', auth, async (req, reply) => {
 })
 
 const NEW_DAYS = 7
+/** How many most-wanted shows the home screen's Queue is offered (it draws eight and keeps the rest to refill from). */
+const GRAB_SIZE = 16
 const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[]') as any[]).map((x) => String(x).trim()).filter(Boolean) } catch { return [] } }
 
 /**
@@ -293,6 +295,24 @@ app.get('/api/home', auth, async (req) => {
   const myList = listed.filter((l) => !resume.has(l.series_id) && !isReady.has(l.series_id)).map((l) => { const r = all.find((x) => x.id === l.series_id); return r && { ...clean(r), hasNew: l.seen_at !== null && r.latest > l.seen_at } }).filter(Boolean) as any[]
   const taken = new Set<number>([...resume, ...myList.map((r) => r.id), ...ready.map((r) => r.id)])
 
+  // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
+  const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
+  // A show watched all the way through is not recommended again (it stays in My List and search, and shows what is new in it there).
+  const finished = new Set<number>()
+  for (const r of db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NOT NULL').all(uid) as { id: number }[]) {
+    const eps = buildEpisodes(r.id, uid)
+    if (eps.length && eps.every((e) => e.watched)) finished.add(r.id)
+  }
+  // The Queue's suggestions lead with what the most peers are downloading right now: seeding it is how the ratio is earned,
+  // and a torrent with a crowd on it is the one that uploads. Only a show somebody could actually start (a seeder, or one the
+  // viewer has not begun or finished) qualifies, and BTN's count is ignored once it is a week old. These shows are held
+  // back from every other row so none is drawn twice.
+  const peers = new Map((db.prepare(`SELECT series_id AS id, MAX(leechers) AS n FROM releases WHERE leechers > 0 AND COALESCE(seeders, 0) > 0 AND fetched_at > ? GROUP BY series_id`).all(now() - 7 * 86400) as { id: number; n: number }[]).map((r) => [r.id, r.n]))
+  // (Only for a viewer who has a Queue to put them in; see queueOf in app.js.)
+  const hasQueue = resume.size > 0 || myList.length > 0 || ready.length > 0
+  const grab = !hasQueue ? [] : all.filter((r) => peers.has(r.id) && !taken.has(r.id) && !started.has(r.id) && !finished.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer))
+    .sort((a, b) => peers.get(b.id)! - peers.get(a.id)! || b.latest - a.latest).slice(0, GRAB_SIZE).map((r) => ({ ...clean(r), leechers: peers.get(r.id)! }))
+  grab.forEach((r) => taken.add(r.id))
   // "Because you watched X": other shows sharing X's genres that this person has not started.
   let because: { name: string; liked: boolean; series: any[] } | null = null
   const last = db.prepare('SELECT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? ORDER BY i.updated_at DESC LIMIT 1').get(uid) as any
@@ -306,14 +326,6 @@ app.get('/api/home', auth, async (req) => {
       .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, ROW_SIZE).map((x) => clean(x.r))
     if (rec.length === ROW_SIZE) { because = { name: base.name, liked: likedBase, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
-  // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
-  const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
-  // A show watched all the way through is not recommended again (it stays in My List and search, and shows what is new in it there).
-  const finished = new Set<number>()
-  for (const r of db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NOT NULL').all(uid) as { id: number }[]) {
-    const eps = buildEpisodes(r.id, uid)
-    if (eps.length && eps.every((e) => e.watched)) finished.add(r.id)
-  }
   // "Picked for you": the freshest shows that suit their taste, when they have given any thumbs or finished enough to tell.
   let picked: any[] | null = null
   if (taste.genres.size) {
@@ -323,7 +335,7 @@ app.get('/api/home', auth, async (req) => {
   }
   const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
   const listIds = listed.map((l) => l.series_id)
-  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, ready, because, picked }
+  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, ready, because, picked, grab }
 })
 
 /** Thumbs up (1), thumbs down (-1) or clear (0) for a show. Feeds the home screen's picks. */
