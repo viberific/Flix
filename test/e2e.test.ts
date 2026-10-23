@@ -243,6 +243,11 @@ test('artwork: cached on the server, served locally, BTN image URL never reaches
   assert.ok(Buffer.from(await a.arrayBuffer()).equals(PNG))
   assert.equal(b.status, 200); await b.arrayBuffer()
   assert.equal(posterFetches, 1, 'second view must come from the cache')
+  // A television's tile size: a poster already narrower than that is sent as it is, and an unknown width is ignored.
+  const small = await api('/api/art/77/poster?w=342')
+  assert.equal(small.status, 200); assert.ok(Buffer.from(await small.arrayBuffer()).equals(PNG))
+  const odd = await api('/api/art/77/poster?w=7')
+  assert.equal(odd.status, 200); assert.ok(Buffer.from(await odd.arrayBuffer()).equals(PNG))
   // BTN has no banner, so the backup source (TMDB's backdrop) fills in; kinds nobody can supply are a plain 404.
   const bn = await api('/api/art/77/banner')
   assert.equal(bn.status, 200); assert.ok(Buffer.from(await bn.arrayBuffer()).equals(BACKDROP))

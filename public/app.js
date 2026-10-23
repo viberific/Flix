@@ -92,8 +92,11 @@ const I = {
   logo: '<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="fxl-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a4c"/><stop offset=".5" stop-color="#ff3d6e"/><stop offset="1" stop-color="#b8155a"/></linearGradient><radialGradient id="fxl-hl" cx=".25" cy="0" r="1"><stop offset="0" stop-color="#fff" stop-opacity=".32"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" rx="118" fill="url(#fxl-bg)"/><rect width="512" height="512" rx="118" fill="url(#fxl-hl)"/><g fill="#fff"><rect x="140" y="116" width="76" height="280" rx="38"/><rect x="140" y="116" width="232" height="76" rx="38"/><path transform="translate(242 287) scale(.906) translate(-242 -287)" d="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z"/></g></svg>',
 }
 
+/** On a television a poster tile is asked for at 342px (src/art.ts getPosterThumb): a hundred full-size posters were
+    hundreds of megabytes of decoded pictures on a set with little memory to spare, and that is what made its menus drag. */
+const tvPoster = (url) => isTv && /^\/api\/art\/\d+\/poster$/.test(url) ? url + '?w=342' : url
 /** A poster-shaped block: generated colour + title underneath, real artwork fades in over it once loaded. */
-const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" src="${esc(url)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
+const art = (url, name) => `<div class="poster ph" style="--h:${hue(name)}"><span class="ph-t">${esc(name)}</span>${url ? `<img class="fade" loading="lazy" decoding="async" src="${esc(tvPoster(url))}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</div>`
 
 /** Set a hero backdrop: banner if it exists, then the trailer's still frame, otherwise a blurred poster. */
 function backdrop(el, banner, poster, still) {
@@ -106,7 +109,8 @@ async function swap(fn) {
   window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
   let ran = false
   const once = () => { if (!ran) { ran = true; fn() } }
-  if (!rmq.matches && document.startViewTransition) {
+  // Not on a television: the cross-fade snapshots the whole screen twice, and on a TV's chip that is a stutter on every page.
+  if (!rmq.matches && !isTv && document.startViewTransition) {
     // A view transition can stall (the new page is built but never painted until something else happens), so never wait on one for long.
     const guard = setTimeout(once, 400)
     try { await document.startViewTransition(once).updateCallbackDone } catch { /* fall through */ }
@@ -762,7 +766,7 @@ async function homeView(q, local = false) {
  * Profile page. Returns the function that tears it down, or null when it must not run.
  */
 function heroTrailer(hero, seriesId) {
-  if (!hero || rmq.matches || !bigScreen() || !store.get('previews', true) || !navigator.onLine) return null
+  if (!hero || rmq.matches || !bigScreen() || !store.get('previews', !isTv) || !navigator.onLine) return null
   let dead = false, player = null, box = null, io = null, visible = true, timer = setTimeout(start, 5000)
   const fade = (on) => box?.classList.toggle('on', on)
   async function start() {
@@ -2771,7 +2775,7 @@ function profileView() {
       <div class="avgrid">${AVATARS.map((id) => `<button class="avpick" data-av="${id}" aria-pressed="${me.avatar === id}" aria-label="${id}">${avSvg(id)}</button>`).join('')}</div>
       <p class="dim" id="avmsg" style="margin:8px 0 0;font-size:14px">Tap one to use it beside your name.</p>
       <h2 class="sec">Home screen</h2>
-      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', true) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard, on this device. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
+      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', !isTv) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard, on this device. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
       <h2 class="sec">Name</h2>
       <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
       <h2 class="sec">Password</h2>
@@ -3013,11 +3017,12 @@ function revealStop(el) {
   }
   // Then the page: only when the row is near an edge, and then by enough to put it a little above the middle, with room
   // for its title below -- rather than the least that shows the poster, which left the row jammed against the bottom
-  // with its name cut off. A short eased glide; the highlight itself has already moved, so it never lags the remote.
+  // with its name cut off. A short eased glide on a computer; on a television a jump, because a smooth scroll of a page
+  // of posters is what a TV's chip cannot keep up with, and a press during the glide queued up behind it.
   const edge = isTv ? Math.max(180, innerHeight * 0.2) : Math.min(140, innerHeight * 0.16)
   if (r.top < edge || r.bottom > innerHeight - edge - 40) {
     const want = r.top + r.height / 2 - innerHeight * 0.42
-    scrollBy({ top: want, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+    scrollBy({ top: want, behavior: isTv || matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
   }
 }
 // The column the highlight was last moved along, kept across Up and Down so a trip over a short row and back lands where

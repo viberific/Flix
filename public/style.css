@@ -881,3 +881,58 @@ html.tv .skel { animation-duration: 1.8s; }
    moment the logo lifts: the video has an empty poster of its own, and its native start button is hidden outright. */
 video { background: #000; }
 video::-webkit-media-controls-start-playback-button, video::-webkit-media-controls-overlay-play-button { display: none !important; -webkit-appearance: none; }
+
+/* ---------- a television's GPU budget ----------
+   A TV's WebView runs on a chip a fraction of a phone's, drawing a 1080p (or larger) surface, and it is the one device where
+   the pretty-but-expensive effects above made the app crawl. Each rule here swaps an effect for one that costs nothing per
+   frame and looks nearly the same from a sofa:
+   - backdrop-filter re-blurs whatever is behind it on every frame anything under it moves -- the fixed header over a
+     scrolling page, the player's buttons and the Up next card over a playing video. A near-opaque fill instead.
+   - filter: blur() on a big layer (blurred-poster backdrops, the idle slideshow, the sign-in glow, the intro's aura) is
+     recomputed every time the layer is redrawn. Dimmed or radial-gradient stand-ins, which are soft by nature.
+   - will-change on every poster kept hundreds of compositor layers alive at once, and the focus shadow was a 38px blur
+     animated frame by frame. The poster now only scales, and the ring is a hard edge.
+   - Entrance cascades, the shimmer and the 8 s backdrop drift kept the compositor busy right when a remote press needs it. */
+html.tv, html.tv .row-scroll { scroll-behavior: auto; }
+html.tv * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+html.tv header#top { transition: background .2s; }
+html.tv header#top.solid { background: var(--bg); }
+html.tv .btn { background: var(--surface); }
+html.tv .btn.primary { background: linear-gradient(100deg, var(--accent), var(--accent-2)); box-shadow: none; }
+html.tv .icon-btn { background: rgba(0,0,0,.7); }
+html.tv .p-btn.big { background: rgba(255,255,255,.2); }
+html.tv .p-next { background: rgba(18,20,27,.96); }
+html.tv .pin-modal { background: rgba(0,0,0,.85); }
+html.tv .auth { background: var(--surface); }
+html.tv .wide-play, html.tv .qact, html.tv .wide-pill, html.tv .ep .thumb .play { background-color: rgba(10,12,16,.8); }
+
+html.tv .poster { box-shadow: none; transition: transform .18s var(--ease); will-change: auto; }
+html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { box-shadow: 0 0 0 3px var(--fg); }
+html.tv .qcard .poster { transition: transform .18s var(--ease), opacity .2s; }
+html.tv .qcard.sugg .poster { filter: none; }
+html.tv .ep:focus:not(:disabled) { box-shadow: 0 0 0 3px var(--fg); }
+html.tv .who-tile:focus .who-av { box-shadow: 0 0 0 4px var(--fg); }
+html.tv .btn.primary:focus { box-shadow: 0 0 0 3px var(--fg); }
+html.tv img.fade { transition: opacity .3s; }
+
+html.tv .bd { transform: none; transition: opacity .4s; filter: none; }
+html.tv .bd.blur { filter: none; transform: none; }
+html.tv .bd.blur.in { opacity: .3; }
+html.tv .arts-bg { filter: none; transform: none; opacity: .25; }
+html.tv .arts-p.contain { box-shadow: none; }
+html.tv .auth-wrap::before, html.tv .auth-wrap::after { filter: none; animation: none; opacity: .3; background: radial-gradient(closest-side, var(--c, var(--accent)), transparent); }
+html.tv .auth-wrap::after { --c: var(--accent-2); }
+
+html.tv .rise, html.tv .reveal .tile.rise, html.tv .reveal.in .tile.rise, html.tv h2.sec.rv { animation: none; opacity: 1; transform: none; transition: none; }
+html.tv .skel { animation: none; }
+html.tv .skeleton { animation: none; }
+html.tv .prog b, html.tv .ep .bar b { animation: none; }
+
+/* The intro plays while the episode is starting, so it shares the chip with the video decoder: a gradient that is soft on
+   its own instead of a spinning 46px blur, and no blur in or out. */
+html.tv .mark .aura { filter: none; animation: auraIn 1.8s ease-out forwards; background: radial-gradient(closest-side, color-mix(in srgb, var(--accent-2) 75%, transparent), color-mix(in srgb, #7a2cff 35%, transparent) 55%, transparent); }
+html.tv .mark .ripple { box-shadow: none; }
+html.tv .mark svg { box-shadow: none; animation-name: markInTv; }
+html.tv .p-wait.gone .mark { animation-name: markOutTv; }
+@keyframes markInTv { 0% { opacity: 0; transform: translateY(18px) scale(.8); } 100% { opacity: 1; transform: none; } }
+@keyframes markOutTv { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: scale(1.16); } }

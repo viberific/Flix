@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
@@ -267,3 +268,36 @@ export async function getArt(seriesId: number, kind: Exclude<ArtKind, 'still'>) 
 /** SQL fragment: local artwork path instead of BTN's URL (which never reaches the browser). Always present: the server finds a backup, and the page copes with a 404. */
 export const artPathSql = (_col: 'series_poster' | 'series_banner', alias: string, kind: 'poster' | 'banner') =>
   `'/api/art/' || series_id || '/${kind}' AS ${alias}`
+
+/** Widths a poster may be asked for in, so the cache holds a few known sizes rather than one per request. */
+export const POSTER_WIDTHS = [342] as const
+const shrinking = new Map<string, Promise<string | null>>()
+const unshrinkable = new Set<string>() // ffmpeg could not read it: the original is served, without trying again
+
+/**
+ * A show's poster no wider than `w` pixels, as a JPEG cut once with ffmpeg and kept beside the original. A television's
+ * home screen holds a hundred posters, and decoding each at its full 780px (or a TVmaze original, often larger) is
+ * hundreds of megabytes of picture memory on a set that has little to spare, for tiles a third of that size on screen.
+ * Falls back to the original when it is already small enough or ffmpeg cannot read it.
+ */
+export async function getPosterThumb(seriesId: number, w: number) {
+  const art = await getArt(seriesId, 'poster')
+  if (!art) return null
+  const size = await sizeOf(art.path)
+  if (size && size.w <= w) return art
+  const out = art.path.replace(/\.[a-z]+$/, `.w${w}.jpg`)
+  if (existsSync(out)) return { path: out, type: 'image/jpeg' }
+  if (unshrinkable.has(out)) return art
+  let p = shrinking.get(out)
+  if (!p) {
+    p = limited(() => new Promise<string | null>((done) => {
+      const proc = spawn('ffmpeg', ['-v', 'error', '-i', art.path, '-frames:v', '1', '-vf', `scale=${w}:-2`, '-q:v', '4', '-f', 'mjpeg', '-y', out + '.tmp'], { stdio: 'ignore' })
+      proc.on('error', () => done(null))
+      proc.on('close', (code) => { if (code === 0) rename(out + '.tmp', out).then(() => done(out), () => done(null)); else done(null) })
+    })).finally(() => shrinking.delete(out))
+    shrinking.set(out, p)
+  }
+  const got = await p
+  if (!got) unshrinkable.add(out)
+  return got ? { path: got, type: 'image/jpeg' } : art
+}
