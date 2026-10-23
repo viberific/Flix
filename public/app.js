@@ -1147,6 +1147,14 @@ function playView(seriesId, season, label) {
     let ignoreError = false
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
     let castingOnly = false
+    function revealWait(settled = false) {
+      const layer = $('#wait')
+      layer.classList.add('gone')
+      if (settled) layer.classList.add('settled')
+    }
+    function restoreWait() {
+      $('#wait').classList.remove('gone', 'settled')
+    }
     const avoid = []
     // A television playing with nobody touching it: after the idle moment the picture gives way to the top shows'
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
@@ -1638,7 +1646,7 @@ function playView(seriesId, season, label) {
       if (!alive) return
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
-      $('.mark')?.remove(); $('#wait').classList.remove('gone')
+      $('.mark')?.remove(); restoreWait()
       const said = friendly(msg, haveFrac >= 1)
       $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
         <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><button class="btn" id="fback">Back</button></div>`
@@ -1663,7 +1671,7 @@ function playView(seriesId, season, label) {
       // viewer to the next episode while the episode they are watching is still being fetched.
       clearInterval(cdT); upNextBox = null
       $('.p-next')?.remove()
-      $('#wait').classList.remove('gone'); $('#msg').textContent = 'Finding a faster source…'
+      restoreWait(); $('#msg').textContent = 'Finding a faster source…'
       t0 = Date.now(); begin()
     }
     $('#rep').onclick = () => {
@@ -1782,7 +1790,7 @@ function playView(seriesId, season, label) {
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; $('#wait').classList.add('gone'); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }, { once: true })
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
@@ -1814,7 +1822,7 @@ function playView(seriesId, season, label) {
         v.ontimeupdate = () => {
           // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
           // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
-          if (started && !holding && !castingOnly && !v.paused && v.currentTime > 0.5) $('#wait')?.classList.add('gone')
+          if (started && !holding && !castingOnly && !v.paused && v.currentTime > 0.5) revealWait(true)
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.
@@ -2251,7 +2259,7 @@ function playView(seriesId, season, label) {
       holding = false
       hls?.destroy(); hls = null
       if (v) { v.onpause = null; v.pause(); v.removeAttribute('src'); v.load() }
-      $('#wait').classList.remove('gone'); $('.mark')?.remove()
+      restoreWait(); $('.mark')?.remove()
       pl.classList.remove('idle')
       try {
         const p = new cast.framework.RemotePlayer(), c = new cast.framework.RemotePlayerController(p)
@@ -2291,7 +2299,7 @@ function playView(seriesId, season, label) {
       try {
         castingOnly = true // from here the phone shows the hand-over, never the episode
         clearInterval(timer) // no local progress polling, the TV reports its own
-        $('#wait').classList.remove('gone'); $('.mark')?.remove()
+        restoreWait(); $('.mark')?.remove()
         // The Flix mark, then the show starts on the TV.
         $('#msg').innerHTML = `<div class="cast-splash"><span class="cs-mark"></span><span class="cs-where">Casting to ${esc(casting.device)}</span></div>`
         await castHere(at)

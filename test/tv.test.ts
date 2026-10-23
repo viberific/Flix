@@ -6,7 +6,8 @@
 // These assertions hold the fixed shape of all three, since none of it can be seen without the hardware.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { chromium } from 'playwright-core'
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 const index = read('public/index.html')
@@ -49,4 +50,40 @@ test('the adaptive launcher icon is scaled to a launcher\'s crop, not the web ti
   const corner = Math.hypot(116, 140) * scale            // furthest point from the mark's centre
   const safe = (VISIBLE / 2 - 3) * (VIEW / CANVAS)       // Android's 66dp safe circle
   assert.ok(corner < safe, `corner ${Math.round(corner)} stays inside the ${Math.round(safe)} safe circle`)
+})
+
+test('TV playback settles the wait layer only after the picture advances', () => {
+  assert.match(css, /\.p-wait\.settled\s*\{\s*visibility:\s*hidden;\s*transition:\s*none;/)
+  assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled\) layer\.classList\.add\('settled'\)/)
+  assert.match(app, /if \(started && !holding && !castingOnly && !v\.paused && v\.currentTime > 0\.5\) revealWait\(true\)/)
+  assert.match(app, /function restoreWait\(\)\s*\{[\s\S]*?remove\('gone', 'settled'\)/)
+  assert.doesNotMatch(app, /waitHideT/)
+  assert.match(app, /const reveal = \(\) => \{ holding = false; if \(castingOnly\) return; revealWait\(\);/)
+})
+
+test('settling cancels the delayed visibility transition in Chromium', { skip: !existsSync(process.env.CHROMIUM_PATH ?? '/usr/bin/chromium') }, async () => {
+  const executablePath = process.env.CHROMIUM_PATH ?? '/usr/bin/chromium'
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox'] })
+  try {
+    const page = await browser.newPage()
+    await page.setContent(`<style>${css}</style><div id="wait" class="p-wait"></div>`)
+    const initial = await page.$eval('#wait', (element) => getComputedStyle(element).visibility)
+    assert.equal(initial, 'visible', 'the wait layer starts visible')
+    await page.$eval('#wait', (element) => element.classList.add('gone'))
+    await page.waitForTimeout(500)
+    const waiting = await page.$eval('#wait', (element) => {
+      const style = getComputedStyle(element)
+      return { visibility: style.visibility, transition: style.transition }
+    })
+    assert.equal(waiting.visibility, 'visible', 'the delayed visibility transition is still pending at 500ms')
+    assert.match(waiting.transition, /visibility 0s linear 1\.25s/)
+    const settled = await page.$eval('#wait', (element) => {
+      element.classList.add('settled')
+      const style = getComputedStyle(element)
+      return { visibility: style.visibility, transition: style.transition }
+    })
+    assert.deepEqual(settled, { visibility: 'hidden', transition: 'none' })
+  } finally {
+    await browser.close()
+  }
 })

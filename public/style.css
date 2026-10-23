@@ -121,7 +121,7 @@ img.fade.in { opacity: 1; }
 .grid .tile { width: auto; }
 
 .rowwrap { position: relative; }
-.row-scroll { display: flex; gap: 18px; overflow-x: auto; scroll-snap-type: x proximity; padding: 8px 4px 22px; margin: 0 -4px; scrollbar-width: none; scroll-behavior: smooth; }
+.row-scroll { display: flex; gap: 18px; overflow-x: auto; scroll-snap-type: x proximity; padding: 8px 24px 22px 4px; margin: 0 -4px; scrollbar-width: none; scroll-behavior: smooth; }
 .row-scroll::-webkit-scrollbar { display: none; }
 .arrow { position: absolute; top: 38%; z-index: 5; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 90%, transparent); backdrop-filter: blur(8px);
   display: grid; place-items: center; opacity: 0; transition: opacity .3s, transform .25s var(--ease); }
@@ -241,10 +241,9 @@ img.fade.in { opacity: 1; }
    whole overlay, which took the logo and the picture down together. */
 .p-wait.gone { background: transparent; pointer-events: none; }
 .p-wait.gone #msg, .p-wait.gone #pnow, .p-wait.gone #cnc { visibility: hidden; }
-/* And once the mark's exit has played, the whole layer is put away. The exit is an animation, and a television's WebView
-   does not always run it to its end, which left the logo sitting over a show that was already playing. Visibility after a
-   delay does not depend on that: the mark gets its second and a bit to bloom and dissolve, then nothing of it remains. */
+/* A TV WebView may not finish the visibility transition; once playback advances, JS settles the layer immediately. */
 .p-wait.gone { visibility: hidden; transition: opacity .9s ease, visibility 0s linear 1.25s; }
+.p-wait.settled { visibility: hidden; transition: none; }
 /* What a wait looks like on the picture: a bar, a plain line and how long it is. The how-fast and how-many numbers are real
    and worth keeping, so they live behind Details -- on screen they read like a torrent client, which is not what this is. */
 .p-now { display: grid; justify-items: center; gap: 10px; width: min(380px, 76vw); }
