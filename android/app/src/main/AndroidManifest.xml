@@ -6,6 +6,11 @@
     <!-- Lets the app install its own updates from the GitHub release (see Updater). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Android Auto: Flix on the car screen while parked (the car/ package). Nothing here affects the phone or TV app. -->
+    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <uses-permission android:name="com.google.android.gms.permission.CAR_SPEED" />
+
     <!-- Runs on Android TV (Leanback launcher, remote, no touchscreen) as well as phones and tablets. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -33,6 +38,15 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="2" />
+        <service android:name=".car.FlixCarService" android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.NAVIGATION" />
+            </intent-filter>
+        </service>
 
         <receiver android:name=".Updater$Result" android:exported="false" />
     </application>
