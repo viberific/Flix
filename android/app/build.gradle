@@ -47,3 +47,9 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 }
+
+dependencies {
+    // Flix on the car screen (Android Auto), see the car/ package. The phone and TV app does not use these.
+    implementation 'androidx.car.app:app:1.4.0'
+    implementation 'androidx.car.app:app-projected:1.4.0'
+}
