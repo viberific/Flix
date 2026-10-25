@@ -479,10 +479,14 @@ app.post('/api/series/:id/download-all', auth, async (req) => {
   if (!canViewSeries(req.user, id)) throw notFound()
   await Promise.race([ensurePackFiles(id), new Promise((r) => setTimeout(r, 4000))])
   const uid = req.user!.id
+  // With a "season" in the body (null for a show with no seasons) only that season is fetched; without one, every season.
+  const body = (req.body ?? {}) as { season?: number | null }
+  const only = body.season !== undefined
   const todo = new Map<number, { label: string; isPack: boolean; episode: number | null }>()
   let episodes = 0
   for (const e of buildEpisodes(id, uid)) {
     if (!e.available || e.watched) continue
+    if (only && (e.season ?? null) !== body.season) continue
     episodes++
     if (!todo.has(e.torrentId)) todo.set(e.torrentId, { label: e.label, isPack: e.isPack, episode: e.episode })
   }

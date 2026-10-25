@@ -954,6 +954,8 @@ async function seriesView(id) {
   const hero = resume ?? episodes.find((e) => !e.watched && e.available)
   const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
+  const wantedN = (list) => list.filter((e) => e.available && !e.watched).length
+  const wanted = (list) => wantedN(list) > 0
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
   const saved = new Set(canDownload ? (await dl.list()).map((m) => m.id) : [])
@@ -972,7 +974,7 @@ async function seriesView(id) {
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
-      <div class="eps-head"><h2 class="sec">Episodes</h2>${episodes.some((e) => e.available && !e.watched) ? `<button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${keys.length > 1 ? 'Download all seasons' : 'Download all episodes'}</span></button>` : ''}</div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Put every episode of the season you are looking at on the server" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${keys.length > 1 ? 'Torrent all seasons' : 'Torrent all episodes'}</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const canSave = (e) => canDownload && e?.available && !(e.isPack && e.episode === null)
     // The ring fills as the episode is saved; tapping it once arms a stop, a second tap cancels.
@@ -1050,14 +1052,26 @@ async function seriesView(id) {
     paint(); heroDl()
     const hdl = $('#hdl'); if (hdl) hdl.onclick = () => dlTap(hero)
     // Asks the server to fetch every episode that can be played (on a television too: this is the server's disk, not the device's).
-    const hall = $('#hall'); if (hall) hall.onclick = async () => {
-      const label = $('span', hall)
-      hall.disabled = true; label.textContent = 'Starting…'
+    const torrentBtn = (b, body, idle) => b.onclick = async () => {
+      const label = $('span', b)
+      b.disabled = true; label.textContent = 'Starting…'
       try {
-        const r = await api(`/api/series/${id}/download-all`, {})
-        hall.classList.add('done'); hall.innerHTML = `${I.saved} <span>${r.episodes ? `Downloading ${r.episodes} episode${r.episodes === 1 ? '' : 's'}` : 'Nothing left to download'}</span>`
-      } catch (e) { hall.disabled = false; label.textContent = keys.length > 1 ? 'Download all seasons' : 'Download all episodes'; flashNote(e.message) }
+        const r = await api(`/api/series/${id}/download-all`, body())
+        b.classList.add('done'); b.innerHTML = `${I.saved} <span>${r.episodes ? `Downloading ${r.episodes} episode${r.episodes === 1 ? '' : 's'}` : 'Nothing left to download'}</span>`
+      } catch (e) { b.disabled = false; label.textContent = idle(); flashNote(e.message) }
     }
+    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => keys.length > 1 ? 'Torrent all seasons' : 'Torrent all episodes')
+    // The season button follows the season pill, and only shows when that season has something left to fetch.
+    const hseason = $('#hseason')
+    const paintSeasonBtn = () => {
+      if (!hseason) return
+      // Shown only when it fetches something the other button would not: this season has something left, and so does another one.
+      hseason.hidden = !wanted(seasons.get(cur) ?? []) || wantedN(seasons.get(cur) ?? []) === wantedN(episodes)
+      hseason.disabled = false; hseason.classList.remove('done')
+      hseason.innerHTML = `${I.dl} <span>Torrent this ${cur === 'x' ? 'full list' : 'season'}</span>`
+    }
+    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => `Torrent this ${cur === 'x' ? 'full list' : 'season'}`)
+    paintSeasonBtn()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
     addEventListener('flix-dl', onDl)
@@ -1065,7 +1079,7 @@ async function seriesView(id) {
     app.querySelectorAll('.pill').forEach((p) => p.onclick = () => {
       cur = p.dataset.k === 'x' ? 'x' : +p.dataset.k
       app.querySelectorAll('.pill').forEach((x) => x.setAttribute('aria-selected', String(x === p)))
-      paint()
+      paint(); paintSeasonBtn()
     })
     const hp = $('#hp'); if (hp) hp.onclick = () => go1(hero)
     // A remote has nothing to point at on a page that has just drawn, so Play (else My List) is already highlighted: one
