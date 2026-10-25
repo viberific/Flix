@@ -1,4 +1,5 @@
 import * as dl from '/downloads.js'
+import { isPlaying } from '/playclock.js'
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
 const rmq = matchMedia('(prefers-reduced-motion: reduce)')
@@ -1233,15 +1234,14 @@ function playView(seriesId, season, label) {
     }
     // The last line of defence for the logo: whatever path put the wait screen back up (a stall, a swapped source, a missed
     // `playing` event), a picture that is plainly moving takes it down. Cheap -- one read of the clock a second.
-    let seenT = -1
     const liveWatch = setInterval(() => {
       if (!alive || !pl.isConnected) { clearInterval(liveWatch); return }
       const layer = $('#wait')
-      if (!layer || !v || castingOnly || layer.classList.contains('settled')) { seenT = -1; return }
-      // The clock moving is the proof, whatever readyState says: a WebView playing a download at the edge of what has
-      // arrived can sit at HAVE_CURRENT_DATA (2) for the whole episode, and the old `>= 3` never let this fire there.
-      const t = v.currentTime, moving = !v.paused && !v.ended && v.readyState >= 2 && seenT >= 0 && t > seenT + 0.2
-      seenT = t
+      if (!layer || !v || castingOnly || layer.classList.contains('settled')) return
+      // The picture is running when the element says it is playing and holds data at its playhead. A clock that went
+      // FORWARD is not the test: a seek in a copied picture moves the clock backwards, and the old rule (t > seenT + 0.2)
+      // then never fired again -- the logo sat over a playing episode for good (Single Ladies, 19:12).
+      const moving = isPlaying(v)
       if (!moving || $('#again')) return
       // A show that is playing during the intro hold means the hold's pause did not take (or something played it since):
       // the picture is already under way behind the logo, so the hold is over now rather than when its timer says.
@@ -1951,7 +1951,7 @@ function playView(seriesId, season, label) {
           if (moving && !castingOnly) firstFrame()
           // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
           // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
-          if (started && !holding && !castingOnly && !v.paused && (moving || v.currentTime > 0.5)) revealWait(true)
+          if (started && !holding && !castingOnly && isPlaying(v)) revealWait(true)
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.

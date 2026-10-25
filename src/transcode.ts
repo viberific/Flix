@@ -102,6 +102,17 @@ const LANG: Record<string, string> = { eng: 'English', spa: 'Spanish', fre: 'Fre
 const langName = (code?: string) => (code ? LANG[code.toLowerCase()] ?? code : 'Unknown')
 const HDR_TRC = new Set(['smpte2084', 'arib-std-b67'])
 
+/**
+ * How long ffprobe may take, before it is asked once more with three times as long.
+ *
+ * This was one flat 120 s and it was too short for a real film: a 6.2 GB two-hour WEB-DL read through the range endpoint
+ * takes longer than two minutes to walk its chapters and packets, so the probe was killed (real report #12:
+ * "ffprobe failed (signal=SIGTERM killed=true)"), and a probe with no duration is what the copy plan below then built a
+ * seek out of. The budget is therefore sized from the box, not from a guess, and a kill is retried ONCE at three times
+ * the length -- an escalated second try is not a retry loop, it is the same question asked with enough time to answer.
+ */
+const probeMs = () => Number(process.env.PROBE_TIMEOUT_MS ?? 300_000)
+
 /** ffprobe the file through our own range endpoint, then decide: serve raw bytes or remux/transcode to HLS. */
 export async function probe(torrentId: number, fileIndex: number, opts: { complete?: boolean } = {}): Promise<Probe> {
   const key = `${torrentId}:${fileIndex}`
@@ -111,8 +122,16 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
   // report no height (or no audio stream) and that answer was kept for ever before, which is what made a playable 4K file
   // announce itself as needing converting.
   if (hit && (hit.complete || !opts.complete)) return hit.p
-  const { stdout } = await execFileP('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', rawUrl(torrentId, fileIndex)], { timeout: Number(process.env.PROBE_TIMEOUT_MS ?? 120_000), maxBuffer: 8 << 20 })
-    .catch((e) => { throw new Error(`ffprobe failed (code=${e.code} signal=${e.signal} killed=${e.killed}): ${String(e.stderr || e.message).replace(config.internalKey, '***').trim().slice(0, 500)}`) })
+  const raw = rawUrl(torrentId, fileIndex)
+  const ask = (ms: number) => execFileP('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', raw], { timeout: ms, maxBuffer: 8 << 20 })
+  const failed = (e: any, ms: number) => new Error(`ffprobe failed (code=${e.code} signal=${e.signal} killed=${e.killed} budgetMs=${ms}): ${String(e.stderr || e.message).replace(config.internalKey, '***').trim().slice(0, 500)}`)
+  // A probe that ran out of time is asked once more with room to finish, and only then does the play see an error.
+  const { stdout } = await ask(probeMs()).catch((e) => {
+    const ms = probeMs() * 3
+    if (!(e.killed || e.signal === 'SIGTERM')) throw failed(e, probeMs())
+    hitch('probe', 'ffprobe ran out of time, asking once more with three times the budget', { torrentId, fileIndex, firstMs: probeMs(), retryMs: ms })
+    return ask(ms).catch((again) => { throw failed(again, ms) })
+  })
   const j = JSON.parse(stdout)
   const v = j.streams?.find((s: any) => s.codec_type === 'video')
   const a = j.streams?.find((s: any) => s.codec_type === 'audio')
@@ -356,10 +375,14 @@ const kfBusy = new Map<string, Promise<number[] | null>>()
  * on disk, so it is read once per file and survives a restart. `source` is the file on disk when the caller knows it
  * (a plain read is quicker than going through the stream endpoint); otherwise the stream endpoint is used.
  */
-export function keyframes(torrentId: number, fileIndex: number, source?: string): Promise<number[] | null> {
+export function keyframes(torrentId: number, fileIndex: number, source?: string, end?: number): Promise<number[] | null> {
   const key = `${torrentId}-${fileIndex}`
   const file = join(kfRoot(), `${key}.json`)
-  try { const k = JSON.parse(readFileSync(file, 'utf8')); if (Array.isArray(k) && k.length) return Promise.resolve(k) } catch { /* not read yet */ }
+  // A list that stops well short of the end of the film is a read that was cut off (a killed ffprobe, an endpoint that gave
+  // up halfway). It is neither kept nor used: a plan built on it ends in one piece spanning the whole rest of the film (43
+  // minutes of it on the Single Ladies premiere), and the playlist's timeline then disagrees with the media it points at.
+  const cut = (k: number[]) => !!end && k[k.length - 1] < end - 6 * SEG
+  try { const k = JSON.parse(readFileSync(file, 'utf8')); if (Array.isArray(k) && k.length) { if (!cut(k)) return Promise.resolve(k); rmSync(file, { force: true }) } } catch { /* not read yet */ }
   let p = kfBusy.get(key)
   if (!p) {
     const input = source && existsSync(source) ? source : rawUrl(torrentId, fileIndex)
@@ -368,6 +391,9 @@ export function keyframes(torrentId: number, fileIndex: number, source?: string)
       .then(({ stdout }) => {
         const k = [...new Set(stdout.split('\n').filter((l) => /,K/.test(l)).map((l) => Number(l.split(',')[0])).filter(Number.isFinite))].sort((a, b) => a - b)
         if (!k.length) return null
+        // Nothing is written for a list that plainly stopped early: reading it again on the next ask is cheaper than a plan
+        // the player cannot seek in for the life of the file.
+        if (cut(k)) { hitch('hls', 'the keyframe read stopped short of the end, not keeping it', { torrentId, fileIndex, lastKf: k[k.length - 1], end, kept: k.length }); return null }
         mkdirSync(kfRoot(), { recursive: true })
         writeFileSync(file, JSON.stringify(k))
         return k
@@ -395,7 +421,36 @@ export function copyBounds(kf: number[], end: number, seg = SEG): number[] | nul
   for (const t of k) if (t - b[b.length - 1] >= seg) b.push(t)
   if (b.length > 1 && end - b[b.length - 1] < 1) b.pop() // a sliver at the very end joins the piece before it
   b.push(end)
+  // A final piece several segments long is not a plan, it is a read that stopped early: no player can seek inside it and
+  // the playlist it produces cannot be walked. Refusing it here sends the caller to the remux that grows from the start.
+  if (b.length > 2 && end - b[b.length - 2] > 3 * seg) return null
   return b
+}
+
+/**
+ * The copy plan a probe justifies, or null. One place decides it, so that a probe which failed can never turn into a seek
+ * target: a timed-out ffprobe leaves no duration, and no duration means no plan -- not a guessed one. `complete` is the
+ * caller's own knowledge that the file is whole, and `kf` the keyframe list, which is null when it could not be read.
+ *
+ * This is the single gate the Single Ladies stall came through: report #12 shows ffprobe killed at its 120 s budget, and a
+ * plan built without a truthful duration is a plan whose every seek lands at the wrong place.
+ */
+/**
+ * How long a copied piece's run asks ffmpeg for: its declared length in the playlist, plus one keyframe interval.
+ *
+ * The interval is not padding for the eye, it is the hole being filled. The input seek lands on the keyframe at or BEFORE
+ * the time asked (a request for 1149.148 starts the picture at 1147.146), so a piece cut to exactly its declared length
+ * ends one interval short of where the playlist says it ends. A seek into that last interval finds no data at all: at
+ * 1152.3 s of a [1149.148, 1153.152) piece the media stopped at 1151.067, and hls.js asked for the same place again every
+ * 38 s for ever. One interval more, and the piece covers its own declared span.
+ */
+export const copyPieceLen = (b: number[], from: number, to: number, gap: number) => b[to] - b[from] + gap
+
+export function copyPlanFor(kf: number[] | null, p: { duration?: number; startTime?: number }, complete: boolean): number[] | null {
+  if (!complete || !kf || !kf.length) return null
+  const dur = p.duration
+  if (typeof dur !== 'number' || !Number.isFinite(dur) || dur <= 0) return null
+  return copyBounds(kf, (p.startTime ?? 0) + dur)
 }
 
 /**
@@ -434,20 +489,27 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     // A copied picture of a whole file: its keyframes, read once, are where the pieces are cut. Waited for a while, since
     // a playlist that can be seeked is worth a few seconds; a read that takes longer carries on behind and the old
     // forwards-only remux is used this once.
-    const kf = copy && opts.complete && p.duration ? await Promise.race([keyframes(torrentId, fileIndex, opts.source), sleep(20_000).then(() => null)]) : null
-    const copyPlan = kf && p.duration ? copyBounds(kf, (p.startTime ?? 0) + p.duration) : null
+    const kf = copy && opts.complete && p.duration ? await Promise.race([keyframes(torrentId, fileIndex, opts.source, (p.startTime ?? 0) + p.duration), sleep(20_000).then(() => null)]) : null
+    const copyPlan = copyPlanFor(kf, p, !!opts.complete)
     if (copy && copyPlan) {
       const b = copyPlan
       const count = b.length - 1
+      // One keyframe interval of overlap, measured from the list itself: the input seek lands on the keyframe at or
+      // BEFORE the time asked (asking for 1149.148 landed on 1147.146, two seconds early), so a piece cut to exactly its
+      // declared length ends a whole interval short of where the playlist says it ends. Those last two seconds are the
+      // hole a seek fell into -- at 1152.3 s of a [1149.148, 1153.152) piece the media simply stopped at 1151.067, and
+      // hls.js re-seeked to the same place every 38 s for ever. Cutting one interval past the declared end fills it, and
+      // the head of the piece being early is only a repeat of the two seconds before it.
+      const gap = (() => { let g = SEG; const k = kf ?? []; for (let i = 1; i < k.length; i++) { const d = k[i] - k[i - 1]; if (d > 0.01 && d < g) g = d } return g })()
       // -copyts keeps the file's own clock, so pieces cut by different runs join exactly. The input seek lands on the
       // keyframe at or before the time asked, so it is asked for a hair after the piece's own keyframe.
       const start = (from: number, stopAt: number) => {
         const last = Number.isFinite(stopAt) ? stopAt : count
         return ['-hide_banner', '-loglevel', 'error', '-ss', (b[from] + 0.05).toFixed(3), '-copyts', ...input, ...maps,
-          '-c:v', 'copy', ...audioOut, ...(last < count ? ['-to', b[last].toFixed(3)] : []),
+          '-c:v', 'copy', ...audioOut, ...(last < count ? ['-to', (b[last] + gap).toFixed(3)] : []),
           '-muxdelay', '0', '-muxpreload', '0',
           '-f', 'segment', '-segment_format', 'mpegts', '-segment_time_delta', '0.05', '-segment_start_number', String(from),
-          ...(last - from > 1 ? ['-segment_times', b.slice(from + 1, last).map((t) => (t - b[from]).toFixed(3)).join(',')] : []),
+          ...(last - from > 1 ? ['-segment_times', b.slice(from + 1, last).map((_t, i) => copyPieceLen(b, from, from + 1 + i, gap).toFixed(3)).join(',')] : []),
           '-segment_list', join(dir, `list${from}.csv`), '-segment_list_type', 'csv', join(dir, 'seg%05d.ts')]
       }
       j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds: b, copy: true, start, run: null, done: new Set() } }

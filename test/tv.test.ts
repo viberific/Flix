@@ -55,7 +55,10 @@ test('the adaptive launcher icon is scaled to a launcher\'s crop, not the web ti
 test('TV playback settles the wait layer only after the picture advances', () => {
   assert.match(css, /\.p-wait\.settled\s*\{\s*visibility:\s*hidden;\s*transition:\s*none;/)
   assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled\) layer\.classList\.add\('settled'\)/)
-  assert.match(app, /if \(started && !holding && !castingOnly && !v\.paused && \(moving \|\| v\.currentTime > 0\.5\)\) revealWait\(true\)/)
+  // The picture has to be PLAYING to settle it -- not merely reported as a clock that moved on. Since the Single Ladies
+  // stall the rule is a running element holding data at its playhead (public/playclock.js), so a copy plan that re-seeks
+  // backwards still takes the wait screen down.
+  assert.match(app, /if \(started && !holding && !castingOnly && isPlaying\(v\)\) revealWait\(true\)/)
   // A WebView that never fires 'playing' still gets the show: the clock moving starts it.
   assert.match(app, /v\.addEventListener\('playing', firstFrame, \{ once: true \}\)/)
   assert.match(app, /if \(moving && !castingOnly\) firstFrame\(\)/)
@@ -158,9 +161,11 @@ test('the logo cannot stay up over a playing show: the layer is settled by the c
 })
 
 test('a show that is playing takes the wait screen down even mid-hold, at HAVE_CURRENT_DATA, or after a source swap', () => {
-  // The watchdog no longer stands aside while the intro hold is on, and a moving clock at readyState 2 counts.
+  // The watchdog no longer stands aside while the intro hold is on, and a running element at readyState 2 with data at
+  // its playhead counts -- a clock that went forward is not the test (a seek moves it backwards).
   assert.doesNotMatch(app, /castingOnly \|\| holding \|\| layer\.classList\.contains\('settled'\)/)
-  assert.match(app, /moving = !v\.paused && !v\.ended && v\.readyState >= 2 && seenT >= 0/)
+  assert.match(app, /const moving = isPlaying\(v\)/)
+  assert.match(read('public/playclock.js'), /export function isPlaying\(v\) \{[^}]*!v\.paused && !v\.ended && v\.readyState >= 2 && holdsDataAt\(v, v\.currentTime\)/)
   assert.match(app, /if \(holding\) \{ clearTimeout\(holdT\); holding = false;/)
   // Every later 'playing' (after a stall, a retry, a reload) takes it down too, not only the first.
   assert.match(app, /v\.addEventListener\('playing', \(\) => \{ fileRetry = false; if \(started && !holding && !castingOnly\) revealWait\(true\) \}\)/)
