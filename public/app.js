@@ -954,7 +954,8 @@ async function seriesView(id) {
   const hero = resume ?? episodes.find((e) => !e.watched && e.available)
   const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
-  const wanted = (list) => list.some((e) => e.available && !e.watched)
+  const wantedN = (list) => list.filter((e) => e.available && !e.watched).length
+  const wanted = (list) => wantedN(list) > 0
   let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
   const saved = new Set(canDownload ? (await dl.list()).map((m) => m.id) : [])
@@ -1064,8 +1065,8 @@ async function seriesView(id) {
     const hseason = $('#hseason')
     const paintSeasonBtn = () => {
       if (!hseason) return
-      const any = wanted(seasons.get(cur) ?? [])
-      hseason.hidden = !any || keys.length < 2 // one season: it would only repeat the other button
+      // Shown only when it fetches something the other button would not: this season has something left, and so does another one.
+      hseason.hidden = !wanted(seasons.get(cur) ?? []) || wantedN(seasons.get(cur) ?? []) === wantedN(episodes)
       hseason.disabled = false; hseason.classList.remove('done')
       hseason.innerHTML = `${I.dl} <span>Torrent this ${cur === 'x' ? 'full list' : 'season'}</span>`
     }
