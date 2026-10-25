@@ -972,3 +972,5 @@ html.tv .mark svg { box-shadow: none; animation-name: markInTv; }
 html.tv .p-wait.gone .mark { animation-name: markOutTv; }
 @keyframes markInTv { 0% { opacity: 0; transform: translateY(18px) scale(.8); } 100% { opacity: 1; transform: none; } }
 @keyframes markOutTv { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: scale(1.16); } }
+.hdl-btns { display: flex; flex-wrap: wrap; gap: 10px; }
+.hdl-all[hidden] { display: none; }
