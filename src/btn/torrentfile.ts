@@ -31,7 +31,10 @@ export function torrentFiles(torrent: Buffer): TorrentFile[] {
   if (!info || Buffer.isBuffer(info) || typeof info !== 'object') throw new Error('not a torrent')
   const name = Buffer.isBuffer(info.name) ? info.name.toString('utf8') : ''
   if (!Array.isArray(info.files)) return [{ path: name, size: Number(info.length ?? 0) }]
-  return (info.files as { [k: string]: B }[]).map((f) => ({
+  // BEP 47 padding files ("attr" holding p) are not files to qBittorrent: it leaves them out of its file list and its
+  // indexes, so counting them here would put every video after one at the wrong index.
+  const pad = (f: { [k: string]: B }) => Buffer.isBuffer(f.attr) && f.attr.toString('latin1').includes('p')
+  return (info.files as { [k: string]: B }[]).filter((f) => !pad(f)).map((f) => ({
     path: [name, ...(f.path as Buffer[]).map((p) => p.toString('utf8'))].join('/'),
     size: Number(f.length ?? 0),
   }))

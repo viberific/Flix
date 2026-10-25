@@ -149,12 +149,20 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         applyCover();
     }
 
+    /**
+     * Pausing once when the car starts moving is not enough: the page plays on by itself (the Up next countdown opens the
+     * next episode, which autoplays), and behind the cover that is sound with nobody meant to be watching. So the page is
+     * told the car is moving, and while it is, anything that starts playing is paused at once. Sent again after every page
+     * load, since a reload forgets it.
+     */
+    private static final String HOLD_JS = "(function(m){window.__flixCarMoving=m;"
+            + "if(!window.__flixCarHold){window.__flixCarHold=1;document.addEventListener('play',function(e){if(window.__flixCarMoving&&e.target.pause)e.target.pause()},true)}"
+            + "if(m)document.querySelectorAll('video,audio').forEach(function(x){x.pause()})})";
+
     private void applyCover() {
         if (cover == null) return;
         cover.setVisibility(moving ? View.VISIBLE : View.GONE);
-        if (moving && web != null) {
-            web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
-        }
+        if (web != null) web.evaluateJavascript(HOLD_JS + "(" + moving + ")", null);
     }
 
     // ---- the surface ----
@@ -197,7 +205,12 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         web.setOverScrollMode(View.OVER_SCROLL_NEVER);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
-        web.setWebViewClient(new WebViewClient());
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                applyCover();
+            }
+        });
         web.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onShowCustomView(View view, CustomViewCallback cb) {

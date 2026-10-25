@@ -963,3 +963,41 @@ test('a pack file is placed by the pack\'s own file list, so the episode after i
   db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, episode, label, is_pack, info_hash, fetched_at) VALUES (9401, 9400, 'Untagged', 'S02E05', 2, 5, 'S02E05', 0, 'ut5', ?)`).run(now())
   assert.deepEqual(episodeOfFile(u, 9401, 0), { seriesId: 9400, season: 2, label: 'S02E05' }, 'a single episode is its own label')
 })
+
+test('torrentFiles leaves out BEP 47 padding files, so pack indexes match qBittorrent\'s', () => {
+  const ben = (v: any): string => typeof v === 'number' ? `i${v}e` : typeof v === 'string' ? `${Buffer.byteLength(v)}:${v}` : Array.isArray(v) ? `l${v.map(ben).join('')}e`
+    : `d${Object.keys(v).sort().map((k) => ben(k) + ben(v[k])).join('')}e`
+  const t = Buffer.from(ben({ info: { name: 'S01', files: [{ length: 100, path: ['E01.mkv'] }, { length: 12, path: ['.pad', '12'], attr: 'p' }, { length: 200, path: ['E02.mkv'] }] } }))
+  assert.deepEqual(torrentFiles(t), [{ path: 'S01/E01.mkv', size: 100 }, { path: 'S01/E02.mkv', size: 200 }])
+})
+
+test('the "never convert" switch saved in Settings survives a reload of the settings', async () => {
+  const { setTranscodeMode, loadSettings } = await import('../src/settings.ts')
+  const { db } = await import('../src/db.ts')
+  const was = config.transcode.mode
+  try {
+    setTranscodeMode('auto')
+    config.transcode.mode = 'off' // what a restart used to come back with: the environment's default
+    loadSettings()
+    assert.equal(config.transcode.mode, 'auto')
+    setTranscodeMode('off')
+    loadSettings()
+    assert.equal(config.transcode.mode, 'off')
+  } finally { db.prepare(`DELETE FROM settings WHERE key = 'transcode_mode'`).run(); config.transcode.mode = was }
+})
+
+test('copy-only: a show with a download on the server stays listed even when its other releases need converting', async () => {
+  const { unplayableSeries } = await import('../src/candidates.ts')
+  const { catalogChanged } = await import('../src/seasons.ts')
+  const { db, now } = await import('../src/db.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'off'
+  try {
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, codec, resolution, info_hash, fetched_at) VALUES (97500, 97500, 'Hevc Show', 'S01E01', 'H.265', '1080p', 'hv1', ?), (97501, 97500, 'Hevc Show', 'S01E02', 'H.265', '1080p', 'hv2', ?)`).run(now(), now())
+    catalogChanged()
+    assert.ok(unplayableSeries().has(97500), 'nothing playable and nothing on disk: hidden')
+    db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (97500, 'hv1', ?)`).run(now())
+    catalogChanged()
+    assert.ok(!unplayableSeries().has(97500), 'one episode on disk plays, so the show stays')
+  } finally { config.transcode.mode = was }
+})

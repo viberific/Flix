@@ -12,6 +12,7 @@ import { isVideo, parseEpisodeTag } from './btn/parse.ts'
 import { assertSpace } from './health.ts'
 import { SUBFILE } from './transcode.ts'
 import { diag, hitch } from './diag.ts'
+import { catalogChanged } from './seasons.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -55,6 +56,7 @@ async function ensureAdded(rel: Release, origin: 'flix' | 'auto' = 'flix', needB
   }
   db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, origin) VALUES (?,?, 'active', ?, ?)
     ON CONFLICT(torrent_id) DO UPDATE SET origin = CASE WHEN state = 'active' THEN origin ELSE excluded.origin END, state='active', removed_at=NULL, remove_reason=NULL`).run(rel.torrent_id, hash, now(), from)
+  catalogChanged() // a release on the server counts as alive and playable: the cached listings must see it
 }
 
 export function pickVideo(files: QbFile[]): QbFile | undefined {

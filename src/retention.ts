@@ -7,6 +7,7 @@ import { recordStorage } from './storage.ts'
 import { diskInfo } from './health.ts'
 import { wantedBytes } from './wanted.ts'
 import { canView, getRating, parseAllowed } from './ratings.ts'
+import { catalogChanged } from './seasons.ts'
 
 export interface SeedStatus { ratio: number; hours: number; ratioMet: boolean; hoursMet: boolean; met: boolean }
 
@@ -206,6 +207,7 @@ export async function removeDownload(torrentId: number, hash: string, reason: st
   await qb.remove(hash, true)
   tidyAfterRemoval(t) // the engine deletes the files; sweep up the empty folders it leaves in Downloads
   db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason=? WHERE torrent_id=?`).run(now(), reason, torrentId)
+  catalogChanged()
 }
 
 /** Torrents Flix put in the engine are tagged 'flix'; anything else is only Flix's if it has a downloads row. */
@@ -384,6 +386,7 @@ export async function sweep(): Promise<string[]> {
       if (engineHasAny && now() - first >= ABSENT_FOR_SEC) {
         absentSince.delete(d.torrent_id)
         db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason='missing from engine' WHERE torrent_id=?`).run(now(), d.torrent_id)
+        catalogChanged()
       }
       continue
     }
