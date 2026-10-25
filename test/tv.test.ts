@@ -54,7 +54,7 @@ test('the adaptive launcher icon is scaled to a launcher\'s crop, not the web ti
 
 test('TV playback settles the wait layer only after the picture advances', () => {
   assert.match(css, /\.p-wait\.settled\s*\{\s*visibility:\s*hidden;\s*transition:\s*none;/)
-  assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled\) layer\.classList\.add\('settled'\)/)
+  assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled \|\| isTv\) layer\.classList\.add\('settled'\)/)
   assert.match(app, /if \(started && !holding && !castingOnly && !v\.paused && \(moving \|\| v\.currentTime > 0\.5\)\) revealWait\(true\)/)
   // A WebView that never fires 'playing' still gets the show: the clock moving starts it.
   assert.match(app, /v\.addEventListener\('playing', firstFrame, \{ once: true \}\)/)
@@ -199,4 +199,16 @@ test('only transform and opacity ease on a television after a remote press', () 
 test('the Queue rails keep room for their group names on a television', () => {
   // `html.tv .row-scroll` outranks `.row-scroll.q`, so the TV rule must restate the 36px plus the 8px its margin takes back.
   assert.match(css, /html\.tv \.row-scroll\.q, html\.tv \.row-scroll\.qtop \{ padding-top: 44px; \}/)
+})
+
+test('on a television the logo never animates over the picture, and a moving clock clears the spinner', () => {
+  // The bloom-and-dissolve exit played over the first second of the show, exactly when the TV's chip starts the decoder,
+  // and stuttered there: on a TV the layer is settled (display: none) in the same step that reveals the picture.
+  assert.match(app, /if \(settled \|\| isTv\) layer\.classList\.add\('settled'\)/)
+  // A TV WebView can play at readyState 2 and never fire 'playing' or 'canplay' after a stall, so the ring is taken down
+  // by the clock moving, not only by those events.
+  assert.match(app, /v\.addEventListener\('timeupdate', \(\) => \{ if \(!v\.paused && !v\.seeking && spinT >= 0 && v\.currentTime > spinT\) spin\(false\)/)
+  // And the seek guard counts playing on from the seek target as healthy instead of reloading a working picture.
+  assert.match(app, /const going = \(\) => el\.readyState >= 3 \|\| el\.ended \|\| \(!el\.paused && el\.currentTime > t \+ 0\.5\)/)
+  assert.doesNotMatch(app, /if \(!live\(\) \|\| el\.readyState >= 3/)
 })

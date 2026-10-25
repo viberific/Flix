@@ -1206,7 +1206,10 @@ function playView(seriesId, season, label) {
     function revealWait(settled = false) {
       const layer = $('#wait')
       layer.classList.add('gone')
-      if (settled) layer.classList.add('settled')
+      // On a television the logo is taken away at once rather than playing its bloom-and-dissolve over the first second of
+      // the picture: that second is when the TV's chip is starting the video decoder, so the animation stuttered and the
+      // mark hung over a show that was already playing. The black still lifts with it in the same frame.
+      if (settled || isTv) layer.classList.add('settled')
       pl.classList.add('live') // the logo leaves the top bar with the wait screen
       // The fade-out hands the layer over to `visibility: hidden` by a delayed transition, and a TV's WebView sometimes never
       // finishes one -- the mark and the black were left up over the picture. So the layer is settled by the clock as well.
@@ -1483,16 +1486,20 @@ function playView(seriesId, season, label) {
     function guardSeek(t, wasPlaying) {
       const id = ++seekGuard, el = v
       const live = () => id === seekGuard && alive && v === el && !castingOnly
+      // Playing on from the place it was sent to is proof enough, whatever readyState says: a TV's WebView can play a whole
+      // episode at HAVE_CURRENT_DATA (2), and asking for 3 here started a perfectly good picture over ten seconds after
+      // every seek, with the spinner back up for the reload.
+      const going = () => el.readyState >= 3 || el.ended || (!el.paused && el.currentTime > t + 0.5)
       const resume = () => { if (live() && wasPlaying && el.paused && !holding) el.play().catch(() => {}) }
       el.addEventListener('seeked', resume, { once: true })
       setTimeout(() => {
         if (!live()) return
-        if (el.readyState >= 3 || el.ended) return resume()
+        if (going()) return resume()
         if (hls) { try { hls.startLoad(t) } catch { /* gone */ } }
         resume()
       }, 4000)
       setTimeout(() => {
-        if (!live() || el.readyState >= 3 || el.ended || !wasPlaying) return
+        if (!live() || going() || !wasPlaying) return
         hls?.destroy(); hls = null
         releaseVideo(el)
         loadInfo(info?.audioIndex ?? 0, t).catch((e) => fail(e.message))
@@ -1913,6 +1920,11 @@ function playView(seriesId, season, label) {
         const spin = (on) => { const el = $('#pspin'); if (el) el.hidden = !(on && started) }
         for (const ev of ['waiting', 'seeking']) v.addEventListener(ev, () => spin(v.readyState < 3))
         for (const ev of ['playing', 'seeked', 'canplay', 'pause', 'emptied']) v.addEventListener(ev, () => spin(false))
+        // ...and a clock that is moving takes it away whatever the element says. A TV's WebView playing at the edge of what
+        // has arrived can stay at HAVE_CURRENT_DATA (2) and never fire 'playing' or 'canplay' after a stall or a seek, so
+        // the ring sat over a show that had long since carried on.
+        let spinT = -1
+        v.addEventListener('timeupdate', () => { if (!v.paused && !v.seeking && spinT >= 0 && v.currentTime > spinT) spin(false); spinT = v.currentTime })
         const haveStatus = async () => {
           const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
           if (!alive || !st || st.error) return
