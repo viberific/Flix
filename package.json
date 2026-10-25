@@ -1,6 +1,6 @@
 {
   "name": "flix",
-  "version": "0.3.74",
+  "version": "0.3.75",
   "private": true,
   "type": "module",
   "description": "Jellyfin-style media server that uses BroadcasTheNet as its only source and streams torrents on demand",
