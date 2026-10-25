@@ -30,9 +30,9 @@ export function unplayableSeries(): Set<number> {
   // SQLite's LIKE ignores case, so 'avc' catches AVC.
   const rows = db.prepare(`
     SELECT r.series_id AS id FROM releases r
-    WHERE NOT EXISTS (SELECT 1 FROM downloads d WHERE d.torrent_id = r.torrent_id AND d.state = 'active')
     GROUP BY r.series_id
-    HAVING SUM(CASE WHEN r.codec LIKE '%264%' OR r.codec LIKE '%avc%' THEN
+    HAVING SUM(CASE WHEN EXISTS (SELECT 1 FROM downloads d WHERE d.torrent_id = r.torrent_id AND d.state = 'active') THEN 1
+      WHEN r.codec LIKE '%264%' OR r.codec LIKE '%avc%' THEN
       CASE WHEN r.resolution IS NULL OR (r.resolution NOT LIKE '%2160%' AND r.resolution NOT LIKE '%4k%') THEN 1 ELSE 0 END
     ELSE 0 END) = 0`).all() as { id: number }[]
   const ids = new Set(rows.map((r) => r.id))

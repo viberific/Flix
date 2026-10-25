@@ -2,7 +2,7 @@ import { db, now } from './db.ts'
 import { config } from './config.ts'
 import { diskInfo, freeFloor } from './health.ts'
 import { qb } from './qb.ts'
-import { buildEpisodes, type Episode } from './episodes.ts'
+import { buildEpisodes, episodeOfFile, type Episode } from './episodes.ts'
 import { getRelease, startPlayback } from './streaming.ts'
 
 /**
@@ -75,13 +75,13 @@ export async function autoNext(userId: number, seriesId: number, season: number 
 
 /** Every few minutes: whoever is partway through an episode that has now finished downloading gets the next one lined up. */
 export async function autoNextWhenComplete() {
-  const rows = db.prepare(`SELECT i.user_id, i.file_index, r.torrent_id, r.info_hash, r.series_id, r.season, r.label, r.is_pack, i.file_name FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
+  const rows = db.prepare(`SELECT i.user_id, i.file_index, r.torrent_id, r.info_hash FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id
     WHERE i.watched_at IS NULL AND i.released_at IS NULL AND i.auto = 0 AND i.duration > 0 AND i.position >= i.duration * ${NEXT_EPISODE_AT} AND i.updated_at > ?`).all(now() - 900) as any[]
   for (const r of rows) {
     const files = await qb.files(r.info_hash).catch(() => [])
     if (!files.find((f) => f.index === r.file_index && f.progress >= 1)) continue
-    const label = r.is_pack ? /S\d+E\d+/i.exec(r.file_name ?? '')?.[0]?.toUpperCase() : r.label
-    if (label) await autoNext(r.user_id, r.series_id, r.season, label, 'next episode, current one is downloaded')
+    const ep = episodeOfFile(r.user_id, r.torrent_id, r.file_index)
+    if (ep) await autoNext(r.user_id, ep.seriesId, ep.season, ep.label, 'next episode, current one is downloaded')
   }
 }
 

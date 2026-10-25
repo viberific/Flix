@@ -571,7 +571,7 @@ html.tv .tile { outline: none !important; }
    on every frame, or a layer for each of two hundred posters, is what a TV's GPU cannot spare. The ring arrives with the lift. */
 html.tv .poster { transition: transform .2s var(--ease); }
 html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: scale(1.07); will-change: transform; box-shadow: 0 0 0 3px var(--fg), 0 18px 38px rgba(0,0,0,.6); }
-/* Scrolling is eased by script on a television (easeScroll, public/app.js): the native smooth scroll would fight it. */
+/* A television's scrolling glides by transform (easeScroll, public/app.js): the native smooth scroll would fight it. */
 html.tv, html.tv .row-scroll { scroll-behavior: auto; }
 html.tv .tile:focus .tt { color: var(--fg); }
 html.tv .tile .tt { color: var(--dim); }
@@ -709,7 +709,9 @@ html.tv * { cursor: none; }
 @keyframes ripple { 0% { opacity: 0; transform: scale(.94); } 14% { opacity: .75; } 100% { opacity: 0; transform: scale(2.3); border-radius: 50%; } }
 /* One pass across the face, then a rest, then again: while the episode is still fetching the shine keeps travelling,
    so a slow start reads as busy rather than frozen. 42% of the period is the pass, the rest is the dwell. */
-@keyframes sweep { 0% { left: -80%; } 42% { left: 130%; } 100% { left: 130%; } }
+/* Moved by transform, not by left: a left that changes is a layout and a repaint on every frame for as long as the episode
+   is loading, on the same chip that is starting the video. 382% of its own 55% width is the 210% of the tile it crosses. */
+@keyframes sweep { 0% { transform: translateX(0) skewX(-20deg); } 42% { transform: translateX(382%) skewX(-20deg); } 100% { transform: translateX(382%) skewX(-20deg); } }
 @keyframes markOut {
   0% { opacity: 1; transform: none; filter: none; }
   40% { opacity: 1; transform: scale(1.07); filter: brightness(1.3); }
@@ -725,27 +727,31 @@ html.tv * { cursor: none; }
 .dlb { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); font-size: 13px; font-weight: 600; cursor: pointer; max-width: 22ch; text-align: left; }
 .dlb svg { width: 18px; height: 18px; } .dlb:hover { color: var(--fg); }
 .dlb.done { color: var(--ok); } .dlb.busy { color: var(--fg); } .dlb.err { color: #ff8a80; }
-/* A download on its way: a ring that fills around a stop square, the same in the episode row and on the Download button.
+/* A download on its way: a ring that fills around a stop square in the episode row.
    The ring and the square share the first cell, so the square sits inside the ring; the words (if any) go beside it. */
-.dlb.busy, .hdl.busy { display: inline-grid; grid-auto-flow: column; align-items: center; column-gap: 8px; }
-.dlb.busy > svg, .hdl.busy > svg { grid-row: 1; grid-column: 1; }
-.dlb.busy > .dlt, .hdl.busy > span { grid-row: 1; grid-column: 2; }
+.dlb.busy { display: inline-grid; grid-auto-flow: column; align-items: center; column-gap: 8px; }
+.dlb.busy > svg { grid-row: 1; grid-column: 1; }
+.dlb.busy > .dlt { grid-row: 1; grid-column: 2; }
 .dl-ring { width: 24px !important; height: 24px !important; transform: rotate(-90deg); }
 .dl-ring circle { fill: none; stroke: color-mix(in srgb, currentColor 22%, transparent); stroke-width: 3; }
 .dl-ring circle.on { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .5s var(--ease); }
-.dlb.busy > svg:not(.dl-ring), .hdl.busy > svg:not(.dl-ring) { width: 24px; height: 24px; opacity: .55; }
+.dlb.busy > svg:not(.dl-ring) { width: 24px; height: 24px; opacity: .55; }
 .dlb.armed > svg:not(.dl-ring) { opacity: 1; color: #ff8a80; }
 .dlb.armed .dl-ring circle.on { stroke: #ff8a80; }
 .dlb.err { color: #ff8a80; } .dlb .dlt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hdl.done { color: var(--ok); }
 .hdl-all svg { width: 18px; height: 18px; } .hdl-all.done { color: var(--ok); } .hdl-all[disabled] { opacity: .7; cursor: default; }
 svg.inl { width: 1.1em; height: 1.1em; vertical-align: -.2em; }
 @media (max-width: 640px) {
-  /* Netflix on a phone: Play, then Download under it, each the full width; My List and the thumbs share the row below. */
-  .s-meta #hp, .s-meta .hdl { flex: 1 1 100%; }
+  /* Netflix on a phone: Play the full width; My List and the thumbs share the row below. */
+  .s-meta #hp { flex: 1 1 100%; }
+  /* The two torrent buttons share one row, each half of it. */
+  .eps-head .hdl-btns { flex-wrap: nowrap; width: 100%; margin-bottom: 14px; }
+  .hdl-all { flex: 1 1 0; min-width: 0; gap: 6px; padding-left: 8px; padding-right: 8px; font-size: 13px; white-space: nowrap; }
+  .hdl-all span { overflow: hidden; text-overflow: ellipsis; }
   .ep .eside .dlb.busy { display: inline-grid; place-items: center; }
   .ep .eside .dl-ring { width: 30px !important; height: 30px !important; }
 }
+@media (max-width: 380px) { .hdl-all svg { display: none; } }
 .dl-item { cursor: pointer; }
 
 /* ---------- the idle sit-back slideshow: the top shows' art, one at a time, on a television left alone ---------- */
@@ -942,9 +948,8 @@ html.tv .pin-modal { background: rgba(0,0,0,.85); }
 html.tv .auth { background: var(--surface); }
 html.tv .wide-play, html.tv .qact, html.tv .wide-pill, html.tv .ep .thumb .play { background-color: rgba(10,12,16,.8); }
 
-html.tv .poster { box-shadow: none; transition: transform .18s var(--ease); will-change: auto; }
+html.tv .poster { box-shadow: none; will-change: auto; }
 html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { box-shadow: 0 0 0 3px var(--fg); }
-html.tv .qcard .poster { transition: transform .18s var(--ease), opacity .2s; }
 html.tv .qcard.sugg .poster { filter: none; }
 html.tv .ep:focus:not(:disabled) { box-shadow: 0 0 0 3px var(--fg); }
 html.tv .who-tile:focus .who-av { box-shadow: 0 0 0 4px var(--fg); }
@@ -963,6 +968,37 @@ html.tv .rise, html.tv .reveal .tile.rise, html.tv .reveal.in .tile.rise, html.t
 html.tv .skel { animation: none; }
 html.tv .skeleton { animation: none; }
 html.tv .prog b, html.tv .ep .bar b { animation: none; }
+
+/* Only transform and opacity ever animate on a television. A colour, background or shadow that eases over a few frames is
+   a repaint on every one of them, and a repaint anywhere is a walk over the whole page (two hundred posters deep on Home)
+   plus re-sorting it into layers -- measured with the CPU slowed to a TV's, that was most of each frame after a press, and
+   the title's 0.25 s colour fade alone repainted the page fifteen times per press. These snap instead; the lift and the
+   swell, which the compositor runs by itself, still glide. */
+html.tv .tile .tt { transition: none; }
+html.tv a:focus, html.tv button:focus, html.tv [tabindex]:focus { transition: transform .15s var(--ease); }
+html.tv .ep { transition: transform .2s var(--ease); }
+html.tv .ep .play { transition: transform .2s var(--ease); }
+html.tv .pill, html.tv .rpill { transition: transform .15s var(--ease); }
+html.tv .actor { transition: transform .2s var(--ease); }
+html.tv .field { transition: none; }
+html.tv header#top { transition: none; }
+/* The poster glides up when it is highlighted and snaps back when the highlight leaves. Easing both ways kept two posters
+   on layers of their own at once, and each layer arriving or leaving is another repaint of the page: one transition per
+   press is a third fewer repaints, and the eye follows the new highlight, not the old one. */
+html.tv .poster, html.tv .qcard .poster { transition: none; }
+html.tv .tile:focus .poster { transition: transform .18s var(--ease); }
+html.tv .qact, html.tv .wide-play { transition: transform .2s var(--ease); }
+
+/* The highlighted poster swells 7% with a 3px ring, so it stands about 9px proud of its own edge, and a rail clips at its
+   padding: with 4px at the start and 8px on top, the first show in a row lost the ring's left side and top corner. The
+   rail gets room for the whole ring on every side, and the same amount back as negative margin, so nothing moves. */
+html.tv .row-scroll { padding: 16px 24px 22px 16px; margin: -8px -16px 0; }
+/* The Queue's rails keep their 36px for the group names above the cards (Continue, Ready to Watch); the rule above outranks
+   theirs, so it is restated here with the same 8px given back to the margin. */
+html.tv .row-scroll.q, html.tv .row-scroll.qtop { padding-top: 44px; }
+/* The show page's season pills and cast scroll sideways the same way, and their first entry lost its ring on the left. */
+html.tv .pills { padding: 8px 8px 14px; margin: -2px -8px 0; }
+html.tv .cast { padding: 10px 10px 12px; margin: -10px -10px 0; }
 
 /* The intro plays while the episode is starting, so it shares the chip with the video decoder: a gradient that is soft on
    its own instead of a spinning 46px blur, and no blur in or out. */

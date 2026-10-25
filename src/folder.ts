@@ -3,6 +3,7 @@ import { dirname, join, relative, sep } from 'node:path'
 import { db, now } from './db.ts'
 import { config } from './config.ts'
 import { qb, type QbTorrent } from './qb.ts'
+import { catalogChanged } from './seasons.ts'
 
 /**
  * Flix and the Downloads folder stay in step. Flix puts its torrents straight into that folder (each torrent in its own named
@@ -64,6 +65,7 @@ export async function syncFolder() {
     db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, origin) VALUES (?,?, 'active', ?, 'adopted')
       ON CONFLICT(torrent_id) DO UPDATE SET state='active', removed_at=NULL, remove_reason=NULL, origin='adopted'`).run(torrentId, hash, now())
     await qb.addTags(t.hash, 'flix').catch(() => {})
+    catalogChanged()
     console.log(`[folder] took over ${t.name} from the Downloads folder`)
   }
 

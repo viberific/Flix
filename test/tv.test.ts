@@ -54,7 +54,7 @@ test('the adaptive launcher icon is scaled to a launcher\'s crop, not the web ti
 
 test('TV playback settles the wait layer only after the picture advances', () => {
   assert.match(css, /\.p-wait\.settled\s*\{\s*visibility:\s*hidden;\s*transition:\s*none;/)
-  assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled\) layer\.classList\.add\('settled'\)/)
+  assert.match(app, /function revealWait\(settled = false\)\s*\{[\s\S]*?if \(settled \|\| isTv\) layer\.classList\.add\('settled'\)/)
   // The picture has to be PLAYING to settle it -- not merely reported as a clock that moved on. Since the Single Ladies
   // stall the rule is a running element holding data at its playhead (public/playclock.js), so a copy plan that re-seeks
   // backwards still takes the wait screen down.
@@ -181,4 +181,50 @@ test('the Queue leads with the shows the most peers are downloading, and holds t
   assert.match(server, /\.sort\(\(a, b\) => peers\.get\(b\.id\)! - peers\.get\(a\.id\)! \|\| b\.latest - a\.latest\)/)
   assert.match(server, /grab\.forEach\(\(r\) => taken\.add\(r\.id\)\)/)
   assert.match(app, /if \(home\.grab\?\.length\) \{ pool = home\.grab; title = 'Most wanted right now'; used = null \}/)
+})
+
+test('a television rail leaves room for the highlighted poster ring at its start, without moving the row', () => {
+  const rail = css.match(/html\.tv \.row-scroll \{ padding: (\d+)px \d+px \d+px (\d+)px; margin: -(\d+)px -(\d+)px 0; \}/)
+  assert.ok(rail, 'the TV rail rule sets padding and an offsetting margin')
+  const [top, left, mTop, mLeft] = rail.slice(1).map(Number)
+  // scale(1.07) on a 168px-wide, 252px-tall poster plus a 3px ring stands about 9px out sideways and 12px on top.
+  assert.ok(left >= 12 && top >= 15, `room for the ring: left ${left}px, top ${top}px`)
+  assert.equal(left, mLeft, 'the margin gives back exactly the extra left padding')
+  assert.equal(top - mTop, 8, 'the posters stay where the 8px top padding had them')
+})
+
+test('only transform and opacity ease on a television after a remote press', () => {
+  // A colour or shadow easing over several frames repaints the whole page on each of them; that was the TV's stutter.
+  assert.match(css, /html\.tv \.tile \.tt \{ transition: none; \}/)
+  assert.match(css, /html\.tv a:focus, html\.tv button:focus, html\.tv \[tabindex\]:focus \{ transition: transform \.15s var\(--ease\); \}/)
+  assert.match(css, /html\.tv \.tile:focus \.poster \{ transition: transform \.18s var\(--ease\); \}/)
+  assert.doesNotMatch(css, /@keyframes sweep \{[^}]*left:/, 'the loading shine moves by transform, not by left')
+})
+
+test('the Queue rails keep room for their group names on a television', () => {
+  // `html.tv .row-scroll` outranks `.row-scroll.q`, so the TV rule must restate the 36px plus the 8px its margin takes back.
+  assert.match(css, /html\.tv \.row-scroll\.q, html\.tv \.row-scroll\.qtop \{ padding-top: 44px; \}/)
+})
+
+test('on a television the logo never animates over the picture, and a moving clock clears the spinner', () => {
+  // The bloom-and-dissolve exit played over the first second of the show, exactly when the TV's chip starts the decoder,
+  // and stuttered there: on a TV the layer is settled (display: none) in the same step that reveals the picture.
+  assert.match(app, /if \(settled \|\| isTv\) layer\.classList\.add\('settled'\)/)
+  // A TV WebView can play at readyState 2 and never fire 'playing' or 'canplay' after a stall, so the ring is taken down
+  // by the clock moving, not only by those events.
+  assert.match(app, /v\.addEventListener\('timeupdate', \(\) => \{ if \(!v\.paused && !v\.seeking && spinT >= 0 && v\.currentTime > spinT\) spin\(false\)/)
+  // And the seek guard counts playing on from the seek target as healthy instead of reloading a working picture.
+  assert.match(app, /const going = \(\) => el\.readyState >= 3 \|\| el\.ended \|\| \(!el\.paused && el\.currentTime > t \+ 0\.5\)/)
+  assert.doesNotMatch(app, /if \(!live\(\) \|\| el\.readyState >= 3/)
+})
+
+test('a television glides scrolls on the compositor: one jump of the scroll position, then a transform eased away', () => {
+  const body = app.slice(app.indexOf('function easeScroll('), app.indexOf('function revealStop('))
+  // No scrollTop written frame by frame from script: that waited on the TV's busy main thread on every frame.
+  assert.doesNotMatch(body, /requestAnimationFrame/)
+  assert.match(body, /sc\[prop\] = to/)
+  assert.match(body, /el\.animate\(\[\{ transform: `translate\$\{axis\}\(\$\{start\}px\)` \}, \{ transform: 'none' \}\]/)
+  // A press mid-glide carries on from where the content is drawn, and the reveal measures where things will land.
+  assert.match(body, /const carry = glideOffset\(sc\)/)
+  assert.match(app, /const pageOff = isTv \? glideOffset\(document\.scrollingElement\) : 0/)
 })

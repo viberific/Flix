@@ -946,3 +946,58 @@ test('the next pack file is enabled on TIME covered, so a 6.25 GB and a 3.2 GB e
   assert.equal(coverBytes(6.25 * GB, null), 6.25 * GB)
   assert.equal(coverBytes(6.25 * GB, 0), 6.25 * GB)
 })
+
+test('a pack file is placed by the pack\'s own file list, so the episode after it is found whatever the file is called', async () => {
+  const { episodeOfFile } = await import('../src/episodes.ts')
+  const { db, now } = await import('../src/db.ts')
+  const u = createUser('ep_next', 'password123', false).id
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, label, is_pack, info_hash, fetched_at) VALUES (9400, 9400, 'Untagged', 'Season 2', 2, 'Season 2', 1, 'ut', ?)`).run(now())
+  // No tag in the name (numbered by place), a 2x03 tag, and an unpadded S2E4: none of them is the "S02E0n" the episodes are labelled by.
+  db.prepare(`INSERT INTO pack_files (torrent_id, idx, path, size, season, episode) VALUES (9400,0,'Show/one.mkv',1,2,1),(9400,1,'Show/Show.2x03.mkv',1,2,3),(9400,2,'Show/Show.S2E4.mkv',1,2,4)`).run()
+  for (const [i, name] of [[0, 'Show/one.mkv'], [1, 'Show/Show.2x03.mkv'], [2, 'Show/Show.S2E4.mkv']] as const)
+    db.prepare('INSERT INTO interests (user_id, torrent_id, file_index, file_name, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(u, 9400, i, name, now(), now())
+  assert.deepEqual(episodeOfFile(u, 9400, 0), { seriesId: 9400, season: 2, label: 'S02E01' })
+  assert.deepEqual(episodeOfFile(u, 9400, 1), { seriesId: 9400, season: 2, label: 'S02E03' })
+  assert.deepEqual(episodeOfFile(u, 9400, 2), { seriesId: 9400, season: 2, label: 'S02E04' })
+  assert.equal(episodeOfFile(u, 9400, 7), null, 'a file the pack list does not know is not the pack\'s "Season 2"')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, episode, label, is_pack, info_hash, fetched_at) VALUES (9401, 9400, 'Untagged', 'S02E05', 2, 5, 'S02E05', 0, 'ut5', ?)`).run(now())
+  assert.deepEqual(episodeOfFile(u, 9401, 0), { seriesId: 9400, season: 2, label: 'S02E05' }, 'a single episode is its own label')
+})
+
+test('torrentFiles leaves out BEP 47 padding files, so pack indexes match qBittorrent\'s', () => {
+  const ben = (v: any): string => typeof v === 'number' ? `i${v}e` : typeof v === 'string' ? `${Buffer.byteLength(v)}:${v}` : Array.isArray(v) ? `l${v.map(ben).join('')}e`
+    : `d${Object.keys(v).sort().map((k) => ben(k) + ben(v[k])).join('')}e`
+  const t = Buffer.from(ben({ info: { name: 'S01', files: [{ length: 100, path: ['E01.mkv'] }, { length: 12, path: ['.pad', '12'], attr: 'p' }, { length: 200, path: ['E02.mkv'] }] } }))
+  assert.deepEqual(torrentFiles(t), [{ path: 'S01/E01.mkv', size: 100 }, { path: 'S01/E02.mkv', size: 200 }])
+})
+
+test('the "never convert" switch saved in Settings survives a reload of the settings', async () => {
+  const { setTranscodeMode, loadSettings } = await import('../src/settings.ts')
+  const { db } = await import('../src/db.ts')
+  const was = config.transcode.mode
+  try {
+    setTranscodeMode('auto')
+    config.transcode.mode = 'off' // what a restart used to come back with: the environment's default
+    loadSettings()
+    assert.equal(config.transcode.mode, 'auto')
+    setTranscodeMode('off')
+    loadSettings()
+    assert.equal(config.transcode.mode, 'off')
+  } finally { db.prepare(`DELETE FROM settings WHERE key = 'transcode_mode'`).run(); config.transcode.mode = was }
+})
+
+test('copy-only: a show with a download on the server stays listed even when its other releases need converting', async () => {
+  const { unplayableSeries } = await import('../src/candidates.ts')
+  const { catalogChanged } = await import('../src/seasons.ts')
+  const { db, now } = await import('../src/db.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'off'
+  try {
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, codec, resolution, info_hash, fetched_at) VALUES (97500, 97500, 'Hevc Show', 'S01E01', 'H.265', '1080p', 'hv1', ?), (97501, 97500, 'Hevc Show', 'S01E02', 'H.265', '1080p', 'hv2', ?)`).run(now(), now())
+    catalogChanged()
+    assert.ok(unplayableSeries().has(97500), 'nothing playable and nothing on disk: hidden')
+    db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at) VALUES (97500, 'hv1', ?)`).run(now())
+    catalogChanged()
+    assert.ok(!unplayableSeries().has(97500), 'one episode on disk plays, so the show stays')
+  } finally { config.transcode.mode = was }
+})

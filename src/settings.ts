@@ -8,6 +8,7 @@ const envTmdbKey = config.tmdb.apiKey
 const envOmdbKey = config.omdb.apiKey
 const envTranscodeProfile = config.transcode.profile
 const envTranscodeHardware = config.transcode.hardware
+const envTranscodeMode = config.transcode.mode
 
 const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value
 const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v)
@@ -22,6 +23,9 @@ export function loadSettings() {
   config.qb.pass = get('qb_pass') ?? envQb.pass
   config.transcode.profile = (get('transcode_profile') as Profile) || envTranscodeProfile
   config.transcode.hardware = (get('transcode_hardware') ?? (envTranscodeHardware ? 'on' : 'off')) !== 'off'
+  // Saved from the Settings page; without reading it back here a restart quietly went back to TRANSCODE_MODE.
+  const mode = get('transcode_mode')
+  config.transcode.mode = mode === 'off' || mode === 'auto' ? mode : envTranscodeMode
 }
 
 export function setBtnApiKey(key: string) {
@@ -96,7 +100,6 @@ export function setTranscodeProfile(profile: string) {
 export function setTranscodeMode(mode: string) {
   const want = String(mode).toLowerCase() === 'off' ? 'off' : 'auto'
   put('transcode_mode', want)
-  config.transcode.mode = want
   loadSettings()
 }
 
