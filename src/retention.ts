@@ -399,7 +399,8 @@ export async function sweep(): Promise<string[]> {
       continue
     }
     if (why.deletable) {
-      await removeDownload(d.torrent_id, d.info_hash, 'all viewers done and seeding requirement met')
+      // One that cannot be removed right now (the engine did not answer) stays for the next sweep; the rest still go.
+      try { await removeDownload(d.torrent_id, d.info_hash, 'all viewers done and seeding requirement met') } catch (e: any) { console.warn(`[retention] kept ${d.info_hash}: ${e.message}`); continue }
       removed.push(d.info_hash)
       onDisk -= held
     }

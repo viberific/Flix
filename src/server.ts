@@ -25,7 +25,7 @@ import { creditsAt as measuredCredits } from './credits.ts'
 import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getPosterThumb, getStill, POSTER_WIDTHS } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
-import { buildEpisodes, continueWatching, currentEpisode } from './episodes.ts'
+import { buildEpisodes, continueWatching, currentEpisode, episodeOfFile } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { unplayableSeries } from './candidates.ts'
 import { ensurePackFiles } from './packs.ts'
@@ -855,16 +855,8 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
 // ---- watch state ------------------------------------------------------------
 /** Which episode of a torrent this file is, so the one after it can be lined up (a pack names each file by its own SxxEyy). */
 async function lineUpNext(userId: number, torrentId: number, fileIndex: number) {
-  const rel = db.prepare('SELECT series_id, season, label, is_pack FROM releases WHERE torrent_id = ?').get(torrentId) as any
-  if (!rel) return
-  let label = String(rel.label ?? '')
-  if (rel.is_pack) {
-    const i = db.prepare('SELECT file_name FROM interests WHERE user_id=? AND torrent_id=? AND file_index=?').get(userId, torrentId, fileIndex) as any
-    const tag = /S\d+E\d+/i.exec(i?.file_name ?? '')?.[0]?.toUpperCase()
-    if (!tag) return
-    label = tag
-  }
-  if (label) await autoNext(userId, rel.series_id, rel.season, label, 'next episode, current one is past 60%')
+  const ep = episodeOfFile(userId, torrentId, fileIndex)
+  if (ep) await autoNext(userId, ep.seriesId, ep.season, ep.label, 'next episode, current one is past 60%')
 }
 app.post('/api/progress', auth, async (req) => {
   const { torrentId, fileIndex, position, duration, ended } = req.body as any

@@ -22,10 +22,29 @@ export interface Episode {
   lastAt: number
 }
 
-/** An interest on a pack is keyed by the episode its file holds, not by the pack's own "Season N" label. */
-function episodeKey(r: { season: number | null; label: string; is_pack: number; file_name: string | null }): { season: number | null; label: string } {
+const epLabel = (season: number, episode: number) => `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+
+/**
+ * An interest on a pack is keyed by the episode its file holds, not by the pack's own "Season N" label. The pack's own
+ * file list (pack_episode) is what buildEpisodes labels the episodes by, so it leads: a file with no tag in its name is
+ * numbered by its place in the pack there, and only the file name is left to go on when the pack was never listed.
+ */
+function episodeKey(r: { season: number | null; label: string; is_pack: number; file_name: string | null; pack_episode?: number | null }): { season: number | null; label: string } {
+  if (r.is_pack && r.season !== null && r.pack_episode != null) return { season: r.season, label: epLabel(r.season, r.pack_episode) }
   const tag = r.is_pack && r.file_name ? parseEpisodeTag(r.file_name.split('/').pop()!) : null
-  return tag ? { season: tag.season, label: `S${String(tag.season).padStart(2, '0')}E${String(tag.episode).padStart(2, '0')}` } : { season: r.season, label: r.label }
+  return tag ? { season: tag.season, label: epLabel(tag.season, tag.episode) } : { season: r.season, label: r.label }
+}
+
+/** The season and label buildEpisodes gives the episode this file of this torrent plays, so the one after it can be found. */
+export function episodeOfFile(userId: number, torrentId: number, fileIndex: number): { seriesId: number; season: number | null; label: string } | null {
+  const r = db.prepare(`SELECT r.series_id, r.season, r.label, r.is_pack, i.file_name, pf.episode AS pack_episode FROM releases r
+    LEFT JOIN interests i ON i.torrent_id = r.torrent_id AND i.user_id = ? AND i.file_index = ?
+    LEFT JOIN pack_files pf ON pf.torrent_id = r.torrent_id AND pf.idx = ? WHERE r.torrent_id = ?`).get(userId, fileIndex, fileIndex, torrentId) as any
+  if (!r || r.series_id == null) return null
+  const k = episodeKey(r)
+  // A pack whose file could not be placed would come back as its own "Season N": that is no episode to follow on from.
+  if (r.is_pack && k.label === r.label) return null
+  return k.label ? { seriesId: r.series_id, ...k } : null
 }
 
 /**
@@ -38,8 +57,8 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
   const seasons = seasonsOf(seriesId)
   if (!seasons) return []
   const rows = candidatesFor(seriesId).filter((r) => !avoid?.has(r.torrent_id))
-  const prog = (db.prepare(`SELECT r.season, r.label, r.is_pack, i.file_name, i.watched_at, i.position, i.duration, i.updated_at FROM interests i
-    JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND r.series_id = ? AND i.released_at IS NULL ORDER BY i.updated_at DESC`).all(userId, seriesId) as any[])
+  const prog = (db.prepare(`SELECT r.season, r.label, r.is_pack, i.file_name, pf.episode AS pack_episode, i.watched_at, i.position, i.duration, i.updated_at FROM interests i
+    JOIN releases r ON r.torrent_id = i.torrent_id LEFT JOIN pack_files pf ON pf.torrent_id = i.torrent_id AND pf.idx = i.file_index WHERE i.user_id = ? AND r.series_id = ? AND i.released_at IS NULL ORDER BY i.updated_at DESC`).all(userId, seriesId) as any[])
     .map((p) => ({ ...p, ...episodeKey(p) }))
   const out: Episode[] = []
   const add = (e: Omit<Episode, 'watched' | 'position' | 'duration' | 'lastAt'>) => {
@@ -71,7 +90,7 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
       continue
     }
     for (const f of files) {
-      add({ season, episode: f.episode, label: `S${String(season).padStart(2, '0')}E${String(f.episode).padStart(2, '0')}`, isPack: true,
+      add({ season, episode: f.episode, label: epLabel(season, f.episode), isPack: true,
         torrentId: pack.torrent_id, quality: qualityLabel(pack.resolution), available: isAlive(pack), onServer: pack.on_server, fileIndex: f.idx })
     }
   }

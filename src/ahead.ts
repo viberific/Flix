@@ -27,7 +27,9 @@ function durationOf(torrentId: number, fileIndex: number): number | null {
   if (i?.duration) return i.duration
   const c = db.prepare('SELECT duration FROM credits_marker WHERE torrent_id = ? AND file_index = ? AND duration > 0').get(torrentId, fileIndex) as { duration: number } | undefined
   if (c?.duration) return c.duration
-  const r = db.prepare('SELECT series_id, season, episode FROM releases WHERE torrent_id = ?').get(torrentId) as { series_id: number; season: number | null; episode: number | null } | undefined
+  // A pack's own row names no episode: the episode is the file's, from the pack's file list.
+  const r = db.prepare(`SELECT r.series_id, COALESCE(pf.season, r.season) AS season, COALESCE(pf.episode, r.episode) AS episode FROM releases r
+    LEFT JOIN pack_files pf ON pf.torrent_id = r.torrent_id AND pf.idx = ? WHERE r.torrent_id = ?`).get(fileIndex, torrentId) as { series_id: number; season: number | null; episode: number | null } | undefined
   if (!r || r.season === null || r.episode === null) return null
   const e = db.prepare('SELECT runtime FROM episode_info WHERE series_id = ? AND season = ? AND episode = ?').get(r.series_id, r.season, r.episode) as { runtime: number | null } | undefined
   return e?.runtime ? e.runtime * 60 : null

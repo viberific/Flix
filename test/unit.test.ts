@@ -946,3 +946,20 @@ test('the next pack file is enabled on TIME covered, so a 6.25 GB and a 3.2 GB e
   assert.equal(coverBytes(6.25 * GB, null), 6.25 * GB)
   assert.equal(coverBytes(6.25 * GB, 0), 6.25 * GB)
 })
+
+test('a pack file is placed by the pack\'s own file list, so the episode after it is found whatever the file is called', async () => {
+  const { episodeOfFile } = await import('../src/episodes.ts')
+  const { db, now } = await import('../src/db.ts')
+  const u = createUser('ep_next', 'password123', false).id
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, label, is_pack, info_hash, fetched_at) VALUES (9400, 9400, 'Untagged', 'Season 2', 2, 'Season 2', 1, 'ut', ?)`).run(now())
+  // No tag in the name (numbered by place), a 2x03 tag, and an unpadded S2E4: none of them is the "S02E0n" the episodes are labelled by.
+  db.prepare(`INSERT INTO pack_files (torrent_id, idx, path, size, season, episode) VALUES (9400,0,'Show/one.mkv',1,2,1),(9400,1,'Show/Show.2x03.mkv',1,2,3),(9400,2,'Show/Show.S2E4.mkv',1,2,4)`).run()
+  for (const [i, name] of [[0, 'Show/one.mkv'], [1, 'Show/Show.2x03.mkv'], [2, 'Show/Show.S2E4.mkv']] as const)
+    db.prepare('INSERT INTO interests (user_id, torrent_id, file_index, file_name, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(u, 9400, i, name, now(), now())
+  assert.deepEqual(episodeOfFile(u, 9400, 0), { seriesId: 9400, season: 2, label: 'S02E01' })
+  assert.deepEqual(episodeOfFile(u, 9400, 1), { seriesId: 9400, season: 2, label: 'S02E03' })
+  assert.deepEqual(episodeOfFile(u, 9400, 2), { seriesId: 9400, season: 2, label: 'S02E04' })
+  assert.equal(episodeOfFile(u, 9400, 7), null, 'a file the pack list does not know is not the pack\'s "Season 2"')
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, episode, label, is_pack, info_hash, fetched_at) VALUES (9401, 9400, 'Untagged', 'S02E05', 2, 5, 'S02E05', 0, 'ut5', ?)`).run(now())
+  assert.deepEqual(episodeOfFile(u, 9401, 0), { seriesId: 9400, season: 2, label: 'S02E05' }, 'a single episode is its own label')
+})
