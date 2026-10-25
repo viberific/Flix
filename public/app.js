@@ -2510,7 +2510,7 @@ async function settingsView(section = 'torrents') {
   }
 }
 
-const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
+const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const mins = Math.round(sec / 60), h = Math.floor(mins / 60), m = mins % 60; return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
 /**
  * What an episode's OWN file is, in the words shown under it. "Ready to watch" is a claim about bytes on disk, so it is
  * only said when qBittorrent reports that file at 1: a release that merely exists -- or a pack that has just started --
