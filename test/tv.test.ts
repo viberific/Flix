@@ -195,3 +195,8 @@ test('only transform and opacity ease on a television after a remote press', () 
   assert.match(css, /html\.tv \.tile:focus \.poster \{ transition: transform \.18s var\(--ease\); \}/)
   assert.doesNotMatch(css, /@keyframes sweep \{[^}]*left:/, 'the loading shine moves by transform, not by left')
 })
+
+test('the Queue rails keep room for their group names on a television', () => {
+  // `html.tv .row-scroll` outranks `.row-scroll.q`, so the TV rule must restate the 36px plus the 8px its margin takes back.
+  assert.match(css, /html\.tv \.row-scroll\.q, html\.tv \.row-scroll\.qtop \{ padding-top: 44px; \}/)
+})

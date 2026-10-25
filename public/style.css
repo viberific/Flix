@@ -993,6 +993,9 @@ html.tv .qact, html.tv .wide-play { transition: transform .2s var(--ease); }
    padding: with 4px at the start and 8px on top, the first show in a row lost the ring's left side and top corner. The
    rail gets room for the whole ring on every side, and the same amount back as negative margin, so nothing moves. */
 html.tv .row-scroll { padding: 16px 24px 22px 16px; margin: -8px -16px 0; }
+/* The Queue's rails keep their 36px for the group names above the cards (Continue, Ready to Watch); the rule above outranks
+   theirs, so it is restated here with the same 8px given back to the margin. */
+html.tv .row-scroll.q, html.tv .row-scroll.qtop { padding-top: 44px; }
 /* The show page's season pills and cast scroll sideways the same way, and their first entry lost its ring on the left. */
 html.tv .pills { padding: 8px 8px 14px; margin: -2px -8px 0; }
 html.tv .cast { padding: 10px 10px 12px; margin: -10px -10px 0; }
