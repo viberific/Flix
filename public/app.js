@@ -3108,7 +3108,13 @@ const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex="0"], .tile, input
     "is this drawn" on its own, and the offsetParent test is the fallback for a WebView that has never had it. */
 function focusStops() {
   const out = []
+  // A rail wholly above the screen or more than the look-ahead below it holds no stop, so its ten posters are never measured
+  // one by one: on Home that is most of the page, and every measurement on every press is time a TV's chip spends before it
+  // can draw the highlight.
+  const far = new Set()
+  for (const w of document.querySelectorAll('.rowwrap')) { const r = w.getBoundingClientRect(); if (r.bottom <= 0 || r.top >= innerHeight + 400) far.add(w) }
   for (const n of (document.querySelector('.pin-modal') || document.querySelector('#top > .menu:not(.out)') || document).querySelectorAll(FOCUSABLE)) { // a PIN box traps the remote: nothing behind it
+    if (far.size && far.has(n.closest('.rowwrap'))) continue
     if (n.closest('[hidden]') || n.classList.contains('arrow')) continue
     if (!(n.checkVisibility?.({ visibilityProperty: true }) ?? (n.offsetParent !== null || getComputedStyle(n).position === 'fixed'))) continue
     const r = n.getBoundingClientRect()
