@@ -967,14 +967,13 @@ async function seriesView(id) {
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
-        <button class="btn hdl" id="hdl" hidden></button>
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
       ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
       ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
-      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Put every episode of the season you are looking at on the server" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${keys.length > 1 ? 'Torrent all seasons' : 'Torrent all episodes'}</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Put every episode of the season you are looking at on the server" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${'Torrent All'}</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const canSave = (e) => canDownload && e?.available && !(e.isPack && e.episode === null)
     // The ring fills as the episode is saved; tapping it once arms a stop, a second tap cancels.
@@ -1023,20 +1022,7 @@ async function seriesView(id) {
     $('#eps').addEventListener('click', dlAct, true); $('#eps').addEventListener('keydown', dlAct, true)
     // Progress ticks arrive many times a second. Only the download buttons and the season button change, so the list itself
     // (thumbnails, entrance animation, scroll position) is left alone.
-    // The big Download button under Play, for the same episode Play would start (Netflix's "Download S1:E1").
-    const heroDl = () => {
-      const b = $('#hdl'); if (!b) return
-      if (!canSave(hero)) { b.hidden = true; return }
-      const did = dl.idOf(id, hero.season, hero.label), a = dl.active.get(did), name = hero.season != null && hero.episode != null ? `S${hero.season}:E${hero.episode}` : hero.label
-      const html = a && !a.error ? `${ring(a)}${I.stop}<span>${armed.has(did) ? 'Tap again to cancel' : `Downloading ${esc(name)} · ${Math.round(a.pct * 100)}%`}</span>`
-        : saved.has(did) ? `${I.saved}<span>Downloaded ${esc(name)}</span>`
-        : a?.error ? `${I.dl}<span>${esc(a.text)} Try again</span>` : `${I.dl}<span>Download ${esc(name)}</span>`
-      b.hidden = false
-      b.classList.toggle('busy', !!a && !a.error); b.classList.toggle('done', saved.has(did))
-      if (b.innerHTML !== html) b.innerHTML = html
-    }
     const paintDl = () => {
-      heroDl()
       $('#eps').querySelectorAll('.ep').forEach((b) => {
         const side = b.querySelector('.eside'), e = seasons.get(cur)?.[+b.dataset.i]
         if (!side || !e) return
@@ -1049,8 +1035,7 @@ async function seriesView(id) {
         else if (next) side.appendChild(next)
       })
     }
-    paint(); heroDl()
-    const hdl = $('#hdl'); if (hdl) hdl.onclick = () => dlTap(hero)
+    paint()
     // Asks the server to fetch every episode that can be played (on a television too: this is the server's disk, not the device's).
     const torrentBtn = (b, body, idle) => b.onclick = async () => {
       const label = $('span', b)
@@ -1060,7 +1045,7 @@ async function seriesView(id) {
         b.classList.add('done'); b.innerHTML = `${I.saved} <span>${r.episodes ? `Downloading ${r.episodes} episode${r.episodes === 1 ? '' : 's'}` : 'Nothing left to download'}</span>`
       } catch (e) { b.disabled = false; label.textContent = idle(); flashNote(e.message) }
     }
-    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => keys.length > 1 ? 'Torrent all seasons' : 'Torrent all episodes')
+    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => 'Torrent All')
     // The season button follows the season pill, and only shows when that season has something left to fetch.
     const hseason = $('#hseason')
     const paintSeasonBtn = () => {
@@ -1068,9 +1053,9 @@ async function seriesView(id) {
       // Shown only when it fetches something the other button would not: this season has something left, and so does another one.
       hseason.hidden = !wanted(seasons.get(cur) ?? []) || wantedN(seasons.get(cur) ?? []) === wantedN(episodes)
       hseason.disabled = false; hseason.classList.remove('done')
-      hseason.innerHTML = `${I.dl} <span>Torrent this ${cur === 'x' ? 'full list' : 'season'}</span>`
+      hseason.innerHTML = `${I.dl} <span>Torrent Season</span>`
     }
-    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => `Torrent this ${cur === 'x' ? 'full list' : 'season'}`)
+    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => `Torrent Season`)
     paintSeasonBtn()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true

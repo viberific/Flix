@@ -725,27 +725,31 @@ html.tv * { cursor: none; }
 .dlb { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); font-size: 13px; font-weight: 600; cursor: pointer; max-width: 22ch; text-align: left; }
 .dlb svg { width: 18px; height: 18px; } .dlb:hover { color: var(--fg); }
 .dlb.done { color: var(--ok); } .dlb.busy { color: var(--fg); } .dlb.err { color: #ff8a80; }
-/* A download on its way: a ring that fills around a stop square, the same in the episode row and on the Download button.
+/* A download on its way: a ring that fills around a stop square in the episode row.
    The ring and the square share the first cell, so the square sits inside the ring; the words (if any) go beside it. */
-.dlb.busy, .hdl.busy { display: inline-grid; grid-auto-flow: column; align-items: center; column-gap: 8px; }
-.dlb.busy > svg, .hdl.busy > svg { grid-row: 1; grid-column: 1; }
-.dlb.busy > .dlt, .hdl.busy > span { grid-row: 1; grid-column: 2; }
+.dlb.busy { display: inline-grid; grid-auto-flow: column; align-items: center; column-gap: 8px; }
+.dlb.busy > svg { grid-row: 1; grid-column: 1; }
+.dlb.busy > .dlt { grid-row: 1; grid-column: 2; }
 .dl-ring { width: 24px !important; height: 24px !important; transform: rotate(-90deg); }
 .dl-ring circle { fill: none; stroke: color-mix(in srgb, currentColor 22%, transparent); stroke-width: 3; }
 .dl-ring circle.on { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .5s var(--ease); }
-.dlb.busy > svg:not(.dl-ring), .hdl.busy > svg:not(.dl-ring) { width: 24px; height: 24px; opacity: .55; }
+.dlb.busy > svg:not(.dl-ring) { width: 24px; height: 24px; opacity: .55; }
 .dlb.armed > svg:not(.dl-ring) { opacity: 1; color: #ff8a80; }
 .dlb.armed .dl-ring circle.on { stroke: #ff8a80; }
 .dlb.err { color: #ff8a80; } .dlb .dlt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hdl.done { color: var(--ok); }
 .hdl-all svg { width: 18px; height: 18px; } .hdl-all.done { color: var(--ok); } .hdl-all[disabled] { opacity: .7; cursor: default; }
 svg.inl { width: 1.1em; height: 1.1em; vertical-align: -.2em; }
 @media (max-width: 640px) {
-  /* Netflix on a phone: Play, then Download under it, each the full width; My List and the thumbs share the row below. */
-  .s-meta #hp, .s-meta .hdl { flex: 1 1 100%; }
+  /* Netflix on a phone: Play the full width; My List and the thumbs share the row below. */
+  .s-meta #hp { flex: 1 1 100%; }
+  /* The two torrent buttons share one row, each half of it. */
+  .eps-head .hdl-btns { flex-wrap: nowrap; width: 100%; margin-bottom: 14px; }
+  .hdl-all { flex: 1 1 0; min-width: 0; gap: 6px; padding-left: 8px; padding-right: 8px; font-size: 13px; white-space: nowrap; }
+  .hdl-all span { overflow: hidden; text-overflow: ellipsis; }
   .ep .eside .dlb.busy { display: inline-grid; place-items: center; }
   .ep .eside .dl-ring { width: 30px !important; height: 30px !important; }
 }
+@media (max-width: 380px) { .hdl-all svg { display: none; } }
 .dl-item { cursor: pointer; }
 
 /* ---------- the idle sit-back slideshow: the top shows' art, one at a time, on a television left alone ---------- */
