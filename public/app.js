@@ -967,7 +967,6 @@ async function seriesView(id) {
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
-        <button class="btn hdl" id="hdl" hidden></button>
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
@@ -1023,20 +1022,7 @@ async function seriesView(id) {
     $('#eps').addEventListener('click', dlAct, true); $('#eps').addEventListener('keydown', dlAct, true)
     // Progress ticks arrive many times a second. Only the download buttons and the season button change, so the list itself
     // (thumbnails, entrance animation, scroll position) is left alone.
-    // The big Download button under Play, for the same episode Play would start (Netflix's "Download S1:E1").
-    const heroDl = () => {
-      const b = $('#hdl'); if (!b) return
-      if (!canSave(hero)) { b.hidden = true; return }
-      const did = dl.idOf(id, hero.season, hero.label), a = dl.active.get(did), name = hero.season != null && hero.episode != null ? `S${hero.season}:E${hero.episode}` : hero.label
-      const html = a && !a.error ? `${ring(a)}${I.stop}<span>${armed.has(did) ? 'Tap again to cancel' : `Downloading ${esc(name)} · ${Math.round(a.pct * 100)}%`}</span>`
-        : saved.has(did) ? `${I.saved}<span>Downloaded ${esc(name)}</span>`
-        : a?.error ? `${I.dl}<span>${esc(a.text)} Try again</span>` : `${I.dl}<span>Download ${esc(name)}</span>`
-      b.hidden = false
-      b.classList.toggle('busy', !!a && !a.error); b.classList.toggle('done', saved.has(did))
-      if (b.innerHTML !== html) b.innerHTML = html
-    }
     const paintDl = () => {
-      heroDl()
       $('#eps').querySelectorAll('.ep').forEach((b) => {
         const side = b.querySelector('.eside'), e = seasons.get(cur)?.[+b.dataset.i]
         if (!side || !e) return
@@ -1049,8 +1035,7 @@ async function seriesView(id) {
         else if (next) side.appendChild(next)
       })
     }
-    paint(); heroDl()
-    const hdl = $('#hdl'); if (hdl) hdl.onclick = () => dlTap(hero)
+    paint()
     // Asks the server to fetch every episode that can be played (on a television too: this is the server's disk, not the device's).
     const torrentBtn = (b, body, idle) => b.onclick = async () => {
       const label = $('span', b)
