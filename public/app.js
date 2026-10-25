@@ -3153,36 +3153,55 @@ function focusRows(stops) {
 /** Bring a newly highlighted thing into view, and only when it is really cut off. A rail of posters is its own sideways
     scroller, so the tile can be off the rail while the rail is on screen; the page then moves by the least that shows
     it. The old block/inline 'center' glide re-centred the page on every press, so the picture drifted under a highlight
-    that had already jumped. On a television both are instant: a glide is a 300ms smear on a remote. */
-/** One eased scroll for a television, in place of the browser's smooth scroll. The native glide queues a press behind the
-    one before it and, with the highlight already moved, trails after it; this one is retargeted from wherever it has got
-    to on every press, so holding an arrow key is one continuous slide. 220ms of ease-out, scrollTop/scrollLeft only. */
-const scrollRuns = new WeakMap()
+    that had already jumped. On a television both moves are easeScroll's compositor glide (below). */
+/** One glide for a television, in place of the browser's smooth scroll -- and drawn by the graphics chip, not by script.
+    The scroll position jumps to where it is going in one step, and the content is put back where it was with a transform
+    that then eases to nothing (a FLIP). A transform animation runs on the compositor by itself, so the slide stays smooth
+    however busy the TV's processor is with the press that caused it; the old way set scrollTop on each of 13 frames, and
+    every one of those waited on the main thread. A press during a glide picks it up from wherever it is on screen, so
+    holding an arrow key is one continuous slide. The page glides #app (the header is outside it and stays put); a rail
+    glides its cards together. */
+const GLIDE_MS = 280, GLIDE_EASE = 'cubic-bezier(.2,.8,.2,1)'
+const glides = new WeakMap()
+/** How far a glide still in flight has the scroller's content drawn from where it really is (0 with none). */
+function glideOffset(sc) {
+  const g = glides.get(sc)
+  if (!g) return 0
+  const t = getComputedStyle(g.els[0]).transform
+  if (!t || t === 'none') return 0
+  const m = new DOMMatrixReadOnly(t)
+  return g.axis === 'X' ? m.m41 : m.m42
+}
 function easeScroll(box, prop, to) {
   const sc = box === window ? document.scrollingElement : box
   const view = box === window ? innerHeight : prop === 'scrollTop' ? sc.clientHeight : sc.clientWidth
   const size = prop === 'scrollTop' ? sc.scrollHeight : sc.scrollWidth
   to = Math.max(0, Math.min(size - view, to))
-  const runs = scrollRuns.get(sc) || {}
-  scrollRuns.set(sc, runs)
-  if (runs[prop]) cancelAnimationFrame(runs[prop])
-  const from = sc[prop]
-  if (rmq.matches || Math.abs(to - from) < 2) { sc[prop] = to; return }
-  const t0 = performance.now()
-  const step = (now) => {
-    const k = Math.min(1, (now - t0) / 220)
-    sc[prop] = from + (to - from) * (1 - Math.pow(1 - k, 3))
-    runs[prop] = k < 1 ? requestAnimationFrame(step) : 0
-  }
-  runs[prop] = requestAnimationFrame(step)
+  const from = sc[prop], axis = prop === 'scrollTop' ? 'Y' : 'X'
+  const carry = glideOffset(sc)
+  glides.get(sc)?.anims.forEach((a) => a.cancel())
+  glides.delete(sc)
+  sc[prop] = to
+  const start = carry + (sc[prop] - from)
+  const els = box === window ? [app] : [...sc.children]
+  if (rmq.matches || Math.abs(start) < 2 || !els.length || !els[0].animate) return
+  const anims = els.map((el) => el.animate([{ transform: `translate${axis}(${start}px)` }, { transform: 'none' }], { duration: GLIDE_MS, easing: GLIDE_EASE }))
+  const g = { els, anims, axis }
+  glides.set(sc, g)
+  anims[0].onfinish = () => { if (glides.get(sc) === g) glides.delete(sc) }
 }
 
 function revealStop(el) {
-  const r = el.getBoundingClientRect()
+  // Where things will be once any glide still under way has landed: a rect taken mid-glide includes its transform.
+  const pageOff = isTv ? glideOffset(document.scrollingElement) : 0
+  const b = el.getBoundingClientRect()
+  let r = { left: b.left, right: b.right, width: b.width, height: b.height, top: b.top - pageOff, bottom: b.bottom - pageOff }
   // Sideways first, on the rail itself: the tile is brought in with a tile's width to spare on the side it came from,
   // so the next one is always visible beyond it and the rail never stops with the highlight hard against the edge.
   for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
     if (p.scrollWidth <= p.clientWidth + 1 || !/auto|scroll|overlay|hidden/.test(getComputedStyle(p).overflowX)) continue
+    const railOff = isTv ? glideOffset(p) : 0
+    if (railOff) r = { ...r, left: r.left - railOff, right: r.right - railOff }
     const pr = p.getBoundingClientRect(), pad = Math.min(r.width * 0.6, 90)
     const dxs = r.left < pr.left + pad ? r.left - pr.left - pad : r.right > pr.right - pad ? r.right - pr.right + pad : 0
     if (dxs) { if (isTv) easeScroll(p, 'scrollLeft', p.scrollLeft + dxs); else p.scrollBy({ left: dxs, behavior: smooth() }) }
@@ -3190,8 +3209,8 @@ function revealStop(el) {
   }
   // Then the page: only when the row is near an edge, and then by enough to put it a little above the middle, with room
   // for its title below -- rather than the least that shows the poster, which left the row jammed against the bottom
-  // with its name cut off. A short eased glide on a computer; on a television a jump, because a smooth scroll of a page
-  // of posters is what a TV's chip cannot keep up with, and a press during the glide queued up behind it.
+  // with its name cut off. A short eased glide on a computer; on a television easeScroll's glide, which the graphics chip
+  // draws, because a scroll eased by script or by the browser's smooth scroll is what a TV's chip could not keep up with.
   const edge = isTv ? Math.max(180, innerHeight * 0.2) : Math.min(140, innerHeight * 0.16)
   if (r.top < edge || r.bottom > innerHeight - edge - 40) {
     const want = r.top + r.height / 2 - innerHeight * 0.42

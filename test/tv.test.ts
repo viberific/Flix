@@ -212,3 +212,14 @@ test('on a television the logo never animates over the picture, and a moving clo
   assert.match(app, /const going = \(\) => el\.readyState >= 3 \|\| el\.ended \|\| \(!el\.paused && el\.currentTime > t \+ 0\.5\)/)
   assert.doesNotMatch(app, /if \(!live\(\) \|\| el\.readyState >= 3/)
 })
+
+test('a television glides scrolls on the compositor: one jump of the scroll position, then a transform eased away', () => {
+  const body = app.slice(app.indexOf('function easeScroll('), app.indexOf('function revealStop('))
+  // No scrollTop written frame by frame from script: that waited on the TV's busy main thread on every frame.
+  assert.doesNotMatch(body, /requestAnimationFrame/)
+  assert.match(body, /sc\[prop\] = to/)
+  assert.match(body, /el\.animate\(\[\{ transform: `translate\$\{axis\}\(\$\{start\}px\)` \}, \{ transform: 'none' \}\]/)
+  // A press mid-glide carries on from where the content is drawn, and the reveal measures where things will land.
+  assert.match(body, /const carry = glideOffset\(sc\)/)
+  assert.match(app, /const pageOff = isTv \? glideOffset\(document\.scrollingElement\) : 0/)
+})

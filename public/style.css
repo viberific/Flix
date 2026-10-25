@@ -571,7 +571,7 @@ html.tv .tile { outline: none !important; }
    on every frame, or a layer for each of two hundred posters, is what a TV's GPU cannot spare. The ring arrives with the lift. */
 html.tv .poster { transition: transform .2s var(--ease); }
 html.tv .tile:focus-visible .poster, html.tv .tile:focus .poster { transform: scale(1.07); will-change: transform; box-shadow: 0 0 0 3px var(--fg), 0 18px 38px rgba(0,0,0,.6); }
-/* Scrolling is eased by script on a television (easeScroll, public/app.js): the native smooth scroll would fight it. */
+/* A television's scrolling glides by transform (easeScroll, public/app.js): the native smooth scroll would fight it. */
 html.tv, html.tv .row-scroll { scroll-behavior: auto; }
 html.tv .tile:focus .tt { color: var(--fg); }
 html.tv .tile .tt { color: var(--dim); }
