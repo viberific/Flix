@@ -2219,8 +2219,7 @@ function playView(seriesId, season, label) {
       const eng = engSub()
       let pick = null
       if (!eng || pref === 'off') pick = null
-      else if (pref === 'on' || pref?.lang) pick = eng
-      else if (audioLang && audioLang !== 'eng' && audioLang !== 'und') pick = eng // foreign audio: English subtitles
+      else pick = eng // on unless the viewer has turned CC off on this device
       subPick = pick ? pick.n : null
       for (const s of info.subs) mountTrack(s)
       // Whatever adds a track of its own, or turns one on, is put back to the one choice. Idempotent, so it cannot loop.
