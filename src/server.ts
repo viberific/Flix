@@ -16,6 +16,7 @@ import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { enableNextFile } from './ahead.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
+import { findOnlineSubs, onlineSubVtt } from './onlinesubs.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { copyPictureFor, ensureHls, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
@@ -580,6 +581,8 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
   const subsList = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))]
+  // Nothing in the file or beside it in English: ask the web (OpenSubtitles, Subdl, Podnapisi), so CC still has something to show.
+  if (!subsList.some((s) => /^eng?$/i.test(s.lang) && !s.forced)) subsList.push(...(await onlineSubsFor(+t, +f, base)))
   const copyFor = copyPictureFor(p, can)
   // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
   // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
@@ -625,6 +628,22 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     audio: p.audio, chapters: p.chapters,
     subs: subsList, quality: null, qualities,
   }
+})
+
+async function onlineSubsFor(t: number, f: number, base: string) {
+  const fi = await fileInfo(t, f).catch(() => null)
+  const tag = fi ? parseEpisodeTag(fi.file.name.split('/').pop()!) : null
+  if (!fi || !tag) return []
+  const subs = await findOnlineSubs({ series: fi.rel.series, season: tag.season, episode: tag.episode, imdb: (fi.rel as any).imdb_id ?? null }).catch(() => [])
+  return subs.map((s) => ({ n: `o${s.id}` as number | string, lang: 'eng', label: `English · ${s.source}`, forced: false, default: false, url: `${base}/osubs/${encodeURIComponent(s.id)}.vtt` }))
+}
+
+app.get('/api/stream/:t/:f/osubs/:file', guarded, async (req, reply) => {
+  const m = /^([a-z]+:[\w-]+)\.vtt$/.exec((req.params as any).file)
+  if (!m) return reply.code(404).send({ error: 'no such subtitle' })
+  const vtt = await onlineSubVtt(m[1]).catch((e) => { console.warn(`[subs] ${m[1]}: ${e.message}`); return null })
+  if (vtt == null) return reply.code(404).send({ error: 'subtitle unavailable' })
+  return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', '1').send(vtt)
 })
 
 /** Subtitle files shipped beside the video (".srt" etc.): in a season pack only the ones for this episode. Needs the file fully downloaded to be read. */

@@ -143,3 +143,5 @@ Requires Node ≥ 22.9, ffmpeg/ffprobe and qBittorrent (`qbittorrent-nox`).
 
 `npm test` – unit tests plus an end-to-end test using a mock BTN API, a local tracker, a WebTorrent seeder, real
 `qbittorrent-nox` and ffmpeg (needs those installed).
+
+- **Subtitles from the web:** when an episode has no English subtitles of its own (inside the file or beside it), CC asks [OpenSubtitles](https://www.opensubtitles.com/) (`OPENSUBTITLES_API_KEY`), [Subdl](https://subdl.com/) (`SUBDL_API_KEY`) and Podnapisi (no key; `PODNAPISI_URL=` empty turns it off) and uses the best match. Each source is optional and one being down does not affect the others.
