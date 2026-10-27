@@ -1183,7 +1183,7 @@ function playView(seriesId, season, label) {
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Quality" aria-haspopup="true" hidden></button></div>
-              <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-haspopup="true" hidden>CC</button></div>
+              <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-pressed="false" hidden>CC</button></div>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div class="p-under"><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div></div>`
@@ -2188,6 +2188,12 @@ function playView(seriesId, season, label) {
        off -- including any the player or the browser adds on its own -- whenever anything changes. */
     let subPick = null // the chosen subtitle's `n`, or null for off
     const trackEls = () => [...v.querySelectorAll('track[data-n]')]
+    /** The English subtitle CC turns on: a full one before a forced one (signs only), a labelled English before an unknown language. */
+    const engSub = () => {
+      const subs = info?.subs ?? []
+      const isEn = (s) => /^(eng?|en-.*)$/i.test(s.lang || '')
+      return subs.find((s) => isEn(s) && !s.forced) ?? subs.find(isEn) ?? subs.find((s) => s.lang === 'und' && !s.forced)
+    }
     function applySubs() {
       if (!v) return
       for (const t of v.textTracks) {
@@ -2196,12 +2202,12 @@ function playView(seriesId, season, label) {
         if (t.mode !== want) t.mode = want
       }
       const btn = $('#pcc')
-      if (btn) { btn.hidden = !info?.subs?.length; btn.classList.toggle('on', subPick != null) }
+      if (btn) { btn.hidden = !engSub(); btn.classList.toggle('on', subPick != null); btn.setAttribute('aria-pressed', String(subPick != null)) }
     }
     function setSubs(n) {
       subPick = n
       const s = n == null ? null : info.subs.find((x) => String(x.n) === String(n))
-      store.set('subs', s ? { lang: s.lang } : 'off')
+      store.set('subs', s ? 'on' : 'off')
       applySubs()
     }
     function wireSubs() {
@@ -2210,11 +2216,11 @@ function playView(seriesId, season, label) {
       subPick = null
       const pref = store.get('subs', null) // 'off' | { lang } | null (never chosen)
       const audioLang = info.audio[info.audioIndex]?.lang
+      const eng = engSub()
       let pick = null
-      if (!info.subs.length || pref === 'off') pick = null
-      else if (pref?.lang) pick = info.subs.find((s) => s.lang === pref.lang && !s.forced) ?? info.subs.find((s) => s.lang === pref.lang)
-      else if (audioLang && audioLang !== 'eng' && audioLang !== 'und') pick = info.subs.find((s) => s.lang === 'eng' && !s.forced) // foreign audio: English subtitles
-      else pick = info.subs.find((s) => s.forced && s.lang === audioLang) ?? null
+      if (!eng || pref === 'off') pick = null
+      else if (pref === 'on' || pref?.lang) pick = eng
+      else if (audioLang && audioLang !== 'eng' && audioLang !== 'und') pick = eng // foreign audio: English subtitles
       subPick = pick ? pick.n : null
       for (const s of info.subs) mountTrack(s)
       // Whatever adds a track of its own, or turns one on, is put back to the one choice. Idempotent, so it cannot loop.
@@ -2326,31 +2332,17 @@ function playView(seriesId, season, label) {
       for (const ev of ['playing', 'emptied']) v.addEventListener(ev, () => clearTimeout(longT))
     }
 
-    /* captions: a menu of our own, because the bar is ours now and the TV's WebView draws no CC button. A list where one
-       entry is ticked: picking one unticks the rest, and Off is one of them. */
+    /* captions: CC is a switch, not a list. On means the English subtitles, off means none. */
     function wireSubMenu() {
       const btn = $('#pcc')
       applySubs()
       btn.onclick = (e) => {
         e.stopPropagation()
-        const old = btn.parentElement.querySelector('.menu'); if (old) return closePlayerMenu(old, btn)
-        if (!info.subs.length) return
-        // Two subtitles with the same name are told apart by number rather than shown as two identical lines.
-        const seen = new Map()
-        const names = info.subs.map((s) => { const base = s.label || 'Subtitles'; const k = (seen.get(base) ?? 0) + 1; seen.set(base, k); return k > 1 ? `${base} (${k})` : base })
-        const row = (n, label) => {
-          const on = n === null ? subPick == null : String(subPick) === String(n)
-          return `<button role="menuitemradio" aria-checked="${on}" data-n="${n === null ? '' : esc(String(n))}"${on ? ' aria-current="true"' : ''}>${on ? '\u2713 ' : ''}${esc(label)}</button>`
-        }
-        const m = document.createElement('div'); m.className = 'menu'; m.setAttribute('role', 'menu')
-        m.innerHTML = `<div class="who">Captions</div>` + row(null, 'Off') + info.subs.map((s, i) => row(s.n, names[i])).join('')
-        btn.parentElement.appendChild(m)
-        m.querySelectorAll('button[role="menuitemradio"]').forEach((b) => b.onclick = (ev) => {
-          ev.stopPropagation()
-          const n = b.dataset.n === '' ? null : info.subs.find((s) => String(s.n) === b.dataset.n)?.n ?? null
-          setSubs(n)
-          closePlayerMenu(m, btn)
-        })
+        const eng = engSub()
+        if (!eng) return
+        setSubs(subPick == null ? eng.n : null)
+        btn.setAttribute('aria-pressed', String(subPick != null))
+        dropFocus(); armQuiet()
       }
     }
 
