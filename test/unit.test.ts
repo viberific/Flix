@@ -1001,3 +1001,38 @@ test('copy-only: a show with a download on the server stays listed even when its
     assert.ok(!unplayableSeries().has(97500), 'one episode on disk plays, so the show stays')
   } finally { config.transcode.mode = was }
 })
+
+const { bestEnglishSub } = await import('../src/transcode.ts')
+test('CC uses one subtitle: full English (the default first), else an unlabelled one, never forced', () => {
+  const s = (n: number, lang: string, forced = false, def = false) => ({ n, lang, forced, default: def })
+  assert.equal(bestEnglishSub([s(0, 'spa'), s(1, 'eng', true), s(2, 'eng'), s(3, 'eng', false, true)])?.n, 3)
+  assert.equal(bestEnglishSub([s(0, 'fre'), s(1, 'eng'), s(2, 'en')])?.n, 1)
+  assert.equal(bestEnglishSub([s(0, 'und', true), s(1, 'und')])?.n, 1)
+  assert.equal(bestEnglishSub([s(0, 'eng', true), s(1, 'spa')]), undefined)
+})
+
+test('a subtitle from the web: the one made for the same release first, and the next one when a download fails', async () => {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { config } = await import('../src/config.ts')
+  const { findOnlineSubs, bestOnlineSubVtt } = await import('../src/onlinesubs.ts')
+  const was = { ...config.subs }, dir = config.dataDir, realFetch = globalThis.fetch
+  Object.assign(config.subs, { openSubtitlesKey: 'k', openSubtitlesUrl: 'http://os.test', subdlKey: '', podnapisiUrl: '' })
+  config.dataDir = mkdtempSync(join(tmpdir(), 'flix-subs-'))
+  const files: Record<string, string> = { 1: 'Show.S01E02.720p.HDTV.x264-OTHER', 2: 'Show.S01E02.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb', 3: 'Show.S01E02.1080p.AMZN.WEB-DL.H.264-NTb.SDH' }
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url)
+    if (u.startsWith('http://os.test/subtitles?')) return Response.json({ data: Object.entries(files).map(([id, release]) => ({ attributes: { release, files: [{ file_id: +id }] } })) })
+    if (u === 'http://os.test/download') return Response.json({ link: `http://dl.test/${JSON.parse(init.body).file_id}` })
+    if (u === 'http://dl.test/2') return new Response('nope', { status: 500 })
+    if (u.startsWith('http://dl.test/')) return new Response(`1\n00:00:01,000 --> 00:00:02,000\nfrom ${u.slice(-1)}\n`)
+    throw new Error('unexpected ' + u)
+  }) as typeof fetch
+  try {
+    const q = { series: 'Show', season: 1, episode: 2, imdb: null, release: 'Show.S01E02.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv' }
+    assert.deepEqual((await findOnlineSubs(q)).map((s) => s.id), ['os:2', 'os:3', 'os:1'])
+    const vtt = await bestOnlineSubVtt(q)
+    assert.match(vtt ?? '', /from 3/, 'the matching release failed to download, so the next best one is used')
+  } finally { Object.assign(config.subs, was); config.dataDir = dir; globalThis.fetch = realFetch }
+})
