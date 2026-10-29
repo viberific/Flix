@@ -21,6 +21,25 @@ android {
         versionName flixVersion
     }
 
+    buildFeatures {
+        buildConfig true
+    }
+
+    // Two builds of the same app. sideload: the APK on the GitHub release, which installs its own updates from there
+    // (Updater). play: the bundle for Google Play's internal testing track, which Play updates; Android Auto only lists
+    // a Car App Library app that came from Play, so this is the one for the car. src/play/ takes the self-updating out.
+    flavorDimensions 'store'
+    productFlavors {
+        sideload {
+            dimension 'store'
+            buildConfigField 'boolean', 'SELF_UPDATE', 'true'
+        }
+        play {
+            dimension 'store'
+            buildConfigField 'boolean', 'SELF_UPDATE', 'false'
+        }
+    }
+
     signingConfigs {
         // A fixed key (from repository secrets in CI) lets each new APK install as an update. Without one the
         // build is signed with a throwaway debug key, and the old app has to be uninstalled before a new one goes on.

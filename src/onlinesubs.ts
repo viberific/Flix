@@ -6,9 +6,8 @@ import { config } from './config.ts'
 import { fileSubtitleVtt } from './transcode.ts'
 
 /**
- * English subtitles from the web, for episodes whose files carry none. Three sources are asked at once and each is optional:
- * OpenSubtitles (OPENSUBTITLES_API_KEY), Subdl (SUBDL_API_KEY) and Podnapisi (no key). A source that is down, slow or has no
- * match is skipped; the rest still answer.
+ * English subtitles from the web, for episodes whose files carry none, from OpenSubtitles. Needs an API key
+ * (OPENSUBTITLES_API_KEY, or Settings → Subtitles); without one, or when the site is down, slow or has no match, there are none.
  */
 export interface OnlineSub { id: string; source: string; name: string }
 export interface Query { series: string; season: number; episode: number; imdb: string | null; release?: string }
@@ -48,42 +47,6 @@ const SOURCES: Source[] = [
       return Buffer.from(await f.arrayBuffer())
     },
   },
-  {
-    key: 'subdl', label: 'Subdl', enabled: () => !!config.subs.subdlKey,
-    async search(q) {
-      const p = new URLSearchParams({ api_key: config.subs.subdlKey, type: 'tv', languages: 'EN', season_number: String(q.season), episode_number: String(q.episode) })
-      if (q.imdb) p.set('imdb_id', q.imdb); else p.set('film_name', q.series)
-      const j = await json(`${config.subs.subdlUrl}/api/v1/subtitles?${p}`)
-      return (j.subtitles ?? []).filter((s: any) => s.url).map((s: any) => ({ id: String(s.url).replace(/^\/?subtitle\//, '').replace(/\.zip$/, ''), name: String(s.release_name ?? '') }))
-    },
-    async fetch(id) {
-      if (!/^[\w-]+$/.test(id)) throw new Error('bad id')
-      const f = await get(`https://dl.subdl.com/subtitle/${id}.zip`)
-      if (!f.ok) throw new Error(`HTTP ${f.status}`)
-      return Buffer.from(await f.arrayBuffer())
-    },
-  },
-  {
-    key: 'pn', label: 'Podnapisi', enabled: () => !!config.subs.podnapisiUrl,
-    async search(q) {
-      // The XML search is the one subliminal and Bazarr use; the JSON one behind the site's own search is the fallback.
-      const x = new URLSearchParams({ sXML: '1', sL: 'en', sK: q.series, sTS: String(q.season), sTE: String(q.episode) })
-      const r = await get(`${config.subs.podnapisiUrl}/subtitles/search/old?${x}`).catch(() => null)
-      const xml = r?.ok ? await r.text() : ''
-      const found = [...xml.matchAll(/<subtitle>([\s\S]*?)<\/subtitle>/g)].map(([, b]) => ({
-        id: /<pid>([\w-]+)<\/pid>/.exec(b)?.[1] ?? '', name: /<release>([^<]*)<\/release>/.exec(b)?.[1]?.trim() ?? '' })).filter((x) => x.id)
-      if (found.length) return found
-      const p = new URLSearchParams({ keywords: q.series, language: 'en', seasons: String(q.season), episodes: String(q.episode), movie_type: 'tv-series', sort: 'stats.downloads', 'sort_order': 'desc' })
-      const j = await json(`${config.subs.podnapisiUrl}/subtitles/search/advanced?${p}`)
-      return (j.data ?? []).map((d: any) => ({ id: String(d.id ?? ''), name: String(d.custom_releases?.[0] ?? d.release ?? '') })).filter((x: any) => /^[\w-]+$/.test(x.id))
-    },
-    async fetch(id) {
-      if (!/^[\w-]+$/.test(id)) throw new Error('bad id')
-      const f = await get(`${config.subs.podnapisiUrl}/subtitles/${id}/download?container=zip`)
-      if (!f.ok) throw new Error(`HTTP ${f.status}`)
-      return Buffer.from(await f.arrayBuffer())
-    },
-  },
 ]
 
 const cache = new Map<string, { at: number; subs: OnlineSub[] }>()
@@ -114,6 +77,9 @@ export async function findOnlineSubs(q: Query): Promise<OnlineSub[]> {
 }
 
 const won = new Map<string, string>()
+/** Forget every remembered search, so a key added or changed in Settings is used from the next episode on. */
+export function forgetOnlineSubs() { cache.clear(); won.clear() }
+
 /** The first of the ranked matches that actually downloads and has lines in it, as WebVTT; null when none does. */
 export async function bestOnlineSubVtt(q: Query): Promise<string | null> {
   const key = `${q.series}|${q.season}|${q.episode}`

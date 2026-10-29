@@ -238,13 +238,14 @@ img.fade.in { opacity: 1; }
 .p-wait { position: absolute; inset: 0; z-index: 4; background: #000; display: grid; grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); justify-items: center; text-align: center; color: #fff; padding: 24px; transition: opacity .9s ease; }
 /* The mark owns the middle row and the status line, bar and Cancel button hang from the row under it, so what arrives
    there can never move the logo: nothing is re-centred, there is nothing to animate, and no script has to chase layout.
-   The newcomers only fade in. A short screen (a phone on its side) lifts the mark a little to leave them more room. */
+   The newcomers only fade in. A phone on its side keeps the mark in the middle too, with the rows under it packed tighter;
+   only a TV lifts it (the TV app's layout is its own and is left as it is). */
 .p-wait > .mark { grid-row: 2; }
 .p-under { grid-row: 3; align-self: start; width: 100%; padding-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 22px; }
 .p-under > #msg:not(:empty), .p-under > .p-now:not([hidden]), .p-under > #cnc:not([hidden]) { animation: waitIn .5s var(--ease-out) .12s backwards; }
 @keyframes waitIn { from { opacity: 0; transform: translateY(10px); } }
 @media (prefers-reduced-motion: reduce) { .p-under > * { animation: none !important; } }
-@media (max-height: 520px) { .p-wait { grid-template-rows: minmax(0, .3fr) auto minmax(0, 1fr); padding: 12px 24px; } .p-under { padding-top: 6px; gap: 12px; overflow-y: auto; } }
+@media (max-height: 520px) { .p-wait { padding: 12px 24px; } html.tv .p-wait { grid-template-rows: minmax(0, .3fr) auto minmax(0, 1fr); } .p-under { padding-top: 6px; gap: 12px; overflow-y: auto; } }
 /* On reveal the black lifts at once and the mark plays its exit over the first frames: a bloom (it swells and
    brightens, the aura flaring with it) then a dissolve into blur, gone in about a second -- not a plain fade of the
    whole overlay, which took the logo and the picture down together. */

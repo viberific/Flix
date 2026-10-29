@@ -341,8 +341,10 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (web != null) web.onResume();
-        Updater.showPendingMessage(this);
-        Updater.check(this);
+        if (BuildConfig.SELF_UPDATE) { // the Play build is updated by Play
+            Updater.showPendingMessage(this);
+            Updater.check(this);
+        }
     }
 
     @Override

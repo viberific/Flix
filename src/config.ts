@@ -44,11 +44,9 @@ export const config = {
     youtubeSearch: (env.YOUTUBE_SEARCH_URL ?? 'https://www.youtube.com/results').replace(/\/$/, ''), youtubeOembed: (env.YOUTUBE_OEMBED_URL ?? 'https://www.youtube.com/oembed').replace(/\/$/, ''),
     // Only for tests that serve artwork from localhost. Leave unset in production (blocks fetching internal addresses).
     allowPrivateHosts: env.ART_ALLOW_PRIVATE_HOSTS === 'true' },
-  // English subtitles from the web when a file has none. Each is optional; Podnapisi needs no key (set PODNAPISI_URL= empty to turn it off).
+  // English subtitles from OpenSubtitles when a file has none. Optional; the key can also be set under Settings → Subtitles.
   subs: {
     openSubtitlesKey: env.OPENSUBTITLES_API_KEY ?? '', openSubtitlesUrl: (env.OPENSUBTITLES_URL ?? 'https://api.opensubtitles.com/api/v1').replace(/\/$/, ''),
-    subdlKey: env.SUBDL_API_KEY ?? '', subdlUrl: (env.SUBDL_URL ?? 'https://api.subdl.com').replace(/\/$/, ''),
-    podnapisiUrl: (env.PODNAPISI_URL ?? 'https://www.podnapisi.net').replace(/\/$/, ''),
   },
   qb: {
     url: (env.QB_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, ''),
