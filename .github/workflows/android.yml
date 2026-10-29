@@ -14,6 +14,12 @@ name: Build Android / TV app
 # differs) so every build is signed with the same key and installs as an update.
 # Without them the APK is signed with a throwaway debug key: it installs fine,
 # but the previous version has to be uninstalled first.
+#
+# Google Play (internal testing): with the signing secrets set, every run also builds
+# the Play bundle (flix-play-<version>.aab, an artifact). A push to main uploads it to
+# the internal testing track when PLAY_SERVICE_ACCOUNT_JSON (a service account's JSON
+# key with release rights in Play Console) is set. Android Auto lists the car screen
+# only from a Play install; see docs/play-internal-testing.md.
 
 on:
   push:
@@ -28,6 +34,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+    env:
+      PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,10 +65,41 @@ jobs:
           FLIX_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           FLIX_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          gradle -p android --no-daemon assembleRelease
+          gradle -p android --no-daemon assembleSideloadRelease
           version="$(node -p "require('./package.json').version")"
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          cp android/app/build/outputs/apk/release/app-release.apk "flix-$version.apk"
+          cp android/app/build/outputs/apk/sideload/release/app-sideload-release.apk "flix-$version.apk"
+
+      # Play refuses a bundle signed with a debug key, so there is no Play bundle without the signing secrets.
+      - name: Build the Play bundle
+        if: env.FLIX_KEYSTORE_FILE != ''
+        env:
+          FLIX_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FLIX_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          FLIX_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          gradle -p android --no-daemon bundlePlayRelease
+          cp android/app/build/outputs/bundle/playRelease/app-play-release.aab "flix-play-$VERSION.aab"
+
+      - uses: actions/upload-artifact@v4
+        if: env.FLIX_KEYSTORE_FILE != ''
+        with:
+          name: flix-play-${{ env.VERSION }}-aab
+          path: flix-play-${{ env.VERSION }}.aab
+          if-no-files-found: error
+
+      # The very first bundle has to be uploaded by hand in Play Console (the API cannot create the app); from then on
+      # every push to main lands on the internal testing track, and the testers' phones update from Play.
+      - name: Upload to Google Play (internal testing)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.FLIX_KEYSTORE_FILE != '' && env.PLAY_JSON != ''
+        uses: r0adkll/upload-google-play@v1.1.3
+        with:
+          serviceAccountJsonPlainText: ${{ env.PLAY_JSON }}
+          packageName: com.viberific.flix
+          releaseFiles: flix-play-${{ env.VERSION }}.aab
+          releaseName: ${{ env.VERSION }}
+          track: internal
+          status: completed
 
       - uses: actions/upload-artifact@v4
         with:
