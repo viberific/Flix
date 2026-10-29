@@ -37,6 +37,10 @@ android {
         play {
             dimension 'store'
             buildConfigField 'boolean', 'SELF_UPDATE', 'false'
+            // Play's automatic protection refuses a bundle whose minSdk is below 24, so only the store
+            // build is raised. sideload inherits defaultConfig's 23 above and still installs on the
+            // older Android TV boxes; minSdk 24 is Android 7.0, which Play will not serve anyway.
+            minSdk 24
         }
     }
 
