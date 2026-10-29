@@ -11,12 +11,12 @@ import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowe
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, omdbKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
+import { btnKeyStatus, clearQb, omdbKeyStatus, openSubtitlesKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setOpenSubtitlesApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
 import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { enableNextFile } from './ahead.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
-import { bestOnlineSubVtt, findOnlineSubs } from './onlinesubs.ts'
+import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { copyPictureFor, ensureHls, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
@@ -580,8 +580,8 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const direct = !q && directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
-  // CC is one switch for one subtitle: the best English one in the file or beside it, else one from the web (OpenSubtitles,
-  // Subdl, Podnapisi). Never a list to choose from, so this is at most one entry.
+  // CC is one switch for one subtitle: the best English one in the file or beside it, else one from the web
+  // (OpenSubtitles). Never a list to choose from, so this is at most one entry.
   const local = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))]
   const cc = bestEnglishSub(local) ?? (await onlineSubFor(+t, +f, base))
   const subsList = cc ? [cc] : []
@@ -1072,7 +1072,7 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus(), transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus(), opensubtitles: openSubtitlesKeyStatus(), transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }))
 app.put('/api/admin/settings/transcode', admin, async (req) => {
   const b = (req.body as any) ?? {}
   if (typeof b.profile === 'string') setTranscodeProfile(b.profile)
@@ -1133,6 +1133,24 @@ app.post('/api/admin/settings/omdb/test', admin, async () => {
   if (!res.ok) throw Object.assign(new Error(`OMDb returned HTTP ${res.status}`), { statusCode: 502 })
   const j = await res.json() as any
   if (j.Response === 'False') throw Object.assign(new Error(`OMDb: ${j.Error}`), { statusCode: 400 })
+  return { ok: true }
+})
+app.put('/api/admin/settings/opensubtitles', admin, async (req) => {
+  const key = String((req.body as any)?.apiKey ?? '').trim()
+  if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
+  setOpenSubtitlesApiKey(key)
+  forgetOnlineSubs()
+  return { opensubtitles: openSubtitlesKeyStatus() }
+})
+/** One authenticated OpenSubtitles call (the key's own download allowance), so the admin sees whether the key is accepted. */
+app.post('/api/admin/settings/opensubtitles/test', admin, async () => {
+  const { openSubtitlesKey: apiKey, openSubtitlesUrl: apiUrl } = config.subs
+  if (!apiKey) throw Object.assign(new Error('No OpenSubtitles key set'), { statusCode: 400 })
+  const res = await fetch(`${apiUrl}/infos/formats`, { headers: { 'api-key': apiKey, 'user-agent': 'Flix v0.3', accept: 'application/json' }, signal: AbortSignal.timeout(15_000) }).catch((e) => {
+    throw Object.assign(new Error(`Could not reach OpenSubtitles: ${e.message}`), { statusCode: 502 })
+  })
+  if (res.status === 401 || res.status === 403) throw Object.assign(new Error('OpenSubtitles rejected this key'), { statusCode: 400 })
+  if (!res.ok) throw Object.assign(new Error(`OpenSubtitles returned HTTP ${res.status}`), { statusCode: 502 })
   return { ok: true }
 })
 app.put('/api/admin/settings/qb', admin, async (req) => {

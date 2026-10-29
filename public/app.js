@@ -2442,7 +2442,7 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent']]
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
 const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
 
 /** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
@@ -2767,7 +2767,7 @@ function playbackSection(tc) {
 }
 
 function settingsPanel(data, root) {
-  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, tc = data.transcode
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, os = data.opensubtitles, tc = data.transcode
   const paint = () => keepFocus(root, paintNow)
   const paintNow = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
@@ -2796,7 +2796,13 @@ function settingsPanel(data, root) {
           <input class="field" name="user" value="${esc(qbs.user)}" placeholder="Username" autocomplete="off" required>
           <input class="field" name="pass" type="password" placeholder="${qbs.passwordSet ? 'Password (unchanged)' : 'Password'}" autocomplete="new-password"></div>
         <div class="row-form"><button class="btn primary">Save</button><button type="button" class="btn" id="qt">Test connection</button>${qbs.source === 'settings' ? '<button type="button" class="btn" id="qc">Use server environment</button>' : ''}</div>
-        <div class="dim" id="qm" role="status"></div></form></div>`
+        <div class="dim" id="qm" role="status"></div></form>
+      </div><div id="s-subs" class="ssec"><h2 class="stitle2">Subtitles (OpenSubtitles)</h2>
+      <p class="dim" style="max-width:66ch">When an episode has no English subtitles of its own, CC fetches one from OpenSubtitles. Get a free API key at opensubtitles.com (Profile → API consumers). Without it only the episode's own subtitles are shown.</p>
+      <form id="osf" class="person"><div class="dim">${os.configured ? `Key set (ends in <code>${esc(os.hint)}</code>)${os.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
+        <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste OpenSubtitles API key" autocomplete="off" spellcheck="false">
+          <button class="btn primary">Save</button><button type="button" class="btn" id="ost" ${os.configured ? '' : 'disabled'}>Test connection</button>${os.source === 'settings' ? '<button type="button" class="btn" id="osc">Remove saved key</button>' : ''}</div>
+        <div class="dim" id="osm" role="status"></div></form></div>`
     wire()
   }
   const wire = () => {
@@ -2870,6 +2876,21 @@ function settingsPanel(data, root) {
     const qc = $('#qc')
     if (qc) qc.onclick = async () => {
       try { qbs = (await api('/api/admin/settings/qb', { reset: true }, 'PUT')).qb; paint() } catch (err) { qmsg(err.message) }
+    }
+    const smsg = (t) => { $('#osm').textContent = t }
+    $('#osf').onsubmit = async (e) => {
+      e.preventDefault(); const key = new FormData(e.target).get('key').trim()
+      if (!key) return smsg('Paste a key first.')
+      try { os = (await api('/api/admin/settings/opensubtitles', { apiKey: key }, 'PUT')).opensubtitles; paint(); $('#osm').textContent = 'Saved. Use Test connection to check it.' } catch (err) { smsg(err.message) }
+    }
+    $('#ost').onclick = async () => {
+      smsg('Testing…')
+      try { await api('/api/admin/settings/opensubtitles/test', {}); smsg('OpenSubtitles accepted the key.') } catch (err) { smsg(err.message) }
+    }
+    const sc = $('#osc')
+    if (sc) sc.onclick = async () => {
+      if (sc.dataset.sure !== '1') { sc.dataset.sure = '1'; sc.textContent = 'Tap again to remove'; setTimeout(() => { sc.dataset.sure = ''; sc.textContent = 'Remove saved key' }, 4000); return }
+      try { os = (await api('/api/admin/settings/opensubtitles', { apiKey: '' }, 'PUT')).opensubtitles; paint() } catch (err) { smsg(err.message) }
     }
     const bc = $('#bc')
     if (bc) bc.onclick = async () => {

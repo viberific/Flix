@@ -1018,7 +1018,7 @@ test('a subtitle from the web: the one made for the same release first, and the 
   const { config } = await import('../src/config.ts')
   const { findOnlineSubs, bestOnlineSubVtt } = await import('../src/onlinesubs.ts')
   const was = { ...config.subs }, dir = config.dataDir, realFetch = globalThis.fetch
-  Object.assign(config.subs, { openSubtitlesKey: 'k', openSubtitlesUrl: 'http://os.test', subdlKey: '', podnapisiUrl: '' })
+  Object.assign(config.subs, { openSubtitlesKey: 'k', openSubtitlesUrl: 'http://os.test' })
   config.dataDir = mkdtempSync(join(tmpdir(), 'flix-subs-'))
   const files: Record<string, string> = { 1: 'Show.S01E02.720p.HDTV.x264-OTHER', 2: 'Show.S01E02.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb', 3: 'Show.S01E02.1080p.AMZN.WEB-DL.H.264-NTb.SDH' }
   globalThis.fetch = (async (url: any, init: any) => {

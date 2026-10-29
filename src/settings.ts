@@ -6,6 +6,7 @@ const envBtnKey = config.btn.apiKey
 const envQb = { ...config.qb }
 const envTmdbKey = config.tmdb.apiKey
 const envOmdbKey = config.omdb.apiKey
+const envOpenSubtitlesKey = config.subs.openSubtitlesKey
 const envTranscodeProfile = config.transcode.profile
 const envTranscodeHardware = config.transcode.hardware
 const envTranscodeMode = config.transcode.mode
@@ -18,6 +19,7 @@ export function loadSettings() {
   config.btn.apiKey = get('btn_api_key') || envBtnKey
   config.tmdb.apiKey = get('tmdb_api_key') || envTmdbKey
   config.omdb.apiKey = get('omdb_api_key') || envOmdbKey
+  config.subs.openSubtitlesKey = get('opensubtitles_api_key') || envOpenSubtitlesKey
   config.qb.url = get('qb_url') ?? envQb.url
   config.qb.user = get('qb_user') ?? envQb.user
   config.qb.pass = get('qb_pass') ?? envQb.pass
@@ -63,6 +65,18 @@ export function setOmdbApiKey(key: string) {
 export function omdbKeyStatus() {
   const saved = get('omdb_api_key')
   const key = config.omdb.apiKey
+  return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
+}
+
+export function setOpenSubtitlesApiKey(key: string) {
+  if (key) put('opensubtitles_api_key', key)
+  else db.prepare('DELETE FROM settings WHERE key = ?').run('opensubtitles_api_key')
+  loadSettings()
+}
+
+export function openSubtitlesKeyStatus() {
+  const saved = get('opensubtitles_api_key')
+  const key = config.subs.openSubtitlesKey
   return { configured: !!key, source: saved ? 'settings' : key ? 'environment' : null, hint: key ? key.slice(-4) : null }
 }
 
