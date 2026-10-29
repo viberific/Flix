@@ -384,6 +384,10 @@ function flixSting() {
 // (a TV is the one place with no install button and no cast button: it is the thing a phone casts to).
 const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
 if (isTv) document.documentElement.classList.add('tv')
+// The car screen of the Android app (Android Auto, android/.../car/FlixScreen.java): the same pages on a wide, short screen
+// the car shares with its own buttons, and sound that reaches the car's speakers later than the picture reaches its screen.
+const isCar = /FlixCar/.test(navigator.userAgent)
+if (isCar) document.documentElement.classList.add('car')
 // Downloads are for taking an episode away from the internet, and a television never leaves the house: a TV has no
 // Downloads page, no download buttons, and keeps no episodes in its own storage (anything an older version saved is
 // cleared, since a TV's storage is small and the episode streams from the server anyway).
@@ -1163,6 +1167,73 @@ const ICON = {
   fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
 }
 
+/**
+ * Android Auto plays the sound late: it goes out through the phone's audio and the car's own buffering, while the picture
+ * is the screen copied straight across, so the lips move before the words arrive. Nothing can make the sound early, so the
+ * picture is held back instead: frames are copied off the <video> as it plays and drawn onto a canvas over it `delay` ms
+ * later. The element's own captions are under the canvas, so the ones for the frame on screen are drawn with it. A delay
+ * of 0 takes the canvas away and shows the element itself.
+ */
+function carPicture(getV) {
+  const cv = document.createElement('canvas'), cue = document.createElement('div')
+  cv.className = 'p-delay'; cue.className = 'p-carcue'; cv.hidden = cue.hidden = true
+  const g = cv.getContext('2d')
+  const frames = [] // { at: when it was copied, t: its time in the episode, b: the picture }, oldest first
+  let delay = 0, raf = 0, lastT = -1, lastAt = 0, busy = false, shown = null, cueText = ''
+  const drop = () => { for (const f of frames.splice(0)) f.b.close(); shown = null; lastT = -1 }
+  // Where the picture goes on the canvas, as the element would place it (fitted, or cropped to fill).
+  const fit = (v) => {
+    const dpr = devicePixelRatio || 1, W = Math.round(cv.clientWidth * dpr), H = Math.round(cv.clientHeight * dpr)
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; shown = null }
+    if (!v.videoWidth || !v.videoHeight || !W || !H) return null
+    const s = (v.style.objectFit === 'cover' ? Math.max : Math.min)(W / v.videoWidth, H / v.videoHeight)
+    return { w: Math.max(1, Math.round(v.videoWidth * s)), h: Math.max(1, Math.round(v.videoHeight * s)) }
+  }
+  const draw = (f, v) => {
+    g.clearRect(0, 0, cv.width, cv.height)
+    g.drawImage(f.b, (cv.width - f.b.width) / 2, (cv.height - f.b.height) / 2)
+    const tr = [...v.textTracks].find((x) => x.mode === 'showing')
+    const text = tr?.cues ? [...tr.cues].filter((c) => c.startTime <= f.t && c.endTime > f.t).map((c) => (c.text || '').replace(/<[^>]*>/g, '')).join('\n') : ''
+    if (text !== cueText) { cueText = text; cue.textContent = text; cue.hidden = !text }
+  }
+  const tick = () => {
+    raf = requestAnimationFrame(tick)
+    const v = getV()
+    if (!v) return
+    const now = performance.now()
+    // A new picture on the element, copied at most ~30 times a second, one copy at a time.
+    if (!busy && v.readyState >= 2 && v.currentTime !== lastT && now - lastAt > 30) {
+      const r = fit(v)
+      if (r) {
+        const t = lastT = v.currentTime
+        busy = true; lastAt = now
+        createImageBitmap(v, { resizeWidth: r.w, resizeHeight: r.h, resizeQuality: 'medium' })
+          .then((b) => { if (raf && frames.length < 90) frames.push({ at: now, t, b }); else b.close() })
+          .catch(() => {}).finally(() => { busy = false })
+      }
+    }
+    // The newest copy that has waited long enough goes up; anything older than it is done with.
+    let i = -1
+    for (let k = 0; k < frames.length && frames[k].at + delay <= now; k++) i = k
+    if (i < 0) return
+    for (const f of frames.splice(0, i)) f.b.close()
+    if (frames[0] !== shown) { shown = frames[0]; draw(shown, v) }
+  }
+  const stop = () => { cancelAnimationFrame(raf); raf = 0; drop(); cueText = ''; cue.hidden = true }
+  return {
+    /** Puts the canvas over the element in `box` (the player replaces the element, and the box with it, as it goes). */
+    mount(box) { if (box && cv.parentNode !== box) { drop(); box.append(cv, cue) } },
+    set(ms) {
+      delay = ms
+      const on = ms > 0 && typeof createImageBitmap === 'function' && !!g
+      cv.hidden = !on
+      if (on && !raf) raf = requestAnimationFrame(tick)
+      else if (!on) stop()
+    },
+    stop,
+  }
+}
+
 function playView(seriesId, season, label) {
   label = decodeURIComponent(label)
   return () => {
@@ -1178,6 +1249,7 @@ function playView(seriesId, season, label) {
         <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
+          ${isCar ? '<div class="p-sync" id="psync"><span>Sound delay</span><button class="p-btn" id="psyncm" aria-label="Show the picture sooner">−</button><b id="psyncv"></b><button class="p-btn" id="psyncp" aria-label="Hold the picture back longer">+</button></div>' : ''}
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
@@ -1192,6 +1264,9 @@ function playView(seriesId, season, label) {
     let holding = false, holdT = null
     top.hidden = true
     const pl = $('#pl')
+    // In the car the player takes the whole screen, the corner under the car's own buttons included: the picture stays clear
+    // of them and the panel beside it starts below them (see html.car in style.css, and FlixScreen for the other half).
+    if (isCar) try { window.FlixCar?.immersive(true) } catch { /* an older app */ }
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, v = null
@@ -1310,7 +1385,8 @@ function playView(seriesId, season, label) {
     const touchy = matchMedia('(pointer: coarse)').matches
     let landscape = false
     const goLandscape = async () => {
-      if (!touchy || landscape) return
+      // The car's screen is the page already, and the WebView's fullscreen there is a second window it sizes wrongly.
+      if (!touchy || landscape || isCar) return
       try { if (!document.fullscreenElement) await pl.requestFullscreen?.({ navigationUI: 'hide' }) } catch { /* not allowed without a tap */ }
       try { await screen.orientation?.lock?.('landscape') } catch { /* unsupported (iOS) or refused */ }
       landscape = !!document.fullscreenElement // done once truly fullscreen; until then every tap tries again
@@ -1446,6 +1522,15 @@ function playView(seriesId, season, label) {
     // object-fit rather than a zoom, so the captions stay inside the screen.
     let fill = touchy ? false : store.get('fill', false), pinch = null // phones always open fitted (nothing cropped); the button or a pinch zooms to fill
     const setFill = (on) => { fill = on; if (!touchy) store.set('fill', on); if (v) v.style.objectFit = on ? 'cover' : '' }
+    // How long the picture waits for the car's sound (see carPicture), in 50 ms steps from the panel. Remembered on this phone.
+    const carPic = isCar ? carPicture(() => v) : null
+    let carSync = store.get('carSync', 300)
+    const setCarSync = (ms) => {
+      carSync = Math.max(0, Math.min(1000, Math.round(ms / 50) * 50))
+      store.set('carSync', carSync)
+      carPic?.set(carSync)
+      if ($('#psyncv')) $('#psyncv').textContent = carSync ? (carSync / 1000).toFixed(2) + ' s' : 'Off'
+    }
     const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
     pl.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), done: false } }, { passive: true, capture: true })
     pl.addEventListener('touchmove', (e) => {
@@ -1690,6 +1775,11 @@ function playView(seriesId, season, label) {
       $('#pbw').onclick = () => { nudge(-10); wake() }
       $('#pfw').onclick = () => { nudge(10); wake() }
       $('#pfull').onclick = () => { setFill(!fill); paint() }
+      if (carPic) {
+        $('#psyncm').onclick = () => { setCarSync(carSync - 50); wake() }
+        $('#psyncp').onclick = () => { setCarSync(carSync + 50); wake() }
+        setCarSync(carSync)
+      }
       $('#pback').onclick = leavePlayer
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
       // Hiding takes the focus off whatever was last tapped in the bar: a focused button keeps the bar on screen.
@@ -1740,6 +1830,7 @@ function playView(seriesId, season, label) {
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
       alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
@@ -1893,6 +1984,7 @@ function playView(seriesId, season, label) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
         if (fill) v.style.objectFit = 'cover'
+        carPic?.mount($('#vw'))
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
         // always, which also undoes a level an older version saved on this device (a muted episode reads as broken).
         v.volume = 1; v.muted = false

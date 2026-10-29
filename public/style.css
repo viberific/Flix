@@ -404,6 +404,41 @@ html.tv .player #pfull { display: none; }
   .p-row { gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) { .p-ctl, .player::after, .p-dot { transition: none; } }
+
+/* ---------- Android Auto (html.car) ----------
+   A car's screen is wide and short (1920x720 is common), and the car's own Back / Home / Reload sit over its top right
+   corner (FlixScreen hands their size over as --car-t / --car-r / --car-b). Laid over a 16:9 episode like on a phone, the
+   bar covered half the picture. So a screen at least twice as wide as it is tall gets the picture at 16:9, full height on
+   the left, and Flix's own panel beside it -- the title, the bar and the sound delay -- which never fades, since it covers
+   nothing. A narrower car screen keeps the phone's layout. */
+.player .p-delay { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; pointer-events: none; }
+.player .p-delay[hidden], .p-carcue[hidden] { display: none; }
+.p-carcue { position: absolute; left: 6%; right: 6%; bottom: 7%; text-align: center; white-space: pre-line; pointer-events: none;
+  color: #fff; font-size: clamp(16px, 5vh, 26px); line-height: 1.3; font-weight: 600; text-shadow: 0 0 4px #000, 0 2px 8px #000; }
+.p-sync { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 6px; font-size: 13px; color: rgba(255,255,255,.66); }
+.p-sync b { min-width: 52px; text-align: center; color: #fff; font-variant-numeric: tabular-nums; }
+.p-sync .p-btn { width: 36px; height: 36px; font-size: 22px; line-height: 1; background: rgba(255,255,255,.1); }
+.player.casting .p-sync { display: none; }
+/* Over the picture (a narrower car screen), captions step up above the bar while it is showing. */
+html.car .player:not(.p-quiet):not(.idle) .p-carcue { bottom: 168px; }
+@media (min-aspect-ratio: 2/1) {
+  html.car .player { --side: max(280px, calc(100vw - (100vh - var(--car-b, 0px)) * 16 / 9)); }
+  html.car .player #vw { right: var(--side); bottom: var(--car-b, 0px); }
+  html.car .player::after, html.car .p-spin { right: var(--side); }
+  html.car .player #pfull { display: none; }
+  html.car .p-top, html.car .p-ctl { left: auto; right: 0; width: var(--side); background: none; }
+  html.car .p-top { flex-wrap: wrap; align-content: flex-start; gap: 6px 10px; padding: calc(var(--car-t, 0px) + 10px) calc(var(--car-r, 0px) + 14px) 0 14px; }
+  html.car .p-top .p-title { order: 1; flex-basis: 100%; min-width: 0; }
+  html.car .p-top .p-title b { font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  html.car .p-ctl { padding: 0 calc(var(--car-r, 0px) + 14px) calc(var(--car-b, 0px) + 10px) 14px; }
+  html.car .p-row { grid-template-columns: 1fr auto; grid-template-areas: "l r" "c c"; row-gap: 4px; }
+  html.car .p-l { grid-area: l; } html.car .p-r { grid-area: r; } html.car .p-c { grid-area: c; }
+  html.car .player.p-quiet .p-top, html.car .player.p-quiet .p-ctl, html.car .player.idle .p-top, html.car .player.idle .p-ctl { opacity: 1; transform: none; pointer-events: auto; }
+  html.car .player.p-quiet { cursor: auto; }
+  html.car .player .p-carcue { bottom: 7%; }
+  html.car .p-info { left: 18px; right: calc(var(--side) + 18px); top: 16px; bottom: 16px; max-width: none; }
+  html.car .p-next, html.car .player.idle .p-next, html.car .player.p-quiet .p-next { right: calc(var(--side) + 14px); bottom: 14px; width: min(300px, calc(100vw - var(--side) - 28px)); }
+}
 .cd { height: 3px; border-radius: 2px; background: rgba(255,255,255,.2); margin-top: 14px; overflow: hidden; } .cd i { display: block; height: 100%; width: 100%; background: var(--accent); transform-origin: left; }
 
 /* ---------- auth ---------- */

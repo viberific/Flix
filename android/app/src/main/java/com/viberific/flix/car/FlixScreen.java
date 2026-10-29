@@ -16,6 +16,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -47,6 +48,10 @@ import androidx.lifecycle.LifecycleOwner;
  * the car's surface, and the car's taps and drags are replayed into the WebView as touches. Cookies and storage are
  * the process-wide ones, so whoever is signed in on the phone is signed in here.
  *
+ * The player is the exception to the padding below: a car screen is wide and short, and the car's buttons cover only its
+ * top right corner, so while an episode is open the page has the whole surface and is told where the buttons are
+ * (--car-t, --car-r and --car-b, in CSS pixels), and puts the picture beside them rather than under a band cut off the top.
+ *
  * Parked only: while the car reports that it is moving, the page is paused and covered. A car that reports no speed
  * at all cannot be told from a parked one, and is treated as parked.
  */
@@ -71,6 +76,8 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     private String lastUrl;
     private Rect visible;
     private boolean moving;
+    /** The player asked for the whole surface (see Bridge): the page is not padded, and lays itself out around the car's buttons. */
+    private boolean immersive;
 
     // A drag in progress: car scrolls arrive as distances, so they are replayed as one finger moving from the middle.
     private boolean dragging;
@@ -205,10 +212,18 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         web.setOverScrollMode(View.OVER_SCROLL_NEVER);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
+        web.addJavascriptInterface(new Bridge(), "FlixCar");
         web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                // A new page has no player open: whatever the last one asked for is over.
+                setImmersive(false);
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 applyCover();
+                applyVisibleArea();
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -265,6 +280,7 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         }
         fullscreenView = null;
         fullscreenCallback = null;
+        immersive = false;
         cover = null;
         root = null;
         if (presentation != null) { presentation.dismiss(); presentation = null; }
@@ -283,11 +299,34 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         applyVisibleArea();
     }
 
-    /** Keeps the page out from under the car's own buttons, which cover part of the surface. */
+    /** What the page can ask of the car screen. Called on the WebView's own thread, so it is passed over to the main one. */
+    private final class Bridge {
+        @JavascriptInterface
+        public void immersive(boolean on) {
+            main.post(() -> setImmersive(on));
+        }
+    }
+
+    private void setImmersive(boolean on) {
+        if (immersive == on) return;
+        immersive = on;
+        applyVisibleArea();
+    }
+
+    /**
+     * Keeps the page out from under the car's own buttons, which cover part of the surface: padded clear of them, or, while
+     * the player has the whole surface, told how far in they reach so it can keep clear of them itself.
+     */
     private void applyVisibleArea() {
         if (root == null || container == null || visible == null) return;
-        root.setPadding(Math.max(0, visible.left), Math.max(0, visible.top),
-                Math.max(0, container.getWidth() - visible.right), Math.max(0, container.getHeight() - visible.bottom));
+        int l = Math.max(0, visible.left), t = Math.max(0, visible.top);
+        int r = Math.max(0, container.getWidth() - visible.right), b = Math.max(0, container.getHeight() - visible.bottom);
+        if (immersive) root.setPadding(0, 0, 0, 0);
+        else root.setPadding(l, t, r, b);
+        if (web == null) return;
+        String js = immersive ? t + "," + r + "," + b : "0,0,0";
+        web.evaluateJavascript("(function(t,r,b){var s=document.documentElement.style,d=window.devicePixelRatio||1;"
+                + "s.setProperty('--car-t',t/d+'px');s.setProperty('--car-r',r/d+'px');s.setProperty('--car-b',b/d+'px')})(" + js + ")", null);
     }
 
     // ---- touch ----
