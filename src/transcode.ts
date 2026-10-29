@@ -596,6 +596,16 @@ export function guessSubLang(name: string): { lang: string; label: string; force
   const forced = toks.includes('forced')
   return { lang: code, forced, label: [code === 'und' ? 'Subtitles' : langName(code), forced ? 'Forced' : '', toks.includes('sdh') || toks.includes('cc') ? 'CC' : ''].filter(Boolean).join(' · ') }
 }
+/**
+ * The one subtitle CC shows: a full English one (the file's default first, then the first in the file) before an unlabelled
+ * one, which in an English-language show is English too. Never a forced (signs-only) track.
+ */
+export function bestEnglishSub<T extends { lang: string; forced: boolean; default?: boolean }>(subs: T[]): T | undefined {
+  const full = subs.filter((s) => !s.forced)
+  const en = full.filter((s) => /^(eng?|en-.*)$/i.test(s.lang))
+  return en.find((s) => s.default) ?? en[0] ?? full.find((s) => s.lang === 'und')
+}
+
 const xvtt = new Map<string, string>()
 /** A subtitle file as WebVTT. Not valid UTF-8 means an old Windows code page, so say so to ffmpeg. */
 export async function fileSubtitleVtt(path: string): Promise<string> {
@@ -623,7 +633,7 @@ const vttBusy = new Map<string, Promise<string>>()
 export async function subtitleVtt(torrentId: number, fileIndex: number, n: number, progress: number, duration: number): Promise<{ vtt: string; complete: boolean }> {
   const complete = progress >= 1
   const seconds = complete ? 0 : Math.floor((duration * progress * 0.85) / 30) * 30
-  if (!complete && seconds < 120) return { vtt: VTT_HEAD, complete }
+  if (!complete && seconds < 30) return { vtt: VTT_HEAD, complete }
   const key = `${torrentId}:${fileIndex}:${n}:${seconds}`
   const hit = vttCache.get(key)
   if (hit !== undefined) return { vtt: hit, complete }

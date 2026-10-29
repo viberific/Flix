@@ -1739,7 +1739,7 @@ function playView(seriesId, season, label) {
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
-      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearInterval(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
@@ -1754,7 +1754,7 @@ function playView(seriesId, season, label) {
     function fail(msg) {
       if (!alive) return
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
-      clearInterval(timer); clearInterval(subT); hls?.destroy(); hls = null
+      clearInterval(timer); clearTimeout(subT); hls?.destroy(); hls = null
       $('.mark')?.remove(); restoreWait()
       const said = friendly(msg, haveFrac >= 1)
       $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
@@ -1774,7 +1774,7 @@ function playView(seriesId, season, label) {
       // The old source's intro hold must not fire on the new one: it took the wait screen down while the new file was still
       // being fetched, and left `holding` set for a picture that had never been held.
       clearTimeout(holdT); holding = false
-      clearInterval(timer); clearInterval(subT); clearInterval(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
+      clearInterval(timer); clearTimeout(subT); clearInterval(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
       // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
       // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
       // moment could bring up "Up next" in the middle of the new copy, which is cut differently.
@@ -2181,19 +2181,11 @@ function playView(seriesId, season, label) {
       showUpNext()
     }
 
-    /* captions: ONE choice at a time, held here by the subtitle's own number, never read back from the browser's tracks.
-       The old menu was built from the element's text tracks and matched them up again by label: two subtitles with the
-       same label (two "English" tracks), a refresh that swapped the wrong one back in, or a captions track hls.js added
-       for itself could each leave two ticked and two drawn at once. Now every track that is not the choice is switched
-       off -- including any the player or the browser adds on its own -- whenever anything changes. */
-    let subPick = null // the chosen subtitle's `n`, or null for off
+    /* captions: ONE subtitle, the English one the server picked (see /info), and CC switches it on or off. Every other text
+       track -- one hls.js or the browser adds on its own -- is kept switched off whenever anything changes. */
+    let subPick = null // the subtitle's `n` while CC is on, or null for off
     const trackEls = () => [...v.querySelectorAll('track[data-n]')]
-    /** The English subtitle CC turns on: a full one before a forced one (signs only), a labelled English before an unknown language. */
-    const engSub = () => {
-      const subs = info?.subs ?? []
-      const isEn = (s) => /^(eng?|en-.*)$/i.test(s.lang || '')
-      return subs.find((s) => isEn(s) && !s.forced) ?? subs.find(isEn) ?? subs.find((s) => s.lang === 'und' && !s.forced)
-    }
+    const engSub = () => info?.subs?.[0]
     function applySubs() {
       if (!v) return
       for (const t of v.textTracks) {
@@ -2206,37 +2198,33 @@ function playView(seriesId, season, label) {
     }
     function setSubs(n) {
       subPick = n
-      const s = n == null ? null : info.subs.find((x) => String(x.n) === String(n))
-      store.set('subs', s ? 'on' : 'off')
+      store.set('cc', n != null)
       applySubs()
     }
     function wireSubs() {
       v.querySelectorAll('track').forEach((t) => t.remove())
-      clearInterval(subT)
-      subPick = null
-      const pref = store.get('subs', null) // 'off' | { lang } | null (never chosen)
-      const audioLang = info.audio[info.audioIndex]?.lang
+      clearTimeout(subT)
       const eng = engSub()
-      let pick = null
-      if (!eng || pref === 'off') pick = null
-      else pick = eng // on unless the viewer has turned CC off on this device
-      subPick = pick ? pick.n : null
-      for (const s of info.subs) mountTrack(s)
+      // On unless the viewer has turned CC off on this device. A new key: the old one could hold an "off" left over from
+      // the subtitle list, which kept CC off with nobody having asked for that.
+      subPick = eng && store.get('cc', true) ? eng.n : null
+      if (eng) mountTrack(eng)
       // Whatever adds a track of its own, or turns one on, is put back to the one choice. Idempotent, so it cannot loop.
       v.textTracks.onaddtrack = applySubs
       v.textTracks.onchange = applySubs
       applySubs()
-      if (!info.subs.length) return
-      // The file is still arriving, so a track only covers what has downloaded; refresh the chosen one as it grows.
-      subT = setInterval(async () => {
-        if (subPick == null) return
-        const s = info.subs.find((x) => String(x.n) === String(subPick))
+      // The file is still arriving, so a subtitle read from it only covers what has downloaded: read it again as it grows,
+      // soon while it has nothing in it yet, then every minute and a half. One from the web is whole from the start.
+      if (!eng || eng.n === 'o') return
+      const again = async () => {
+        if (!alive) return
         const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
-        if (!s || !st || !alive) return
-        mountTrack(s)
-        applySubs()
-        if (st.fileProgress >= 1) clearInterval(subT)
-      }, 90000)
+        if (!alive) return
+        if (subPick != null) { mountTrack(eng); applySubs() }
+        if (st && st.fileProgress >= 1) return
+        subT = setTimeout(again, trackEls()[0]?.track?.cues?.length ? 90000 : 30000)
+      }
+      subT = setTimeout(again, 30000)
     }
     function mountTrack(s) {
       v.querySelector(`track[data-n="${s.n}"]`)?.remove()
@@ -2388,7 +2376,7 @@ function playView(seriesId, season, label) {
      */
     function enterCastMode() {
       castingOnly = true
-      clearTimeout(holdT); clearInterval(timer); clearInterval(subT); clearInterval(cdT)
+      clearTimeout(holdT); clearInterval(timer); clearTimeout(subT); clearInterval(cdT)
       holding = false
       hls?.destroy(); hls = null
       if (v) { v.onpause = null; v.pause(); v.removeAttribute('src'); v.load() }
@@ -3007,7 +2995,7 @@ async function offlinePlayView(id) {
     if (!m) { go('#/downloads'); return }
     top.hidden = true
     app.innerHTML = `<div class="player" id="pl"><div class="p-top"><a class="icon-btn" href="#/downloads" aria-label="Back">${I.back}</a><div class="p-title"><b>${esc(m.seriesName || '')}</b><span>${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span></div></div>
-      <div id="vw"><video controls autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 && /^eng?$/.test(t.lang) ? ' default' : ''}>`).join('')}</video></div></div>`
+      <div id="vw"><video controls autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">${m.subs.map((t, i) => `<track kind="${t.forced ? 'forced' : 'subtitles'}" src="${esc(t.url)}" srclang="${esc(t.lang === 'und' ? 'en' : t.lang.slice(0, 2))}" label="${esc(t.label)}"${i === 0 ? ' default' : ''}>`).join('')}</video></div></div>`
     const pl = $('#pl'), v = $('video')
     v.querySelectorAll('track').forEach(liftCues)
     let idleT = null, last = 0

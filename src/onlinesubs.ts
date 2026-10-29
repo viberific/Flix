@@ -11,7 +11,7 @@ import { fileSubtitleVtt } from './transcode.ts'
  * match is skipped; the rest still answer.
  */
 export interface OnlineSub { id: string; source: string; name: string }
-export interface Query { series: string; season: number; episode: number; imdb: string | null }
+export interface Query { series: string; season: number; episode: number; imdb: string | null; release?: string }
 
 const UA = 'Flix v0.3'
 const get = (url: string, headers: Record<string, string> = {}) => fetch(url, { headers: { 'user-agent': UA, ...headers }, signal: AbortSignal.timeout(8000) })
@@ -66,13 +66,20 @@ const SOURCES: Source[] = [
   {
     key: 'pn', label: 'Podnapisi', enabled: () => !!config.subs.podnapisiUrl,
     async search(q) {
+      // The XML search is the one subliminal and Bazarr use; the JSON one behind the site's own search is the fallback.
+      const x = new URLSearchParams({ sXML: '1', sL: 'en', sK: q.series, sTS: String(q.season), sTE: String(q.episode) })
+      const r = await get(`${config.subs.podnapisiUrl}/subtitles/search/old?${x}`).catch(() => null)
+      const xml = r?.ok ? await r.text() : ''
+      const found = [...xml.matchAll(/<subtitle>([\s\S]*?)<\/subtitle>/g)].map(([, b]) => ({
+        id: /<pid>([\w-]+)<\/pid>/.exec(b)?.[1] ?? '', name: /<release>([^<]*)<\/release>/.exec(b)?.[1]?.trim() ?? '' })).filter((x) => x.id)
+      if (found.length) return found
       const p = new URLSearchParams({ keywords: q.series, language: 'en', seasons: String(q.season), episodes: String(q.episode), movie_type: 'tv-series', sort: 'stats.downloads', 'sort_order': 'desc' })
       const j = await json(`${config.subs.podnapisiUrl}/subtitles/search/advanced?${p}`)
       return (j.data ?? []).map((d: any) => ({ id: String(d.id ?? ''), name: String(d.custom_releases?.[0] ?? d.release ?? '') })).filter((x: any) => /^[\w-]+$/.test(x.id))
     },
     async fetch(id) {
       if (!/^[\w-]+$/.test(id)) throw new Error('bad id')
-      const f = await get(`${config.subs.podnapisiUrl}/subtitles/${id}/download`)
+      const f = await get(`${config.subs.podnapisiUrl}/subtitles/${id}/download?container=zip`)
       if (!f.ok) throw new Error(`HTTP ${f.status}`)
       return Buffer.from(await f.arrayBuffer())
     },
@@ -80,18 +87,43 @@ const SOURCES: Source[] = [
 ]
 
 const cache = new Map<string, { at: number; subs: OnlineSub[] }>()
-const PER_SOURCE = 2
+const PER_SOURCE = 5
 
-/** The best few English matches from every source that is switched on. Remembered for an hour, empty answers included. */
+/** Words of a release name that say which cut it is ("amzn", "web", "dl", "ntb", "720p"), without the show's own name. */
+const releaseWords = (name: string, series: string) => {
+  const own = new Set(series.toLowerCase().split(/[^a-z0-9]+/))
+  return new Set(name.toLowerCase().replace(/\.(mkv|mp4|avi|srt)$/, '').split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !own.has(w) && !/^s\d+e\d+/.test(w)))
+}
+
+/**
+ * English matches from every source that is switched on, best first: a subtitle made for the same release as the file (so
+ * it is in time with it) before the rest, and otherwise each source's own order (most downloaded). Remembered for an hour,
+ * empty answers included.
+ */
 export async function findOnlineSubs(q: Query): Promise<OnlineSub[]> {
-  const key = `${q.series}|${q.season}|${q.episode}|${q.imdb}`
+  const key = `${q.series}|${q.season}|${q.episode}|${q.imdb}|${q.release ?? ''}`
   const hit = cache.get(key)
   if (hit && Date.now() - hit.at < 3_600_000) return hit.subs
   const got = await Promise.all(SOURCES.filter((s) => s.enabled()).map((s) =>
     s.search(q).then((r) => r.slice(0, PER_SOURCE).map((x) => ({ id: `${s.key}:${x.id}`, source: s.label, name: x.name }))).catch((e) => { console.warn(`[subs] ${s.label}: ${e.message}`); return [] as OnlineSub[] })))
-  const subs = got.flat()
+  const mine = releaseWords(q.release ?? '', q.series)
+  const score = (s: OnlineSub) => [...releaseWords(s.name, q.series)].filter((w) => mine.has(w)).length
+  const subs = got.flat().map((s, i) => ({ s, i, k: score(s) })).sort((a, b) => b.k - a.k || a.i - b.i).map((x) => x.s)
   cache.set(key, { at: Date.now(), subs })
   return subs
+}
+
+const won = new Map<string, string>()
+/** The first of the ranked matches that actually downloads and has lines in it, as WebVTT; null when none does. */
+export async function bestOnlineSubVtt(q: Query): Promise<string | null> {
+  const key = `${q.series}|${q.season}|${q.episode}`
+  const subs = await findOnlineSubs(q)
+  const known = won.get(key) // the one that worked last time is asked first, so the ones that failed are not asked again
+  for (const s of [...subs].sort((a, b) => Number(b.id === known) - Number(a.id === known))) {
+    const vtt = await onlineSubVtt(s.id).catch((e) => { console.warn(`[subs] ${s.id}: ${e.message}`); return '' })
+    if (vtt.includes('-->')) { won.set(key, s.id); return vtt }
+  }
+  return null
 }
 
 /** The first subtitle file inside a zip. unzip cannot read an archive from a pipe, so it goes through a file. */
