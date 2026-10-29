@@ -1,3 +1,6 @@
 plugins {
-    id 'com.android.application' version '8.7.3' apply false
+    // 8.10 is the first AGP that supports compileSdk 36 (8.7-8.9 stop at 35, per the AGP compatibility table at
+    // developer.android.com/build/releases/gradle-plugin). 8.10.x needs Gradle 8.11.1 or newer and JDK 17: the
+    // workflow pins Gradle 8.14.3 and Java 17, so only the plugin moves.
+    id 'com.android.application' version '8.10.1' apply false
 }

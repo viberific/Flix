@@ -11,11 +11,16 @@ def keystore = System.getenv('FLIX_KEYSTORE_FILE')
 
 android {
     namespace 'com.viberific.flix'
-    compileSdk 35
+    // compileSdk is one setting for the whole project, so it is on 36 for both builds: Play refuses a bundle
+    // that targets under 36, and compiling against 36 is what makes that target reachable. It does not change
+    // behaviour on its own -- targetSdk is what does that, and it stays 35 below except for the Play flavor.
+    compileSdk 36
 
     defaultConfig {
         applicationId 'com.viberific.flix'
         minSdk 23
+        // The sideload APK ships to TVs and phones today on 35. Android 16's behaviour changes (mandatory
+        // edge-to-edge, and no opt-out) are not needed for it, so it stays where it is known to work.
         targetSdk 35
         versionCode((System.getenv('GITHUB_RUN_NUMBER') ?: '1') as int)
         versionName flixVersion
@@ -41,6 +46,10 @@ android {
             // build is raised. sideload inherits defaultConfig's 23 above and still installs on the
             // older Android TV boxes; minSdk 24 is Android 7.0, which Play will not serve anyway.
             minSdk 24
+            // Play also refuses a bundle that targets under API 36 (android 16). Only this build moves: the
+            // screen is a full-screen WebView that pads itself from the window insets (MainActivity), so the
+            // edge-to-edge that 36 makes mandatory is already how it behaves.
+            targetSdk 36
         }
     }
 

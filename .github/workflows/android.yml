@@ -48,6 +48,16 @@ jobs:
         with:
           gradle-version: 8.14.3
 
+      # compileSdk is 36 now, and a runner image that does not happen to carry the API 36 platform fails the
+      # build with "Failed to find target with hash string 'android-36'". Install it instead of hoping, and
+      # print the path so the log shows what the build actually compiled against.
+      - name: Android SDK platform 36
+        run: |
+          sdkmanager="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)"
+          yes | "$sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+          ls -d "$ANDROID_HOME"/platforms/android-36
+
       - name: Signing key
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -80,6 +90,23 @@ jobs:
         run: |
           gradle -p android --no-daemon bundlePlayRelease
           cp android/app/build/outputs/bundle/playRelease/app-play-release.aab "flix-play-$VERSION.aab"
+
+      # What the artifacts really declare, so a Play refusal points at a number instead of a guess. aapt2 reads the
+      # sideload APK; bundletool reads the Play bundle itself (its manifest is compiled protobuf, not the sources).
+      # continue-on-error: this is evidence, and a failed download must not stop the Play upload that follows.
+      - name: Report the SDK levels in the built artifacts
+        continue-on-error: true
+        run: |
+          aapt2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+          echo "== sideload APK"
+          "$aapt2" dump badging "flix-$VERSION.apk" | grep -E "^package:|^sdkVersion:|^targetSdkVersion:"
+          if [ -f "flix-play-$VERSION.aab" ]; then
+            echo "== play bundle"
+            curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" \
+              https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+            java -jar "$RUNNER_TEMP/bundletool.jar" dump manifest --bundle="flix-play-$VERSION.aab" \
+              | grep -E "uses-sdk|<manifest"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: env.FLIX_KEYSTORE_FILE != ''
