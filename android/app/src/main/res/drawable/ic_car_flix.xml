@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Flix tile for the car's button strip (FlixScreen): public/icon.svg's rounded gradient tile and white mark, whole,
+     since a car button shows the icon as it is drawn rather than masking a launcher shape out of it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <path android:pathData="M118,0h276a118,118 0 0 1 118,118v276a118,118 0 0 1 -118,118h-276a118,118 0 0 1 -118,-118v-276a118,118 0 0 1 118,-118z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="512"
+                android:endY="512"
+                android:startColor="#ff8a4c"
+                android:centerColor="#ff3d6e"
+                android:endColor="#b8155a" />
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#ffffff"
+        android:pathData="M140,154 A38,38 0 0 1 216,154 L216,358 A38,38 0 0 1 140,358 Z" />
+    <path
+        android:fillColor="#ffffff"
+        android:pathData="M178,116 A38,38 0 0 0 178,192 L334,192 A38,38 0 0 0 334,116 Z" />
+    <group
+        android:scaleX="0.906"
+        android:scaleY="0.906"
+        android:pivotX="242"
+        android:pivotY="287">
+        <path
+            android:fillColor="#ffffff"
+            android:pathData="M242 228c0-16 17-26 31-18l102 59c14 8 14 28 0 36l-102 59c-14 8-31-2-31-18z" />
+    </group>
+</vector>

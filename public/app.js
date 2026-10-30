@@ -255,7 +255,7 @@ function renderTop() {
   top.hidden = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
     <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
-    <div class="hact">${me.cast && !isTv ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
+    <div class="hact">${me.cast && !isTv && !isCar ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
     // The cast button sits between the search bar and the profile: tap it once to pick the TV, then anything
     // started plays there. Tapping it again stops the session.
     casting.headerOff?.()
@@ -285,6 +285,9 @@ function renderTop() {
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
   if (cur) q.value = cur
+  // In the car the header's logo, search and avatar are the car's own buttons (see window.__flixCar), so the search bar is
+  // only on screen from the search button until it is left empty.
+  if (isCar) { top.classList.toggle('car-find', !!cur); q.onblur = () => { if (!q.value.trim()) top.classList.remove('car-find') } }
   // Live search: what Flix already knows lands almost at once, then BTN's results fill in. Neither navigates or swaps the
   // page, so the field keeps focus and the caret, and a slow answer never overwrites a newer one.
   let liveT = 0, liveN = 0
@@ -388,6 +391,25 @@ if (isTv) document.documentElement.classList.add('tv')
 // the car shares with its own buttons, and sound that reaches the car's speakers later than the picture reaches its screen.
 const isCar = /FlixCar/.test(navigator.userAgent)
 if (isCar) document.documentElement.classList.add('car')
+/**
+ * Android Auto draws a strip of its own buttons over the top of the car screen and will not leave it off, so on every page
+ * but the player it is Flix's header: the logo, search and the avatar; in the player, the logo alone, as Back (FlixScreen.onGetTemplate).
+ * A tap there arrives here,
+ * and does what the page's own would; false tells FlixScreen the page could not (it then loads Flix afresh for the logo).
+ */
+if (isCar) window.__flixCar = (what) => {
+  // In the player the strip's Flix mark is Back, and leaves the episode for Flix's home.
+  if (what === 'back') { if (!me) return false; go('#/'); return true }
+  if (!me || top.hidden) return false
+  if (what === 'home') { $('.brand')?.click(); return true }
+  if (what === 'menu') { $('#av')?.click(); return true }
+  if (what === 'search') {
+    const q = $('#q')
+    if (top.classList.contains('car-find') && !q.value.trim()) { top.classList.remove('car-find'); q.blur(); return true }
+    top.classList.add('car-find'); q.focus({ preventScroll: true }); return true
+  }
+  return false
+}
 // Downloads are for taking an episode away from the internet, and a television never leaves the house: a TV has no
 // Downloads page, no download buttons, and keeps no episodes in its own storage (anything an older version saved is
 // cleared, since a TV's storage is small and the episode streams from the server anyway).
@@ -1165,6 +1187,8 @@ const ICON = {
   play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6a.9.9 0 0 0 1.37.77l10.6-6.8a.9.9 0 0 0 0-1.54L9.37 4.43A.9.9 0 0 0 8 5.2Z"/></svg>',
   pause: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.4" y="4.8" width="4" height="14.4" rx="1.5"/><rect x="13.6" y="4.8" width="4" height="14.4" rx="1.5"/></svg>',
   fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
+  // The same four corners turned inward: back from the car's maximized picture to the picture beside its panel.
+  unfill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 9H9V3.5M20.5 9H15V3.5M3.5 15H9v5.5M20.5 15H15v5.5"/></svg>',
 }
 
 /**
@@ -1240,7 +1264,7 @@ function playView(seriesId, season, label) {
     app.innerHTML = `<div class="player" id="pl">
       <div class="p-top"><button class="icon-btn" id="pback" aria-label="Back">${I.back}</button>
         <span class="p-mark" aria-hidden="true">${I.logo}</span><span class="p-rate" id="prate" hidden></span>
-        <div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div><span class="sp"></span>
+        ${isCar ? '' : `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>`}<span class="sp"></span>
         <div class="p-menu"><button class="icon-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
         <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
@@ -1249,6 +1273,7 @@ function playView(seriesId, season, label) {
         <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
+          ${isCar ? `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>` : ''}
           ${isCar ? '<div class="p-sync" id="psync"><span>Sound delay</span><button class="p-btn" id="psyncm" aria-label="Show the picture sooner">−</button><b id="psyncv"></b><button class="p-btn" id="psyncp" aria-label="Hold the picture back longer">+</button></div>' : ''}
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
@@ -1531,6 +1556,21 @@ function playView(seriesId, season, label) {
       carPic?.set(carSync)
       if ($('#psyncv')) $('#psyncv').textContent = carSync ? (carSync / 1000).toFixed(2) + ' s' : 'Off'
     }
+    // The car's maximized picture (html.car .player.car-max in style.css): on a wide car screen the picture normally sits
+    // beside a panel that never fades; maximized, it fills the whole screen (cropped, never stretched) and the bar goes back
+    // over it, fading as on a phone, with the rating alone at the top left (the car strip's Flix logo is Back); the button again
+    // returns to the panel. Narrower car screens have no panel, and the button fills.
+    let carMax = false
+    const carWide = () => isCar && matchMedia('(min-aspect-ratio: 2/1)').matches
+    const setCarMax = (on) => {
+      carMax = on
+      pl.classList.toggle('car-max', on)
+      // Maximized fills the car's screen edge to edge: cropped to fit, never stretched and never letterboxed.
+      if (v) v.style.objectFit = on || fill ? 'cover' : ''
+      $('#pfull').innerHTML = on ? ICON.unfill : ICON.fill
+      $('#pfull').setAttribute('aria-label', on ? 'Back to the panel' : 'Maximize')
+      wake()
+    }
     const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
     pl.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), done: false } }, { passive: true, capture: true })
     pl.addEventListener('touchmove', (e) => {
@@ -1619,7 +1659,7 @@ function playView(seriesId, season, label) {
       pl.classList.toggle('casting', castingOnly)
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
-      $('#pfull').setAttribute('aria-pressed', String(fill))
+      $('#pfull').setAttribute('aria-pressed', String(carWide() ? carMax : fill))
       if (paused || castingOnly) { wake(); if (bigScreen()) warmArt() }
       fillPause()
       syncBar()
@@ -1774,7 +1814,8 @@ function playView(seriesId, season, label) {
       $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) v.play().catch(() => {}); else v.pause() }; wake() }
       $('#pbw').onclick = () => { nudge(-10); wake() }
       $('#pfw').onclick = () => { nudge(10); wake() }
-      $('#pfull').onclick = () => { setFill(!fill); paint() }
+      $('#pfull').onclick = () => { if (carWide()) setCarMax(!carMax); else setFill(!fill); paint() }
+      if (carWide()) $('#pfull').setAttribute('aria-label', 'Maximize')
       if (carPic) {
         $('#psyncm').onclick = () => { setCarSync(carSync - 50); wake() }
         $('#psyncp').onclick = () => { setCarSync(carSync + 50); wake() }
@@ -1983,7 +2024,7 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
-        if (fill) v.style.objectFit = 'cover'
+        if (fill || carMax) v.style.objectFit = 'cover'
         carPic?.mount($('#vw'))
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
         // always, which also undoes a level an older version saved on this device (a muted episode reads as broken).

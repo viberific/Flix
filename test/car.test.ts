@@ -19,11 +19,29 @@ test('the car screen is told apart by its user agent and never asks for fullscre
 
 test('a wide car screen puts the picture at 16:9 beside a panel, and the page and the car agree on the bridge', () => {
   assert.match(css, /@media \(min-aspect-ratio: 2\/1\) \{\s*html\.car \.player \{ --side:[^}]*16 \/ 9/)
-  assert.match(css, /html\.car \.player #vw \{ right: var\(--side\)/)
+  assert.match(css, /html\.car \.player:not\(\.car-max\) #vw \{ right: var\(--side\)/)
   assert.match(app, /window\.FlixCar\?\.immersive\(true\)/)
   assert.match(app, /window\.FlixCar\?\.immersive\(false\)/)
   assert.match(screen, /addJavascriptInterface\(new Bridge\(\), "FlixCar"\)/)
   assert.match(screen, /@JavascriptInterface\s+public void immersive\(boolean on\)/)
+})
+
+test('the car strip is Flix\'s header on pages and the Flix logo alone, as Back, in the player, with no band padded off the page', () => {
+  // NavigationTemplate will not build without a button, so the strip is never empty: the logo, search and the avatar on
+  // pages, handed to the page's own (window.__flixCar), and the mark alone while an episode plays.
+  assert.doesNotMatch(screen, /setTitle\("(Back|Home|Reload)"\)/)
+  assert.match(screen, /if \(immersive\) return new NavigationTemplate[^\n]*ic_car_flix\)\.setOnClickListener\(\(\) -> header\("back"\)\)/)
+  assert.doesNotMatch(screen, /ic_car_back/)
+  assert.match(screen, /header\("home"\)[\s\S]*header\("search"\)[\s\S]*header\("menu"\)/)
+  assert.doesNotMatch(screen, /root\.setPadding\(l, t, r, b\)/)
+  for (const what of ['back', 'home', 'search', 'menu']) assert.match(app, new RegExp(`what === '${what}'`))
+  assert.match(app, /if \(isCar\) window\.__flixCar = /)
+  assert.match(app, /me\.cast && !isTv && !isCar/)
+  // The player: maximize takes the picture to the whole screen, with the rating alone at the top left.
+  assert.match(app, /\$\('#pfull'\)\.onclick = \(\) => \{ if \(carWide\(\)\) setCarMax\(!carMax\)/)
+  assert.match(css, /html\.car \.player\.car-max #pback, html\.car \.player\.car-max \.p-mark \{ display: none; \}/)
+  assert.match(app, /if \(v\) v\.style\.objectFit = on \|\| fill \? 'cover' : ''/)
+  assert.match(css, /html\.car \.player #cast, html\.car \.player #rep \{ display: none; \}/)
 })
 
 test('the car picture shows a frame only once the sound delay has passed', async () => {

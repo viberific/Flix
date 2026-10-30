@@ -36,11 +36,16 @@ import androidx.car.app.hardware.common.OnCarDataAvailableListener;
 import androidx.car.app.hardware.info.Speed;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.ActionStrip;
+import androidx.car.app.model.CarColor;
+import androidx.car.app.model.CarIcon;
 import androidx.car.app.model.Template;
 import androidx.car.app.navigation.model.NavigationTemplate;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.drawable.IconCompat;
 import androidx.lifecycle.DefaultLifecycleObserver;
 import androidx.lifecycle.LifecycleOwner;
+
+import com.viberific.flix.R;
 
 /**
  * The same Flix web app as on the phone, drawn onto the car's screen. Android Auto lets an app draw only onto a
@@ -48,16 +53,17 @@ import androidx.lifecycle.LifecycleOwner;
  * the car's surface, and the car's taps and drags are replayed into the WebView as touches. Cookies and storage are
  * the process-wide ones, so whoever is signed in on the phone is signed in here.
  *
- * The player is the exception to the padding below: a car screen is wide and short, and the car's buttons cover only its
- * top right corner, so while an episode is open the page has the whole surface and is told where the buttons are
- * (--car-t, --car-r and --car-b, in CSS pixels), and puts the picture beside them rather than under a band cut off the top.
+ * The car always draws a strip of at least one button over the top of the surface (NavigationTemplate refuses to build
+ * without one). The page has the whole surface regardless and is told where the strip reaches (--car-t, --car-r and
+ * --car-b, in CSS pixels), so nothing sits in a band cut off the top: the strip holds Flix's own header (the logo, search
+ * and the account menu) over the page's top band, and while an episode is open, the Flix mark alone, which goes home.
  *
  * Parked only: while the car reports that it is moving, the page is paused and covered. A car that reports no speed
  * at all cannot be told from a parked one, and is treated as parked.
  */
 final class FlixScreen extends Screen implements SurfaceCallback {
     private static final String PREFS = "flix", KEY_URL = "server";
-    private static final int BG = 0xFF090B0F;
+    private static final int BG = 0xFF090B0F, ACCENT = 0xFFFF3D71;
     /** The page is laid out about this many CSS pixels wide whatever the car's resolution, so tiles are finger-sized. */
     private static final int CSS_WIDTH = 960;
     private static final float MOVING_MPS = 0.5f;
@@ -76,7 +82,7 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     private String lastUrl;
     private Rect visible;
     private boolean moving;
-    /** The player asked for the whole surface (see Bridge): the page is not padded, and lays itself out around the car's buttons. */
+    /** An episode is open (see Bridge): the strip is the Flix mark alone, which goes home; the player has its own controls. */
     private boolean immersive;
 
     // A drag in progress: car scrolls arrive as distances, so they are replayed as one finger moving from the middle.
@@ -105,20 +111,32 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        ActionStrip strip = new ActionStrip.Builder()
-                .addAction(new Action.Builder().setTitle("Back").setOnClickListener(() -> {
-                    if (fullscreenView != null) web.evaluateJavascript("document.exitFullscreen&&document.exitFullscreen()", null);
-                    else if (web != null && web.canGoBack()) web.goBack();
-                }).build())
-                .addAction(new Action.Builder().setTitle("Home").setOnClickListener(() -> {
-                    String url = serverUrl();
-                    if (web != null && url != null) web.loadUrl(url);
-                }).build())
-                .addAction(new Action.Builder().setTitle("Reload").setOnClickListener(() -> {
-                    if (web != null) web.reload();
-                }).build())
-                .build();
-        return new NavigationTemplate.Builder().setActionStrip(strip).build();
+        ActionStrip.Builder strip = new ActionStrip.Builder();
+        // While an episode plays the Flix mark is all there is, and is Back: it leaves for Flix's home. The panel has the rest.
+        if (immersive) return new NavigationTemplate.Builder().setActionStrip(strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> header("back")).build()).build()).build();
+        // Otherwise the strip is Flix's header: the logo goes home, then search and the account menu, which open the page's own.
+        strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> header("home")).build())
+                .addAction(icon(R.drawable.ic_car_search).setOnClickListener(() -> header("search")).build());
+        Action.Builder profile = icon(R.drawable.ic_car_profile).setOnClickListener(() -> header("menu"));
+        // The one button a car lets an app colour: Flix's red, as the avatar is on every other screen. Hosts before API 4 ignore it.
+        if (getCarContext().getCarAppApiLevel() >= 4) profile.setFlags(Action.FLAG_PRIMARY).setBackgroundColor(CarColor.createCustom(ACCENT, ACCENT));
+        return new NavigationTemplate.Builder().setActionStrip(strip.addAction(profile.build()).build()).build();
+    }
+
+    private Action.Builder icon(int res) {
+        return new Action.Builder().setIcon(new CarIcon.Builder(IconCompat.createWithResource(getCarContext(), res)).build());
+    }
+
+    /**
+     * A tap on the strip's Flix header, handed to the page (window.__flixCar in public/app.js). A page that is not Flix, or
+     * one that never finished loading, cannot answer, and the logo then loads Flix afresh, as Home used to.
+     */
+    private void header(String what) {
+        if (web == null) return;
+        web.evaluateJavascript("!!(window.__flixCar&&window.__flixCar('" + what + "'))", r -> {
+            String url = serverUrl();
+            if (!"true".equals(r) && !"search".equals(what) && !"menu".equals(what) && web != null && url != null) web.loadUrl(url);
+        });
     }
 
     private String serverUrl() {
@@ -310,23 +328,19 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     private void setImmersive(boolean on) {
         if (immersive == on) return;
         immersive = on;
-        applyVisibleArea();
+        invalidate();
     }
 
     /**
-     * Keeps the page out from under the car's own buttons, which cover part of the surface: padded clear of them, or, while
-     * the player has the whole surface, told how far in they reach so it can keep clear of them itself.
+     * Tells the page how far in the car's own buttons reach, so it can keep clear of them itself: the page always has the
+     * whole surface, since padding it clear of them is what left a dark band across the top.
      */
     private void applyVisibleArea() {
-        if (root == null || container == null || visible == null) return;
-        int l = Math.max(0, visible.left), t = Math.max(0, visible.top);
+        if (container == null || visible == null || web == null) return;
+        int t = Math.max(0, visible.top);
         int r = Math.max(0, container.getWidth() - visible.right), b = Math.max(0, container.getHeight() - visible.bottom);
-        if (immersive) root.setPadding(0, 0, 0, 0);
-        else root.setPadding(l, t, r, b);
-        if (web == null) return;
-        String js = immersive ? t + "," + r + "," + b : "0,0,0";
         web.evaluateJavascript("(function(t,r,b){var s=document.documentElement.style,d=window.devicePixelRatio||1;"
-                + "s.setProperty('--car-t',t/d+'px');s.setProperty('--car-r',r/d+'px');s.setProperty('--car-b',b/d+'px')})(" + js + ")", null);
+                + "s.setProperty('--car-t',t/d+'px');s.setProperty('--car-r',r/d+'px');s.setProperty('--car-b',b/d+'px')})(" + t + "," + r + "," + b + ")", null);
     }
 
     // ---- touch ----
@@ -379,8 +393,7 @@ final class FlixScreen extends Screen implements SurfaceCallback {
 
     private void send(int action, long down, long when, float x, float y) {
         if (web == null) return;
-        // Surface coordinates, less where the padded page starts.
-        MotionEvent e = MotionEvent.obtain(down, when, action, x - web.getLeft(), y - web.getTop(), 0);
+        MotionEvent e = MotionEvent.obtain(down, when, action, x, y, 0);
         e.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
         web.dispatchTouchEvent(e);
         e.recycle();
