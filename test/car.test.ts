@@ -39,6 +39,7 @@ test('the car strip is Flix\'s header on pages and only the Flix mark in the pla
   // The player: maximize takes the picture to the whole screen, and Back there returns to the panel.
   assert.match(app, /\$\('#pfull'\)\.onclick = \(\) => \{ if \(carWide\(\)\) setCarMax\(!carMax\)/)
   assert.match(app, /\$\('#pback'\)\.onclick = \(\) => \{ if \(carMax && carWide\(\)\) setCarMax\(false\); else leavePlayer\(\) \}/)
+  assert.match(app, /if \(v\) v\.style\.objectFit = on \|\| fill \? 'cover' : ''/)
   assert.match(css, /html\.car \.player #cast, html\.car \.player #rep \{ display: none; \}/)
 })
 

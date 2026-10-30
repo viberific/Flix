@@ -1557,13 +1557,15 @@ function playView(seriesId, season, label) {
       if ($('#psyncv')) $('#psyncv').textContent = carSync ? (carSync / 1000).toFixed(2) + ' s' : 'Off'
     }
     // The car's maximized picture (html.car .player.car-max in style.css): on a wide car screen the picture normally sits
-    // beside a panel that never fades; maximized, it takes the whole screen and the bar goes back over it, fading as on a
+    // beside a panel that never fades; maximized, it fills the whole screen (cropped, never stretched) and the bar goes back over it, fading as on a
     // phone, with Back at the top left returning to the panel. Narrower car screens have no panel, and the button fills.
     let carMax = false
     const carWide = () => isCar && matchMedia('(min-aspect-ratio: 2/1)').matches
     const setCarMax = (on) => {
       carMax = on
       pl.classList.toggle('car-max', on)
+      // Maximized fills the car's screen edge to edge: cropped to fit, never stretched and never letterboxed.
+      if (v) v.style.objectFit = on || fill ? 'cover' : ''
       $('#pfull').innerHTML = on ? ICON.unfill : ICON.fill
       $('#pfull').setAttribute('aria-label', on ? 'Back to the panel' : 'Maximize')
       $('#pback').setAttribute('aria-label', on ? 'Back to the panel' : 'Back')
@@ -2022,7 +2024,7 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
-        if (fill) v.style.objectFit = 'cover'
+        if (fill || carMax) v.style.objectFit = 'cover'
         carPic?.mount($('#vw'))
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
         // always, which also undoes a level an older version saved on this device (a muted episode reads as broken).
