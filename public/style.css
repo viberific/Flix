@@ -413,7 +413,7 @@ html.tv .player #pfull { display: none; }
    so the header here is only the warm Flix wash they sit on, and the search bar, which drops in from the search button.
 
    Player: a screen at least twice as wide as it is tall gets the picture at 16:9, full height on the left, and Flix's own
-   panel beside it -- the rating at the top (Back is the car strip's), then the title, the sound delay and the bar, centred down the panel --
+   panel beside it -- the rating at the top (the car strip's Flix logo is Back), then the title, the sound delay and the bar, centred down the panel --
    which never fades, since it covers nothing. Maximize (.car-max) gives the picture the whole screen and puts the bar back
    over it, fading as on a phone, with the rating at the top left; the button again returns to the panel. A narrower car screen keeps the phone's
    layout. */
@@ -437,8 +437,8 @@ html.car .p-ctl .p-title b { white-space: nowrap; overflow: hidden; text-overflo
 html.car .p-ctl .p-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Over the picture, captions step up above the bar while it is showing. */
 html.car .player:not(.p-quiet):not(.idle) .p-carcue { bottom: 220px; }
-/* Maximized: the rating alone at the top left (Back is the car strip's), the right end kept off the car's buttons. */
-html.car .player.car-max .p-top { padding-right: calc(var(--gutter-r) + var(--car-r, 0px) + 120px); }
+/* Maximized: the rating alone at the top left (Back is the car strip's logo), the right end kept off the car's button. */
+html.car .player.car-max .p-top { padding-right: calc(var(--gutter-r) + var(--car-r, 0px) + 64px); }
 html.car .player.car-max #pback, html.car .player.car-max .p-mark { display: none; }
 html.car .player.car-max .p-sync { display: none; } /* a setting, kept to the panel: the bar over the picture stays a phone's */
 html.car .player.car-max .p-top, html.car .player.car-max .p-ctl { animation: carBarIn .4s var(--ease-out); }
@@ -454,7 +454,7 @@ html.car .player.car-max .p-top, html.car .player.car-max .p-ctl { animation: ca
     background: linear-gradient(to bottom, var(--bg-2), var(--bg)); box-shadow: inset 1px 0 0 var(--line); }
   html.car .player:not(.car-max) .p-top, html.car .player:not(.car-max) .p-ctl { left: auto; right: 0; width: var(--side); background: none; animation: carPanelIn .45s var(--ease-out); }
   html.car .player:not(.car-max) .p-top { gap: 10px; padding: 12px calc(var(--car-r, 0px) + 14px) 0 14px; }
-  /* Back is the car strip's here (it leaves for home); the panel's own Back is only for leaving the maximized picture. */
+  /* Back is the car strip's Flix logo (it leaves for home), so the panel has none. */
   html.car .player:not(.car-max) .p-top .p-mark, html.car .player:not(.car-max) .p-top .sp, html.car .player:not(.car-max) #pback { display: none; }
   html.car .player:not(.car-max) .p-ctl { top: 0; display: flex; flex-direction: column; justify-content: center;
     padding: max(var(--car-t, 0px), 64px) calc(var(--car-r, 0px) + 14px) calc(var(--car-b, 0px) + 12px) 14px; }

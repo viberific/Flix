@@ -56,7 +56,7 @@ import com.viberific.flix.R;
  * The car always draws a strip of at least one button over the top of the surface (NavigationTemplate refuses to build
  * without one). The page has the whole surface regardless and is told where the strip reaches (--car-t, --car-r and
  * --car-b, in CSS pixels), so nothing sits in a band cut off the top: the strip holds Flix's own header (the logo, search
- * and the account menu) over the page's top band, and while an episode is open, the Flix mark and Back, over the picture.
+ * and the account menu) over the page's top band, and while an episode is open, the Flix mark alone, which goes home.
  *
  * Parked only: while the car reports that it is moving, the page is paused and covered. A car that reports no speed
  * at all cannot be told from a parked one, and is treated as parked.
@@ -82,10 +82,8 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     private String lastUrl;
     private Rect visible;
     private boolean moving;
-    /** An episode is open (see Bridge): the strip shows the Flix mark and Back, since the player has its own controls. */
+    /** An episode is open (see Bridge): the strip is the Flix mark alone, which goes home; the player has its own controls. */
     private boolean immersive;
-    /** The maximized picture's own bar has faded (see Bridge): the strip keeps only the Flix mark, the least it may show. */
-    private boolean quiet;
 
     // A drag in progress: car scrolls arrive as distances, so they are replayed as one finger moving from the middle.
     private boolean dragging;
@@ -114,13 +112,8 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     @Override
     public Template onGetTemplate() {
         ActionStrip.Builder strip = new ActionStrip.Builder();
-        // While an episode plays: the mark, which does nothing, and Back to Flix's home. The player's own panel has the rest.
-        // Back goes with the player's own bar when it fades over the maximized picture: the strip cannot be emptied or hidden.
-        if (immersive) {
-            strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> { }).build());
-            if (!quiet) strip.addAction(icon(R.drawable.ic_car_back).setOnClickListener(() -> header("back")).build());
-            return new NavigationTemplate.Builder().setActionStrip(strip.build()).build();
-        }
+        // While an episode plays the Flix mark is all there is, and is Back: it leaves for Flix's home. The panel has the rest.
+        if (immersive) return new NavigationTemplate.Builder().setActionStrip(strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> header("back")).build()).build()).build();
         // Otherwise the strip is Flix's header: the logo goes home, then search and the account menu, which open the page's own.
         strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> header("home")).build())
                 .addAction(icon(R.drawable.ic_car_search).setOnClickListener(() -> header("search")).build());
@@ -136,7 +129,7 @@ final class FlixScreen extends Screen implements SurfaceCallback {
 
     /**
      * A tap on the strip's Flix header, handed to the page (window.__flixCar in public/app.js). A page that is not Flix, or
-     * one that never finished loading, cannot answer, and the logo or Back then loads Flix afresh, as Home used to.
+     * one that never finished loading, cannot answer, and the logo then loads Flix afresh, as Home used to.
      */
     private void header(String what) {
         if (web == null) return;
@@ -306,7 +299,6 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         fullscreenView = null;
         fullscreenCallback = null;
         immersive = false;
-        quiet = false;
         cover = null;
         root = null;
         if (presentation != null) { presentation.dismiss(); presentation = null; }
@@ -331,23 +323,11 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         public void immersive(boolean on) {
             main.post(() -> setImmersive(on));
         }
-
-        @JavascriptInterface
-        public void quiet(boolean on) {
-            main.post(() -> setQuiet(on));
-        }
-    }
-
-    private void setQuiet(boolean on) {
-        if (quiet == on) return;
-        quiet = on;
-        invalidate();
     }
 
     private void setImmersive(boolean on) {
         if (immersive == on) return;
         immersive = on;
-        quiet = false;
         invalidate();
     }
 

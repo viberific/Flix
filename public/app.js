@@ -393,12 +393,12 @@ const isCar = /FlixCar/.test(navigator.userAgent)
 if (isCar) document.documentElement.classList.add('car')
 /**
  * Android Auto draws a strip of its own buttons over the top of the car screen and will not leave it off, so on every page
- * but the player it is Flix's header: the logo, search and the avatar; in the player, the mark and Back (FlixScreen.onGetTemplate).
+ * but the player it is Flix's header: the logo, search and the avatar; in the player, the logo alone, as Back (FlixScreen.onGetTemplate).
  * A tap there arrives here,
  * and does what the page's own would; false tells FlixScreen the page could not (it then loads Flix afresh for the logo).
  */
 if (isCar) window.__flixCar = (what) => {
-  // Back is the strip's while an episode plays, and leaves it for Flix's home.
+  // In the player the strip's Flix mark is Back, and leaves the episode for Flix's home.
   if (what === 'back') { if (!me) return false; go('#/'); return true }
   if (!me || top.hidden) return false
   if (what === 'home') { $('.brand')?.click(); return true }
@@ -1558,20 +1558,10 @@ function playView(seriesId, season, label) {
     }
     // The car's maximized picture (html.car .player.car-max in style.css): on a wide car screen the picture normally sits
     // beside a panel that never fades; maximized, it fills the whole screen (cropped, never stretched) and the bar goes back
-    // over it, fading as on a phone, with the rating alone at the top left (Back is the car strip's); the button again
+    // over it, fading as on a phone, with the rating alone at the top left (the car strip's Flix logo is Back); the button again
     // returns to the panel. Narrower car screens have no panel, and the button fills.
     let carMax = false
     const carWide = () => isCar && matchMedia('(min-aspect-ratio: 2/1)').matches
-    // While the bar over the maximized picture is faded, the car's strip drops to the Flix mark alone (FlixScreen), and comes
-    // back with Back when the bar does: Android Auto lets an app thin its buttons out, never hide them.
-    let carQuiet = false
-    const carQuietObs = isCar ? new MutationObserver(() => {
-      const q = carMax && (pl.classList.contains('p-quiet') || pl.classList.contains('idle'))
-      if (q === carQuiet) return
-      carQuiet = q
-      try { window.FlixCar?.quiet?.(q) } catch { /* an older app */ }
-    }) : null
-    carQuietObs?.observe(pl, { attributes: true, attributeFilter: ['class'] })
     const setCarMax = (on) => {
       carMax = on
       pl.classList.toggle('car-max', on)
@@ -1881,7 +1871,7 @@ function playView(seriesId, season, label) {
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
       alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
-      carPic?.stop(); carQuietObs?.disconnect(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
+      carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */
