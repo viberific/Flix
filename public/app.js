@@ -1557,8 +1557,9 @@ function playView(seriesId, season, label) {
       if ($('#psyncv')) $('#psyncv').textContent = carSync ? (carSync / 1000).toFixed(2) + ' s' : 'Off'
     }
     // The car's maximized picture (html.car .player.car-max in style.css): on a wide car screen the picture normally sits
-    // beside a panel that never fades; maximized, it fills the whole screen (cropped, never stretched) and the bar goes back over it, fading as on a
-    // phone, with Back at the top left returning to the panel. Narrower car screens have no panel, and the button fills.
+    // beside a panel that never fades; maximized, it fills the whole screen (cropped, never stretched) and the bar goes back
+    // over it, fading as on a phone, with the rating alone at the top left (Back is the car strip's); the button again
+    // returns to the panel. Narrower car screens have no panel, and the button fills.
     let carMax = false
     const carWide = () => isCar && matchMedia('(min-aspect-ratio: 2/1)').matches
     const setCarMax = (on) => {
@@ -1568,7 +1569,6 @@ function playView(seriesId, season, label) {
       if (v) v.style.objectFit = on || fill ? 'cover' : ''
       $('#pfull').innerHTML = on ? ICON.unfill : ICON.fill
       $('#pfull').setAttribute('aria-label', on ? 'Back to the panel' : 'Maximize')
-      $('#pback').setAttribute('aria-label', on ? 'Back to the panel' : 'Back')
       wake()
     }
     const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
@@ -1821,7 +1821,7 @@ function playView(seriesId, season, label) {
         $('#psyncp').onclick = () => { setCarSync(carSync + 50); wake() }
         setCarSync(carSync)
       }
-      $('#pback').onclick = () => { if (carMax && carWide()) setCarMax(false); else leavePlayer() }
+      $('#pback').onclick = leavePlayer
       // A tap on the picture shows or hides the bar, as every other player does. While paused it only brings it back.
       // Hiding takes the focus off whatever was last tapped in the bar: a focused button keeps the bar on screen.
       $('#vw').addEventListener('click', () => { if (!v) return; if (v.paused) return wake(); if (pl.classList.contains('p-quiet') || menuOpen()) wake(); else { armQuiet(); hideBar() } })

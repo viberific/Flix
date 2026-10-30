@@ -36,9 +36,9 @@ test('the car strip is Flix\'s header on pages and only the Flix mark in the pla
   for (const what of ['back', 'home', 'search', 'menu']) assert.match(app, new RegExp(`what === '${what}'`))
   assert.match(app, /if \(isCar\) window\.__flixCar = /)
   assert.match(app, /me\.cast && !isTv && !isCar/)
-  // The player: maximize takes the picture to the whole screen, and Back there returns to the panel.
+  // The player: maximize takes the picture to the whole screen, with the rating alone at the top left.
   assert.match(app, /\$\('#pfull'\)\.onclick = \(\) => \{ if \(carWide\(\)\) setCarMax\(!carMax\)/)
-  assert.match(app, /\$\('#pback'\)\.onclick = \(\) => \{ if \(carMax && carWide\(\)\) setCarMax\(false\); else leavePlayer\(\) \}/)
+  assert.match(css, /html\.car \.player\.car-max #pback, html\.car \.player\.car-max \.p-mark \{ display: none; \}/)
   assert.match(app, /if \(v\) v\.style\.objectFit = on \|\| fill \? 'cover' : ''/)
   assert.match(css, /html\.car \.player #cast, html\.car \.player #rep \{ display: none; \}/)
 })

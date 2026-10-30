@@ -415,7 +415,7 @@ html.tv .player #pfull { display: none; }
    Player: a screen at least twice as wide as it is tall gets the picture at 16:9, full height on the left, and Flix's own
    panel beside it -- the rating at the top (Back is the car strip's), then the title, the sound delay and the bar, centred down the panel --
    which never fades, since it covers nothing. Maximize (.car-max) gives the picture the whole screen and puts the bar back
-   over it, fading as on a phone, with Back at the top left returning to the panel. A narrower car screen keeps the phone's
+   over it, fading as on a phone, with the rating at the top left; the button again returns to the panel. A narrower car screen keeps the phone's
    layout. */
 html.car header#top { background: linear-gradient(to bottom, color-mix(in srgb, var(--accent-2) 26%, transparent), color-mix(in srgb, var(--accent) 6%, transparent) 70%, transparent); }
 html.car header#top.solid { background: linear-gradient(to bottom, color-mix(in srgb, var(--accent-2) 20%, transparent), transparent), color-mix(in srgb, var(--bg) 90%, transparent); }
@@ -437,8 +437,9 @@ html.car .p-ctl .p-title b { white-space: nowrap; overflow: hidden; text-overflo
 html.car .p-ctl .p-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Over the picture, captions step up above the bar while it is showing. */
 html.car .player:not(.p-quiet):not(.idle) .p-carcue { bottom: 220px; }
-/* Maximized: Back on the left as ever, and the right end of the top bar kept off the car's Flix button. */
-html.car .player.car-max .p-top { padding-right: calc(var(--gutter-r) + var(--car-r, 0px) + 64px); }
+/* Maximized: the rating alone at the top left (Back is the car strip's), the right end kept off the car's buttons. */
+html.car .player.car-max .p-top { padding-right: calc(var(--gutter-r) + var(--car-r, 0px) + 120px); }
+html.car .player.car-max #pback, html.car .player.car-max .p-mark { display: none; }
 html.car .player.car-max .p-sync { display: none; } /* a setting, kept to the panel: the bar over the picture stays a phone's */
 html.car .player.car-max .p-top, html.car .player.car-max .p-ctl { animation: carBarIn .4s var(--ease-out); }
 @keyframes carBarIn { from { opacity: 0; } }
