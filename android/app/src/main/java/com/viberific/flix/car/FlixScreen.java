@@ -56,7 +56,7 @@ import com.viberific.flix.R;
  * The car always draws a strip of at least one button over the top of the surface (NavigationTemplate refuses to build
  * without one). The page has the whole surface regardless and is told where the strip reaches (--car-t, --car-r and
  * --car-b, in CSS pixels), so nothing sits in a band cut off the top: the strip holds Flix's own header (the logo, search
- * and the account menu) over the page's top band, and while an episode is open, only the Flix mark, over the picture.
+ * and the account menu) over the page's top band, and while an episode is open, the Flix mark and Back, over the picture.
  *
  * Parked only: while the car reports that it is moving, the page is paused and covered. A car that reports no speed
  * at all cannot be told from a parked one, and is treated as parked.
@@ -82,7 +82,7 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     private String lastUrl;
     private Rect visible;
     private boolean moving;
-    /** An episode is open (see Bridge): the strip shows only the Flix mark, since the player has its own controls. */
+    /** An episode is open (see Bridge): the strip shows the Flix mark and Back, since the player has its own controls. */
     private boolean immersive;
 
     // A drag in progress: car scrolls arrive as distances, so they are replayed as one finger moving from the middle.
@@ -112,8 +112,9 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     @Override
     public Template onGetTemplate() {
         ActionStrip.Builder strip = new ActionStrip.Builder();
-        // While an episode plays the mark is all there is, and does nothing: the player's own panel has its controls.
-        if (immersive) return new NavigationTemplate.Builder().setActionStrip(strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> { }).build()).build()).build();
+        // While an episode plays: the mark, which does nothing, and Back to Flix's home. The player's own panel has the rest.
+        if (immersive) return new NavigationTemplate.Builder().setActionStrip(strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> { }).build())
+                .addAction(icon(R.drawable.ic_car_back).setOnClickListener(() -> header("back")).build()).build()).build();
         // Otherwise the strip is Flix's header: the logo goes home, then search and the account menu, which open the page's own.
         strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> header("home")).build())
                 .addAction(icon(R.drawable.ic_car_search).setOnClickListener(() -> header("search")).build());
@@ -129,13 +130,13 @@ final class FlixScreen extends Screen implements SurfaceCallback {
 
     /**
      * A tap on the strip's Flix header, handed to the page (window.__flixCar in public/app.js). A page that is not Flix, or
-     * one that never finished loading, cannot answer, and the logo then loads Flix afresh, as Home used to.
+     * one that never finished loading, cannot answer, and the logo or Back then loads Flix afresh, as Home used to.
      */
     private void header(String what) {
         if (web == null) return;
         web.evaluateJavascript("!!(window.__flixCar&&window.__flixCar('" + what + "'))", r -> {
             String url = serverUrl();
-            if (!"true".equals(r) && "home".equals(what) && web != null && url != null) web.loadUrl(url);
+            if (!"true".equals(r) && !"search".equals(what) && !"menu".equals(what) && web != null && url != null) web.loadUrl(url);
         });
     }
 

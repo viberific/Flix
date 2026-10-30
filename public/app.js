@@ -393,10 +393,13 @@ const isCar = /FlixCar/.test(navigator.userAgent)
 if (isCar) document.documentElement.classList.add('car')
 /**
  * Android Auto draws a strip of its own buttons over the top of the car screen and will not leave it off, so on every page
- * but the player it is Flix's header: the logo, search and the avatar (FlixScreen.onGetTemplate). A tap there arrives here,
+ * but the player it is Flix's header: the logo, search and the avatar; in the player, the mark and Back (FlixScreen.onGetTemplate).
+ * A tap there arrives here,
  * and does what the page's own would; false tells FlixScreen the page could not (it then loads Flix afresh for the logo).
  */
 if (isCar) window.__flixCar = (what) => {
+  // Back is the strip's while an episode plays, and leaves it for Flix's home.
+  if (what === 'back') { if (!me) return false; go('#/'); return true }
   if (!me || top.hidden) return false
   if (what === 'home') { $('.brand')?.click(); return true }
   if (what === 'menu') { $('#av')?.click(); return true }

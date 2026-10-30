@@ -413,7 +413,7 @@ html.tv .player #pfull { display: none; }
    so the header here is only the warm Flix wash they sit on, and the search bar, which drops in from the search button.
 
    Player: a screen at least twice as wide as it is tall gets the picture at 16:9, full height on the left, and Flix's own
-   panel beside it -- Back and the rating at the top, then the title, the sound delay and the bar, centred down the panel --
+   panel beside it -- the rating at the top (Back is the car strip's), then the title, the sound delay and the bar, centred down the panel --
    which never fades, since it covers nothing. Maximize (.car-max) gives the picture the whole screen and puts the bar back
    over it, fading as on a phone, with Back at the top left returning to the panel. A narrower car screen keeps the phone's
    layout. */
@@ -453,7 +453,8 @@ html.car .player.car-max .p-top, html.car .player.car-max .p-ctl { animation: ca
     background: linear-gradient(to bottom, var(--bg-2), var(--bg)); box-shadow: inset 1px 0 0 var(--line); }
   html.car .player:not(.car-max) .p-top, html.car .player:not(.car-max) .p-ctl { left: auto; right: 0; width: var(--side); background: none; animation: carPanelIn .45s var(--ease-out); }
   html.car .player:not(.car-max) .p-top { gap: 10px; padding: 12px calc(var(--car-r, 0px) + 14px) 0 14px; }
-  html.car .player:not(.car-max) .p-top .p-mark, html.car .player:not(.car-max) .p-top .sp { display: none; }
+  /* Back is the car strip's here (it leaves for home); the panel's own Back is only for leaving the maximized picture. */
+  html.car .player:not(.car-max) .p-top .p-mark, html.car .player:not(.car-max) .p-top .sp, html.car .player:not(.car-max) #pback { display: none; }
   html.car .player:not(.car-max) .p-ctl { top: 0; display: flex; flex-direction: column; justify-content: center;
     padding: max(var(--car-t, 0px), 64px) calc(var(--car-r, 0px) + 14px) calc(var(--car-b, 0px) + 12px) 14px; }
   html.car .player:not(.car-max) .p-ctl .p-title { text-align: center; margin-bottom: 14px; }

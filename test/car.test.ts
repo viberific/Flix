@@ -30,10 +30,10 @@ test('the car strip is Flix\'s header on pages and only the Flix mark in the pla
   // NavigationTemplate will not build without a button, so the strip is never empty: the logo, search and the avatar on
   // pages, handed to the page's own (window.__flixCar), and the mark alone while an episode plays.
   assert.doesNotMatch(screen, /setTitle\("(Back|Home|Reload)"\)/)
-  assert.match(screen, /if \(immersive\) return new NavigationTemplate[^\n]*ic_car_flix/)
+  assert.match(screen, /if \(immersive\) return new NavigationTemplate[^\n]*ic_car_flix[^\n]*\n[^\n]*ic_car_back[^\n]*header\("back"\)/)
   assert.match(screen, /header\("home"\)[\s\S]*header\("search"\)[\s\S]*header\("menu"\)/)
   assert.doesNotMatch(screen, /root\.setPadding\(l, t, r, b\)/)
-  for (const what of ['home', 'search', 'menu']) assert.match(app, new RegExp(`what === '${what}'`))
+  for (const what of ['back', 'home', 'search', 'menu']) assert.match(app, new RegExp(`what === '${what}'`))
   assert.match(app, /if \(isCar\) window\.__flixCar = /)
   assert.match(app, /me\.cast && !isTv && !isCar/)
   // The player: maximize takes the picture to the whole screen, and Back there returns to the panel.
