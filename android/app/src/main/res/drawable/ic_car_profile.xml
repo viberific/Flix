@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The account menu, for the car's button strip (FlixScreen): a head and shoulders, white on the strip's Flix-red button. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#ffffff"
+        android:pathData="M12,4a4,4 0 1 1 0,8a4,4 0 1 1 0,-8z M4,20c0,-3.6 3.6,-6 8,-6s8,2.4 8,6c0,0.6 -0.4,1 -1,1H5c-0.6,0 -1,-0.4 -1,-1z" />
+</vector>
