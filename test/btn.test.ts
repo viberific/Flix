@@ -139,3 +139,20 @@ test('the catalog wraps its series filter: BTN applies no wildcards of its own',
   assert.equal(last.method, 'getTorrents')
   assert.equal(last.params.search.series, '%Test Show%')
 })
+
+test('typing a longer search does not ask BTN again once a shorter one came back complete', async () => {
+  last = null
+  answer = ok({ results: '0' })
+  await searchBtn('Zebr')
+  assert.equal(last.params.search.series, '%Zebr%')
+  last = null
+  await searchBtn('Zebra Crossing')
+  assert.equal(last, null)
+
+  // ...but a shorter term that hit the result cap may have missed some, so a longer one is still asked.
+  answer = ok({ results: '500' })
+  await searchBtn('Qu')
+  last = null
+  await searchBtn('Quiet')
+  assert.equal(last?.params.search.series, '%Quiet%')
+})

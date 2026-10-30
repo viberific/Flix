@@ -290,19 +290,27 @@ function renderTop() {
   if (isCar) { top.classList.toggle('car-find', !!cur); q.onblur = () => { if (!q.value.trim()) top.classList.remove('car-find') } }
   // Live search: what Flix already knows lands almost at once, then BTN's results fill in. Neither navigates or swaps the
   // page, so the field keeps focus and the caret, and a slow answer never overwrites a newer one.
-  let liveT = 0, liveN = 0
-  const show = (render, v) => { if (!/^#?\/?(\?|$)/.test(location.hash)) return; history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/'); render() }
+  // Asking BTN is slow and spends its API budget, so that waits until typing pauses rather than going out for every letter,
+  // and an answer that would draw the same tiles again is left alone, so the grid does not flash while it settles.
+  let liveT = 0, fullT = 0, liveN = 0
+  const show = (view, v) => {
+    if (!/^#?\/?(\?|$)/.test(location.hash)) return
+    history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/')
+    if (v && $('#app [data-live]')?.dataset.live === view.key) return
+    view()
+  }
   q.oninput = () => {
-    clearTimeout(liveT)
+    clearTimeout(liveT); clearTimeout(fullT)
     const v = q.value.trim(), mine = ++liveN
     liveT = setTimeout(async () => {
       if (!v) { const r = await homeView('').catch(() => null); if (r && mine === liveN) { show(r, v); window.scrollTo({ top: 0, behavior: 'instant' }) } return }
       const quick = await homeView(v, true).catch(() => null)
       if (quick && mine === liveN) show(quick, v)
-      if (v.length < 2) return
+    }, 120)
+    if (v.length >= 2) fullT = setTimeout(async () => {
       const full = await homeView(v).catch(() => null)
       if (full && mine === liveN) show(full, v)
-    }, 120)
+    }, 650)
   }
   sf.onsubmit = (e) => { e.preventDefault(); const t = q.value.trim(); go(t ? '#/?q=' + encodeURIComponent(t) : '#/'); q.blur(); if (isTv) setTimeout(() => $('#app .tile')?.focus({ preventScroll: true }), 500) }
   $('#av').onclick = (e) => {
@@ -737,7 +745,9 @@ async function homeView(q, local = false) {
   const featured = q ? null : home.hero // the billboard: top trending show, else the newest streaming original
   const items = cont.items
   const listIds = new Set(home.listIds ?? [])
-  return () => {
+  // What a search draws, so live search can tell when a newer answer would draw the same page again.
+  const key = q ? q + '\n' + series.map((s) => s.id).join(',') : ''
+  return Object.assign(() => {
     let html = ''
     // Titles the card asks about are not repeated as a row beneath it.
     const lpShow = q ? [] : leavingPromptPick(leaving.items)
@@ -764,7 +774,7 @@ async function homeView(q, local = false) {
       // after the first showing of the results they simply appear.
       const again = !!document.querySelector('#app .grid')
       const tiles = series.map(tile).join('')
-      html += `<h2 class="sec" style="margin-top:0">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
+      html += `<h2 class="sec" style="margin-top:0" data-live="${esc(key)}">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
         (series.length ? `<div class="grid">${again ? tiles.replaceAll('tile rise"', 'tile"') : tiles}</div>`
           : `<div class="empty">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
     }
@@ -795,7 +805,7 @@ async function homeView(q, local = false) {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
     }
-  }
+  }, { key })
 }
 
 /* ---------- the billboard's trailer ---------- */
