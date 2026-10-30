@@ -26,11 +26,11 @@ test('a wide car screen puts the picture at 16:9 beside a panel, and the page an
   assert.match(screen, /@JavascriptInterface\s+public void immersive\(boolean on\)/)
 })
 
-test('the car strip is Flix\'s header on pages and only the Flix mark in the player, with no band padded off the page', () => {
+test('the car strip is Flix\'s header on pages and the Flix mark and Back in the player, with no band padded off the page', () => {
   // NavigationTemplate will not build without a button, so the strip is never empty: the logo, search and the avatar on
   // pages, handed to the page's own (window.__flixCar), and the mark alone while an episode plays.
   assert.doesNotMatch(screen, /setTitle\("(Back|Home|Reload)"\)/)
-  assert.match(screen, /if \(immersive\) return new NavigationTemplate[^\n]*ic_car_flix[^\n]*\n[^\n]*ic_car_back[^\n]*header\("back"\)/)
+  assert.match(screen, /if \(immersive\) \{\s*strip\.addAction\(icon\(R\.drawable\.ic_car_flix\)[^\n]*\n[^\n]*ic_car_back[^\n]*header\("back"\)/)
   assert.match(screen, /header\("home"\)[\s\S]*header\("search"\)[\s\S]*header\("menu"\)/)
   assert.doesNotMatch(screen, /root\.setPadding\(l, t, r, b\)/)
   for (const what of ['back', 'home', 'search', 'menu']) assert.match(app, new RegExp(`what === '${what}'`))
@@ -39,6 +39,10 @@ test('the car strip is Flix\'s header on pages and only the Flix mark in the pla
   // The player: maximize takes the picture to the whole screen, with the rating alone at the top left.
   assert.match(app, /\$\('#pfull'\)\.onclick = \(\) => \{ if \(carWide\(\)\) setCarMax\(!carMax\)/)
   assert.match(css, /html\.car \.player\.car-max #pback, html\.car \.player\.car-max \.p-mark \{ display: none; \}/)
+  // Over the maximized picture, the strip thins to the Flix mark while the bar is faded.
+  assert.match(app, /const q = carMax && \(pl\.classList\.contains\('p-quiet'\) \|\| pl\.classList\.contains\('idle'\)\)/)
+  assert.match(screen, /if \(!quiet\) strip\.addAction\(icon\(R\.drawable\.ic_car_back\)/)
+  assert.match(screen, /@JavascriptInterface\s+public void quiet\(boolean on\)/)
   assert.match(app, /if \(v\) v\.style\.objectFit = on \|\| fill \? 'cover' : ''/)
   assert.match(css, /html\.car \.player #cast, html\.car \.player #rep \{ display: none; \}/)
 })

@@ -1562,6 +1562,16 @@ function playView(seriesId, season, label) {
     // returns to the panel. Narrower car screens have no panel, and the button fills.
     let carMax = false
     const carWide = () => isCar && matchMedia('(min-aspect-ratio: 2/1)').matches
+    // While the bar over the maximized picture is faded, the car's strip drops to the Flix mark alone (FlixScreen), and comes
+    // back with Back when the bar does: Android Auto lets an app thin its buttons out, never hide them.
+    let carQuiet = false
+    const carQuietObs = isCar ? new MutationObserver(() => {
+      const q = carMax && (pl.classList.contains('p-quiet') || pl.classList.contains('idle'))
+      if (q === carQuiet) return
+      carQuiet = q
+      try { window.FlixCar?.quiet?.(q) } catch { /* an older app */ }
+    }) : null
+    carQuietObs?.observe(pl, { attributes: true, attributeFilter: ['class'] })
     const setCarMax = (on) => {
       carMax = on
       pl.classList.toggle('car-max', on)
@@ -1871,7 +1881,7 @@ function playView(seriesId, season, label) {
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
       alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
-      carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
+      carPic?.stop(); carQuietObs?.disconnect(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
     /** Android's Back button (see MainActivity): an open list closes first; otherwise Back leaves for the show's page. */

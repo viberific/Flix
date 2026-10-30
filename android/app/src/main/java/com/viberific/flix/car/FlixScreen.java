@@ -84,6 +84,8 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     private boolean moving;
     /** An episode is open (see Bridge): the strip shows the Flix mark and Back, since the player has its own controls. */
     private boolean immersive;
+    /** The maximized picture's own bar has faded (see Bridge): the strip keeps only the Flix mark, the least it may show. */
+    private boolean quiet;
 
     // A drag in progress: car scrolls arrive as distances, so they are replayed as one finger moving from the middle.
     private boolean dragging;
@@ -113,8 +115,12 @@ final class FlixScreen extends Screen implements SurfaceCallback {
     public Template onGetTemplate() {
         ActionStrip.Builder strip = new ActionStrip.Builder();
         // While an episode plays: the mark, which does nothing, and Back to Flix's home. The player's own panel has the rest.
-        if (immersive) return new NavigationTemplate.Builder().setActionStrip(strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> { }).build())
-                .addAction(icon(R.drawable.ic_car_back).setOnClickListener(() -> header("back")).build()).build()).build();
+        // Back goes with the player's own bar when it fades over the maximized picture: the strip cannot be emptied or hidden.
+        if (immersive) {
+            strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> { }).build());
+            if (!quiet) strip.addAction(icon(R.drawable.ic_car_back).setOnClickListener(() -> header("back")).build());
+            return new NavigationTemplate.Builder().setActionStrip(strip.build()).build();
+        }
         // Otherwise the strip is Flix's header: the logo goes home, then search and the account menu, which open the page's own.
         strip.addAction(icon(R.drawable.ic_car_flix).setOnClickListener(() -> header("home")).build())
                 .addAction(icon(R.drawable.ic_car_search).setOnClickListener(() -> header("search")).build());
@@ -300,6 +306,7 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         fullscreenView = null;
         fullscreenCallback = null;
         immersive = false;
+        quiet = false;
         cover = null;
         root = null;
         if (presentation != null) { presentation.dismiss(); presentation = null; }
@@ -324,11 +331,23 @@ final class FlixScreen extends Screen implements SurfaceCallback {
         public void immersive(boolean on) {
             main.post(() -> setImmersive(on));
         }
+
+        @JavascriptInterface
+        public void quiet(boolean on) {
+            main.post(() -> setQuiet(on));
+        }
+    }
+
+    private void setQuiet(boolean on) {
+        if (quiet == on) return;
+        quiet = on;
+        invalidate();
     }
 
     private void setImmersive(boolean on) {
         if (immersive == on) return;
         immersive = on;
+        quiet = false;
         invalidate();
     }
 
