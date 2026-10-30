@@ -198,7 +198,8 @@ app.get('/api/series', auth, async (req) => {
     if (btnSearched.size > 500) btnSearched.delete(btnSearched.keys().next().value!)
     await searchBtn(q!.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
     // A search only brings back some of a show's releases; read the rest of the top few matches (and their language and season lengths) so their seasons can be judged.
-    const unsynced = query().filter((r) => !db.prepare('SELECT 1 FROM series_sync WHERE series_id = ?').get(r.id) || !db.prepare('SELECT 1 FROM series_net WHERE series_id = ?').get(r.id)).slice(0, 5)
+    const read = db.prepare('SELECT EXISTS(SELECT 1 FROM series_sync WHERE series_id = ?1) AND EXISTS(SELECT 1 FROM series_net WHERE series_id = ?1) AS ok')
+    const unsynced = query().filter((r) => !(read.get(r.id) as any).ok).slice(0, 5)
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
   }
   const rows = query().filter(isListed).slice(0, 100)

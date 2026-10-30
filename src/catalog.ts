@@ -46,15 +46,23 @@ export function storeTorrents(list: BtnTorrent[]) {
  */
 const like = (s: string) => `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
 
-const searchCache = new Map<string, number>()
+// When each term was last searched, and whether BTN's answer held every match (fewer than the 200 asked for).
+const searchCache = new Map<string, { at: number; complete: boolean }>()
 
-/** Search BTN by series name (cached 10 min to protect the API budget) and store results. */
+/**
+ * Search BTN by series name (cached 10 min to protect the API budget) and store results. Typing "breaking" would
+ * otherwise spend a call on every prefix: once a shorter term came back complete, everything a longer one could
+ * match is already stored, so it is not asked again.
+ */
 export async function searchBtn(q: string) {
-  const key = q.toLowerCase()
-  if ((searchCache.get(key) ?? 0) > Date.now() - 600_000) return
-  const { torrents } = await getTorrents({ series: like(q) }, 200, 0)
+  const key = q.toLowerCase(), fresh = Date.now() - 600_000
+  for (const [k, c] of searchCache) {
+    if (c.at <= fresh) searchCache.delete(k)
+    else if (k === key || (c.complete && key.includes(k))) return
+  }
+  const { torrents, total } = await getTorrents({ series: like(q) }, 200, 0)
   storeTorrents(torrents)
-  searchCache.set(key, Date.now())
+  searchCache.set(key, { at: Date.now(), complete: total <= torrents.length })
 }
 
 /**
