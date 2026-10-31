@@ -1,5 +1,6 @@
 import { db } from './db.ts'
 import { config } from './config.ts'
+import { resetEncoder } from './encode.ts'
 
 /** Values from the environment, kept so clearing a saved setting falls back to them. */
 const envBtnKey = config.btn.apiKey
@@ -24,7 +25,7 @@ export function loadSettings() {
   config.qb.user = get('qb_user') ?? envQb.user
   config.qb.pass = get('qb_pass') ?? envQb.pass
   config.transcode.profile = (get('transcode_profile') as Profile) || envTranscodeProfile
-  config.transcode.hardware = (get('transcode_hardware') ?? (envTranscodeHardware ? 'on' : 'off')) !== 'off'
+  config.transcode.hardware = resolveHardware(get('transcode_hardware'), envTranscodeHardware)
   // Saved from the Settings page; without reading it back here a restart quietly went back to TRANSCODE_MODE.
   const mode = get('transcode_mode')
   config.transcode.mode = mode === 'off' || mode === 'auto' ? mode : envTranscodeMode
@@ -110,6 +111,15 @@ export function setTranscodeProfile(profile: string) {
   loadSettings()
 }
 
+/**
+ * Whether the GPU's encoder may be used. A saved answer wins, then TRANSCODE_HARDWARE, and with neither it is on:
+ * hardware is a hope, not a promise -- an encoder that will not open a session is never chosen, so "on" costs nothing
+ * on a box without one and every conversion falls back to libx264 by itself.
+ */
+export function resolveHardware(saved: string | undefined, fromEnv: boolean) {
+  return (saved ?? (fromEnv ? 'on' : 'off')) !== 'off'
+}
+
 /** Never re-encode the picture ('off'), or convert when a file needs it ('auto'). */
 export function setTranscodeMode(mode: string) {
   const want = String(mode).toLowerCase() === 'off' ? 'off' : 'auto'
@@ -120,10 +130,12 @@ export function setTranscodeMode(mode: string) {
 /** Whether the picture may never be re-encoded: then a release that needs it is never downloaded either. */
 export const copyOnly = () => config.transcode.mode === 'off'
 
-/** Whether the GPU's encoder may be used when the container can see one. */
+/** Whether the GPU's encoder may be used when the container can see one. Applies at once: the next conversion decides
+ *  again, so the Settings switch does not need a restart. */
 export function setTranscodeHardware(on: boolean) {
   put('transcode_hardware', on ? 'on' : 'off')
   loadSettings()
+  resetEncoder()
 }
 
 /** What the Settings page shows: the saved profile, whether hardware is allowed, and both origins. */

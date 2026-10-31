@@ -1,17 +1,27 @@
 /**
  * What the encoder is allowed to do, and which encoder it is.
  *
- * The box Flix runs on is an Intel N95: four slow cores and no hardware encode unless the container is given
- * /dev/dri. Measured there with 1080p24, one job on its own, speed relative to real time:
+ * The box Flix runs on is an Intel N95 (Alder Lake-N): four slow cores, Quick Sync on the integrated graphics, and the
+ * container is given /dev/dri. Measured there with libx264 at 1080p24, one job on its own, speed relative to real time:
  *
  *   libx264 veryfast 3.56x   superfast 4.84x   ultrafast 8.51x      (720p is roughly double each)
  *
- * A single stream was never the problem. Two at once halve those numbers, and a third leaves them all behind
- * real time, which is what a hitch is: pieces arrive after the player needs them. So the profile defaults to a
- * cheap one, the number of jobs at once is capped, and the GPU's encoder is used when it is reachable.
+ * A single stream was never the problem. Two at once halve those numbers, and a third leaves them all behind real time,
+ * which is what a hitch is: pieces arrive after the player needs them. So the profile defaults to a cheap one, the number
+ * of jobs at once is capped, and the GPU's encoder is used when it is reachable.
  *
- * Everything here is measured, not guessed: `encoderInfo()` reports what was actually chosen, and the Settings
- * page shows it so a wrong assumption is visible rather than silent.
+ * Two things had to be got right on this chip (measured 2026-10-31 on one 60 s 1080p->720p piece):
+ *
+ * 1. Low-power Quick Sync has no ICQ. Asking for -global_quality is what "parameters not supported by the QSV runtime"
+ *    was, and it is why every probe failed and every conversion ran on the CPU. Low-power mode is bitrate-driven:
+ *    -low_power 1 with -b:v works -- 14.7 s wall and ~30 s CPU against x264's 17.2 s and ~49 s.
+ * 2. The 1080->720 resize was still on the CPU and dominated the cost of the piece. On the GPU (hwupload then vpp_qsv,
+ *    which needs -init_hw_device qsv=qsv:hw -filter_hw_device qsv to be accepted at all) the scale stops costing cores.
+ *
+ * Everything here is measured, not guessed: `encoderInfo()` reports what was chosen and the mode it uses, and the
+ * Settings page shows it so a wrong assumption is visible rather than silent. A probe that fails is never fatal: every
+ * rung below it is tried, x264 is the floor, and a hardware encode that fails on a real file demotes itself to the CPU
+ * rather than failing the transcode.
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -44,19 +54,66 @@ const profileName = (): ProfileName => runtimeProfile ?? config.transcode.profil
 const GPU_DEVICE = '/dev/dri/renderD128'
 export const gpuPresent = () => existsSync(GPU_DEVICE) || existsSync('/dev/dri/card0')
 
-/** Probe with ffmpeg itself, once: an encoder that is advertised but cannot open a session is worse than none. */
-function tryEncoder(name: Encoder, rated = false): Promise<boolean> {
+/** What the encoder that was actually chosen can do, which decides the flags below. */
+export interface HwCaps {
+  encoder: Exclude<Encoder, 'libx264'>
+  /** Quick Sync's low-power (VDEnc) mode: bitrate rate control only. It cannot do ICQ. */
+  lowPower: boolean
+  /** The resize runs on the GPU (vpp_qsv / scale_vaapi) rather than on the CPU. */
+  gpuScale: boolean
+  /** VAAPI: the firmware takes a bitrate target (VBR) instead of a fixed quantiser. */
+  rated: boolean
+}
+
+/** One rung worth trying at startup, and what it proves when it works. */
+export interface ProbeStep extends HwCaps { args: string[] }
+
+/** A resize target in pixels, for the GPU to do. */
+export interface EncodeTarget { w: number; h: number }
+
+/**
+ * The rungs to try, best first. Each is a real tiny encode (8 frames of 640x360, well under a second) of the exact flag
+ * shape a conversion would use, so a probe that passes means the conversion passes:
+ *
+ *   1. Quick Sync low-power, bitrate, resize in VPP   -- what this box takes, and the fastest of them
+ *   2. Quick Sync low-power, resize left to the CPU  -- an older chip whose VPP cannot scale an uploaded frame
+ *   3. Quick Sync with ICQ (global_quality)          -- older Quick Sync: no low-power mode, but it does have ICQ
+ *   4. VAAPI, VBR, resize in scale_vaapi             -- Quick Sync without the iHD/oneVPL runtime
+ *   5. VAAPI, VBR, resize on the CPU
+ *   6. VAAPI with a fixed quantiser                  -- when the HuC firmware will not take a bitrate target
+ *
+ * Exported so a test can hold the order and the flags still without an ffmpeg to run them on.
+ */
+export function probePlan(): ProbeStep[] {
+  const src = (pre: string[] = []) => ['-hide_banner', '-loglevel', 'error', '-nostdin', ...pre, '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24', '-frames:v', '8']
+  const qsvRate = ['-b:v', '1000k', '-maxrate', '1000k', '-bufsize', '2000k']
+  const vaapiRate = ['-rc_mode', 'VBR', ...qsvRate]
+  const qsvScale = 'format=nv12,hwupload=extra_hw_frames=64,vpp_qsv=w=320:h=180'
+  const vaapiScale = 'format=nv12,hwupload,scale_vaapi=w=320:h=180'
+  const qsvDevice = ['-init_hw_device', 'qsv=qsv:hw', '-filter_hw_device', 'qsv']
+  const vaapiDevice = ['-vaapi_device', GPU_DEVICE]
+  const out = ['-f', 'null', '-']
+  return [
+    { encoder: 'h264_qsv', lowPower: true, gpuScale: true, rated: false, args: [...src(qsvDevice), '-vf', qsvScale, '-c:v', 'h264_qsv', '-low_power', '1', ...qsvRate, ...out] },
+    { encoder: 'h264_qsv', lowPower: true, gpuScale: false, rated: false, args: [...src(), '-vf', 'format=nv12', '-c:v', 'h264_qsv', '-low_power', '1', ...qsvRate, ...out] },
+    { encoder: 'h264_qsv', lowPower: false, gpuScale: false, rated: false, args: [...src(), '-c:v', 'h264_qsv', '-global_quality', '26', ...out] },
+    { encoder: 'h264_vaapi', lowPower: false, gpuScale: true, rated: true, args: [...src(vaapiDevice), '-vf', vaapiScale, '-c:v', 'h264_vaapi', ...vaapiRate, ...out] },
+    { encoder: 'h264_vaapi', lowPower: false, gpuScale: false, rated: true, args: [...src(vaapiDevice), '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', ...vaapiRate, ...out] },
+    { encoder: 'h264_vaapi', lowPower: false, gpuScale: false, rated: false, args: [...src(vaapiDevice), '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-qp', '26', ...out] },
+  ]
+}
+
+/**
+ * Run one probe with ffmpeg. An encoder that is advertised but cannot open a session is worse than none, and so is one
+ * that opens a session and then rejects the rate control -- which is exactly what happened here.
+ */
+function runProbe(args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24', '-frames:v', '12']
-    if (name === 'h264_qsv') args.push('-c:v', 'h264_qsv', '-global_quality', '26')
-    else if (name === 'h264_vaapi') args.push('-vaapi_device', GPU_DEVICE, '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', ...(rated ? VAAPI_VBR('1000k', '2000k') : ['-qp', '26']))
-    else args.push('-c:v', 'libx264', '-preset', 'ultrafast')
-    args.push('-f', 'null', '-')
     let done = false
     const finish = (ok: boolean, why?: string) => {
       if (done) return
       done = true
-      if (!ok && why) diag('encode', `encoder ${name} unavailable`, { why })
+      if (!ok && why) diag('encode', 'encoder probe failed', { why, encoder: args.includes('h264_qsv') ? 'h264_qsv' : 'h264_vaapi' })
       resolve(ok)
     }
     try {
@@ -72,45 +129,93 @@ function tryEncoder(name: Encoder, rated = false): Promise<boolean> {
   })
 }
 
-/**
- * A bitrate the GPU holds to, for the smaller cuts a slow connection asks for. Gen12 VAAPI does rate control on the HuC
- * firmware, which a box may not load, so whether it works is probed rather than assumed (vaapiRated); without it those
- * cuts fall back to a fixed quantiser one notch coarser, which is smaller but not capped.
- */
-const VAAPI_VBR = (rate: string, buf: string) => ['-rc_mode', 'VBR', '-b:v', rate, '-maxrate', rate, '-bufsize', buf]
-let vaapiRated = false
-
+let caps: HwCaps | null = null
 let chosen: Encoder | null | undefined
+
 /**
- * The encoder to use: Quick Sync, else VAAPI, else libx264. Tested once per process (or again when the admin
- * asks), because the answer depends on the container's devices and is the same for every job afterwards.
- * 0.3.57: on again by default (0.3.56 kept it behind an opt-in switch). The image now carries the iHD driver and the
- * Umbrel compose passes /dev/dri; an encoder that cannot open a session is never chosen, so x264 is still the floor.
- * TRANSCODE_HARDWARE=false keeps everything on the CPU.
+ * The encoder to use: Quick Sync (low-power first), else VAAPI, else libx264. Tested once per process -- or again after
+ * the admin changes the switch or presses Test, because the answer depends on the container's devices and is the same
+ * for every job afterwards. Nothing here can fail a conversion: no /dev/dri, no working encoder, or hardware switched
+ * off all end at libx264, which is the floor.
  */
 export async function pickEncoder(force = false): Promise<Encoder> {
   if (chosen !== undefined && !force) return chosen ?? 'libx264'
   chosen = null
+  caps = null
   if (config.transcode.hardware && gpuPresent()) {
-    for (const name of ['h264_qsv', 'h264_vaapi'] as const) {
-      if (await tryEncoder(name)) {
-        chosen = name
-        vaapiRated = name === 'h264_vaapi' && (await tryEncoder(name, true))
-        diag('encode', `using hardware encoder ${name}`, { device: GPU_DEVICE, ...(name === 'h264_vaapi' ? { rateControl: vaapiRated } : {}) })
-        break
-      }
+    for (const step of probePlan()) {
+      if (!(await runProbe(step.args))) continue
+      caps = { encoder: step.encoder, lowPower: step.lowPower, gpuScale: step.gpuScale, rated: step.rated }
+      chosen = step.encoder
+      diag('encode', `using hardware encoder ${step.encoder}`, { device: GPU_DEVICE, lowPower: step.lowPower, gpuScale: step.gpuScale, rated: step.rated })
+      break
     }
-    if (!chosen) hitch('encode', 'GPU is present but its encoder did not open a session; using the CPU', { device: GPU_DEVICE })
+    if (!chosen) hitch('encode', 'GPU is present but no hardware encoder opened a session; using the CPU', { device: GPU_DEVICE })
   } else if (config.transcode.hardware) {
-    hitch('encode', 'no /dev/dri in this container, so transcoding is on the CPU', { hint: 'pass /dev/dri in docker-compose.yml to use Quick Sync' })
+    hitch('encode', 'no /dev/dri in this container, so transcoding is on the CPU', { hint: 'the app needs the GPU permission for /dev/dri' })
   }
   return chosen ?? 'libx264'
+}
+
+/** Forget the answer: the switch changed, so the next conversion decides again. */
+export function resetEncoder() {
+  chosen = undefined
+  caps = null
+}
+
+/**
+ * A hardware encode passed its probe and then failed on a real file. Flix never fails a conversion over hardware: the
+ * caller rebuilds its flags from here (they come back as libx264), retries the piece it was making, and every
+ * conversion afterwards uses the CPU.
+ */
+export function demoteHardware(why: string) {
+  if (chosen && chosen !== 'libx264') hitch('encode', 'a hardware encode failed on a real file, finishing on the CPU', { encoder: chosen, why: why.slice(0, 200) })
+  chosen = 'libx264'
+  caps = null
+}
+
+/**
+ * The filter chain for a hardware encoder. `scale` is the numeric target the GPU can be given; `scaleExpr` is the same
+ * resize as ffmpeg's software expression, used when the GPU cannot scale -- or when a software-only filter has to be in
+ * the chain, since a filter that wants system memory cannot run after hwupload.
+ */
+export function hwFilters(kind: 'h264_qsv' | 'h264_vaapi', gpuScale: boolean, scale: EncodeTarget | null, scaleExpr: string | undefined, filters: string[] = []): string[] {
+  const software = [...(scaleExpr ? [scaleExpr] : []), ...filters]
+  const onGpu = gpuScale && !!scale && filters.length === 0
+  if (kind === 'h264_qsv') {
+    return onGpu
+      ? ['format=nv12', 'hwupload=extra_hw_frames=64', `vpp_qsv=w=${scale!.w}:h=${scale!.h}`]
+      : [...software, 'format=nv12']
+  }
+  return onGpu
+    ? ['format=nv12', 'hwupload', `scale_vaapi=w=${scale!.w}:h=${scale!.h}`]
+    : [...software, 'format=nv12', 'hwupload']
+}
+
+/** Whether a chain uploads frames, which needs the device named before the input for Quick Sync. */
+export const uploadsFrames = (chain: string[]) => chain.some((f) => f.startsWith('hwupload'))
+
+/**
+ * Quick Sync's video flags. Low-power mode has no ICQ at all, so the bitrate is named instead of a quality level; that is
+ * the difference between "parameters not supported by the QSV runtime" and a working encode.
+ */
+export function qsvCodecArgs(o: { lowPower: boolean; capped: boolean; rate: string; buf: string; quality: number }): string[] {
+  const rate = ['-b:v', o.rate, '-maxrate', o.rate, '-bufsize', o.buf]
+  return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-look_ahead', '0',
+    ...(o.lowPower || o.capped ? rate : ['-global_quality', String(o.quality)]),
+    '-profile:v', 'high', '-pix_fmt', 'nv12']
+}
+
+/** VAAPI's video flags: a fixed quantiser, or a bitrate target when the firmware takes one and the cut is capped. */
+export function vaapiCodecArgs(o: { rated: boolean; capped: boolean; rate: string; buf: string; quality: number }): string[] {
+  const rate = ['-rc_mode', 'VBR', '-b:v', o.rate, '-maxrate', o.rate, '-bufsize', o.buf]
+  return ['-c:v', 'h264_vaapi', ...(o.capped ? (o.rated ? rate : ['-qp', String(o.quality + 3)]) : ['-qp', String(o.quality)]), '-profile:v', 'high']
 }
 
 export interface VideoEncode {
   encoder: Encoder
   profile: ProfileName
-  /** Flags that must come before `-i` (the VAAPI device). */
+  /** Flags that must come before `-i` (the device, when frames are uploaded). */
   inputArgs: string[]
   /** `-vf` when there is a filter chain. */
   filterArgs: string[]
@@ -119,40 +224,36 @@ export interface VideoEncode {
 }
 
 /**
- * The video side of an encode: the GPU when there is one, otherwise x264 at the current profile, threaded so
- * two jobs at once do not each try to use all four cores and fight. `capped` is a smaller cut for a slow connection:
- * its point is the bitrate, so the GPU is held to the profile's rate for that size instead of a quality level
- * (x264 is capped either way).
+ * The video side of an encode: the GPU when there is one, otherwise x264 at the current profile, threaded so two jobs at
+ * once do not each try to use all four cores and fight. `scale` is the resize as pixels, so the GPU can do it, and
+ * `scaleExpr` the same resize as an ffmpeg expression, so software can. `capped` is a smaller cut for a slow connection:
+ * its point is the bitrate, so the GPU is held to the profile's rate for that size instead of a quality level (x264 is
+ * capped either way).
  */
-export async function videoEncode(height: number | undefined, fps: number | undefined, filters: string[], seg = 4, opts: { capped?: boolean } = {}): Promise<VideoEncode> {
+export async function videoEncode(height: number | undefined, _fps: number | undefined, opts: { capped?: boolean; scale?: EncodeTarget | null; scaleExpr?: string; filters?: string[] } = {}, seg = 4): Promise<VideoEncode> {
   const h = bucket(height)
   const encoder = await pickEncoder()
   const profile = profileName()
   const keyframes = ['-force_key_frames', `expr:gte(t,n_forced*${seg})`]
   const rate = PROFILES[profile].rate[h], buf = PROFILES[profile].buf[h]
-  if (encoder === 'h264_qsv') {
-    // Hardware ignores the software preset; global_quality is its CRF. Frames are uploaded for it when needed.
-    const q = PROFILES[profile].crf[h] + 1
+  const q = PROFILES[profile].crf[h] + 1
+  if (encoder === 'h264_qsv' || encoder === 'h264_vaapi') {
+    const chain = hwFilters(encoder, caps?.gpuScale ?? false, opts.scale ?? null, opts.scaleExpr, opts.filters ?? [])
     return {
-      encoder, profile, inputArgs: [],
-      filterArgs: filters.length ? ['-vf', [...filters, 'format=nv12'].join(',')] : ['-vf', 'format=nv12'],
-      codecArgs: ['-c:v', 'h264_qsv', '-preset', 'veryfast',
-        ...(opts.capped ? ['-b:v', rate, '-maxrate', rate, '-bufsize', buf] : ['-global_quality', String(q)]), '-look_ahead', '0',
-        '-profile:v', 'high', '-pix_fmt', 'nv12', ...keyframes],
-    }
-  }
-  if (encoder === 'h264_vaapi') {
-    const q = PROFILES[profile].crf[h] + 1
-    return {
-      encoder, profile, inputArgs: ['-vaapi_device', GPU_DEVICE],
-      filterArgs: ['-vf', [...filters, 'format=nv12', 'hwupload'].join(',')],
-      codecArgs: ['-c:v', 'h264_vaapi', ...(opts.capped ? (vaapiRated ? VAAPI_VBR(rate, buf) : ['-qp', String(q + 3)]) : ['-qp', String(q)]),
-        '-profile:v', 'high', ...keyframes],
+      encoder, profile,
+      inputArgs: encoder === 'h264_qsv'
+        ? (uploadsFrames(chain) ? ['-init_hw_device', 'qsv=qsv:hw', '-filter_hw_device', 'qsv'] : [])
+        : ['-vaapi_device', GPU_DEVICE],
+      filterArgs: ['-vf', chain.join(',')],
+      codecArgs: [...(encoder === 'h264_qsv'
+        ? qsvCodecArgs({ lowPower: caps?.lowPower ?? false, capped: !!opts.capped, rate, buf, quality: q })
+        : vaapiCodecArgs({ rated: caps?.rated ?? false, capped: !!opts.capped, rate, buf, quality: q })), ...keyframes],
     }
   }
   const P = PROFILES[profile]
   // One core left for the server, qBittorrent and the stream itself.
   const threads = Math.max(1, Math.min(4, cpus().length - Math.max(1, config.transcode.maxJobs - 1)))
+  const filters = [...(opts.scaleExpr ? [opts.scaleExpr] : []), ...(opts.filters ?? [])]
   return {
     encoder, profile, inputArgs: [],
     filterArgs: filters.length ? ['-vf', filters.join(',')] : [],
@@ -179,25 +280,33 @@ export function notePace(label: string, tookMs: number, videoMs: number) {
   diag('encode', `stepped the encoder down from ${from} to ${to}`, { label, speed: Number(speed.toFixed(2)) })
 }
 
-/** What the Settings page and the diag endpoint show: what is actually being used, and why. */
+/** What the Settings page and the diag endpoint show: what is actually being used, how, and why. */
 export async function encoderInfo() {
   const encoder = await pickEncoder()
+  const rateControl = encoder === 'libx264' ? 'crf' : caps?.lowPower ? 'bitrate (low-power Quick Sync has no ICQ)' : encoder === 'h264_vaapi' ? (caps?.rated ? 'vbr' : 'fixed quantiser') : 'icq'
   return {
     encoder,
     hardware: encoder !== 'libx264',
+    hardwareAllowed: config.transcode.hardware,
     gpuDevice: gpuPresent() ? GPU_DEVICE : null,
+    /** Whether the resize is being done by the GPU, which is where most of the saving is on this box. */
+    gpuScale: !!caps?.gpuScale,
+    lowPower: !!caps?.lowPower,
+    rateControl,
     profile: profileName(),
     savedProfile: config.transcode.profile,
     steppedDown: runtimeProfile !== null,
     maxJobs: config.transcode.maxJobs,
     cores: cpus().length,
     /** Measure again (the admin pressed Test): the answer can change when compose gains /dev/dri. */
-    retest: async () => { runtimeProfile = null; return { encoder: await pickEncoder(true) } },
+    retest: async () => { runtimeProfile = null; resetEncoder(); return { encoder: await pickEncoder(true) } },
   }
 }
 
-/** The same, without the function, for a JSON response. */
+/** The same, without the functions, for a JSON response. */
 export async function encoderStatus() {
   const e = await encoderInfo()
-  return { encoder: e.encoder, hardware: e.hardware, gpuDevice: e.gpuDevice, steppedDown: e.steppedDown, cores: e.cores }
+  const { retest: _retest, ...rest } = e
+  void _retest
+  return rest
 }

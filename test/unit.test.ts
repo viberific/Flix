@@ -1036,3 +1036,69 @@ test('a subtitle from the web: the one made for the same release first, and the 
     assert.match(vtt ?? '', /from 3/, 'the matching release failed to download, so the next best one is used')
   } finally { Object.assign(config.subs, was); config.dataDir = dir; globalThis.fetch = realFetch }
 })
+
+// --- hardware encoding: Quick Sync on this box -------------------------------------------------------------
+// Measured on the N95 on 2026-10-31: -c:v h264_qsv -global_quality 26 is rejected ("parameters not supported by the
+// QSV runtime"), -low_power 1 with -b:v works, and a resize only happens on the GPU with -init_hw_device named. These
+// hold that shape: an encoder that works at startup, and a chain that stops the 1080->720 scale eating the CPU.
+test('the GPU encoder is probed in the order that works here, and low-power never asks for global_quality', async () => {
+  const { probePlan } = await import('../src/encode.ts')
+  const plan = probePlan()
+  const first = plan[0]
+  assert.equal(first.encoder, 'h264_qsv', 'Quick Sync is tried first')
+  assert.equal(first.lowPower, true, 'low-power mode is what this chip takes')
+  assert.equal(first.gpuScale, true, 'the resize is on the GPU')
+  assert.ok(first.args.includes('-low_power') && first.args.includes('-b:v'), 'low-power mode is bitrate-driven')
+  assert.ok(!first.args.includes('-global_quality'), 'low-power Quick Sync has no ICQ: asking for it was the bug')
+  assert.ok(first.args.includes('-init_hw_device') && first.args.includes('-filter_hw_device'), 'a QSV upload needs the device named')
+  // An older Intel: no low-power mode, but it does have ICQ, so that attempt stays behind the first one.
+  const icq = plan.find((s) => s.encoder === 'h264_qsv' && !s.lowPower)
+  assert.ok(icq && icq.args.includes('-global_quality'), 'the non-low-power attempt is still there before giving up')
+  assert.ok(plan.indexOf(icq) > 0 && plan.indexOf(icq) < plan.findIndex((s) => s.encoder === 'h264_vaapi'), 'ICQ is tried before VAAPI, which is tried before x264')
+  // Every rung ends in a null muxer: nothing is written, and eight frames of 640x360 cost nothing.
+  for (const s of plan) assert.equal(s.args[s.args.length - 1], '-', `${s.encoder} probe writes to the null muxer`)
+})
+
+test('a low-power QSV encode names a bitrate; only ICQ-capable modes use global_quality', async () => {
+  const { qsvCodecArgs, hwFilters, vaapiCodecArgs } = await import('../src/encode.ts')
+  const lp = qsvCodecArgs({ lowPower: true, capped: false, rate: '3500k', buf: '7000k', quality: 22 })
+  assert.ok(!lp.includes('-global_quality'), 'low-power: no ICQ, ever')
+  assert.equal(lp[lp.indexOf('-b:v') + 1], '3500k', 'low-power: the profile rate is the quality')
+  assert.equal(lp[lp.indexOf('-maxrate') + 1], '3500k')
+  const icq = qsvCodecArgs({ lowPower: false, capped: false, rate: '3500k', buf: '7000k', quality: 22 })
+  assert.equal(icq[icq.indexOf('-global_quality') + 1], '22', 'a chip with ICQ keeps the quality level')
+  const capped = qsvCodecArgs({ lowPower: false, capped: true, rate: '1800k', buf: '3600k', quality: 22 })
+  assert.ok(!capped.includes('-global_quality') && capped.includes('-b:v'), 'a slow-connection cut is capped either way')
+  assert.equal(vaapiCodecArgs({ rated: true, capped: true, rate: '1800k', buf: '3600k', quality: 22 })[3], 'VBR')
+})
+
+test('the resize goes on the GPU when it can, and back to the ffmpeg expression when it cannot', async () => {
+  const { hwFilters, uploadsFrames } = await import('../src/encode.ts')
+  const qsv = hwFilters('h264_qsv', true, { w: 1280, h: 720 }, 'scale=-2:720')
+  assert.deepEqual(qsv, ['format=nv12', 'hwupload=extra_hw_frames=64', 'vpp_qsv=w=1280:h=720'], 'QSV scales an uploaded frame')
+  assert.equal(uploadsFrames(qsv), true, 'so the device has to be named before the input')
+  const va = hwFilters('h264_vaapi', true, { w: 1280, h: 720 }, undefined)
+  assert.equal(va[va.length - 1], 'scale_vaapi=w=1280:h=720')
+  const cpu = hwFilters('h264_qsv', false, { w: 1280, h: 720 }, 'scale=-2:720')
+  assert.deepEqual(cpu, ['scale=-2:720', 'format=nv12'], 'no GPU scale: the CPU does it, as before')
+  assert.equal(uploadsFrames(cpu), false)
+  // A software-only filter cannot run after hwupload, so it keeps the CPU chain.
+  assert.deepEqual(hwFilters('h264_qsv', true, { w: 1280, h: 720 }, 'scale=-2:720', ['zscale=t=linear']), ['scale=-2:720', 'zscale=t=linear', 'format=nv12'])
+})
+
+test('hardware is on by default, and a saved answer still wins', async () => {
+  const { resolveHardware } = await import('../src/settings.ts')
+  assert.equal(resolveHardware(undefined, true), true, 'nothing saved and the environment allows it: on')
+  assert.equal(resolveHardware('on', false), true, 'a saved yes beats TRANSCODE_HARDWARE=false')
+  assert.equal(resolveHardware('off', true), false, 'a saved no is respected')
+  assert.equal(resolveHardware(undefined, false), false, 'the environment can still turn it off')
+})
+
+test('the GPU resize is the same geometry as the scale expression, or none at all', async () => {
+  const { scaleTarget } = await import('../src/transcode.ts')
+  assert.deepEqual(scaleTarget(1920, 1080, null, 720), { w: 1280, h: 720 }, '1080p to 720p')
+  assert.deepEqual(scaleTarget(1920, 800, [1280, 720], 0), { w: 1280, h: 532 }, 'a 2.40:1 film at "720p" is 1280 wide, not 1728 (532, the even side under 533.3)')
+  assert.deepEqual(scaleTarget(3840, 2160, [1280, 720], 0), { w: 1280, h: 720 }, '4K fits the box')
+  assert.equal(scaleTarget(640, 360, [1280, 720], 0), null, 'a picture already inside the box is never enlarged')
+  assert.equal(scaleTarget(undefined, 1080, null, 720), null, 'no width known: the CPU scales rather than guessing an aspect')
+})

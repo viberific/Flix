@@ -1081,11 +1081,12 @@ app.put('/api/admin/settings/transcode', admin, async (req) => {
   if (typeof b.mode === 'string') setTranscodeMode(b.mode)
   return { transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }
 })
-// Measure the encoder again: the answer changes when compose gains /dev/dri, and that is worth being able to see.
+// Measure the encoder again: the answer changes when compose gains /dev/dri, or when the driver underneath is replaced.
 app.post('/api/admin/settings/transcode/test', admin, async () => {
   const e = await encoderInfo()
   const r = await e.retest()
-  return { encoder: r.encoder, hardware: r.encoder !== 'libx264', gpuDevice: e.gpuDevice }
+  // The whole picture, so the page can show the mode it settled on and not only the name of the encoder.
+  return { encoder: r.encoder, hardware: r.encoder !== 'libx264', gpuDevice: e.gpuDevice, transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }
 })
 app.put('/api/admin/settings/btn', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()

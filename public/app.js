@@ -2890,11 +2890,17 @@ function familyPanel(data, root) {
   paint()
 }
 
-/** The encoder section: what the box is actually using, and the one choice that matters — how hard it works. */
+/** The encoder section: what the box is actually using, how, and the two choices that matter. */
 function playbackSection(tc) {
   if (!tc) return ''
-  const enc = tc.encoder === 'libx264' ? 'this CPU (libx264)' : `${tc.encoder} on the GPU`
-  // Conversion is on the CPU and simply happens when a file needs it; the switch below decides what is downloaded.
+  const chip = tc.encoder === 'h264_qsv' ? 'Quick Sync' : tc.encoder === 'h264_vaapi' ? 'VAAPI' : ''
+  const enc = tc.encoder === 'libx264'
+    ? 'this CPU (libx264)'
+    : `${chip} (${tc.encoder}) on the GPU${tc.gpuScale ? ', resizing there too' : ''}`
+  const why = tc.encoder !== 'libx264' ? '' : !tc.hardwareAllowed ? 'Hardware is switched off below.'
+    : !tc.gpuDevice ? 'This container cannot see /dev/dri, so the GPU is not available to Flix.'
+      : 'The GPU is visible but its encoder would not open a session, so the CPU is doing the work.'
+  // Conversion simply happens when a file needs it; the switch below decides what is downloaded.
   const rows = [
     ['economy', 'Economy', 'holds two streams at once on this box (4.8x real time at 1080p)'],
     ['balanced', 'Balanced', 'the best picture that still holds one stream (3.6x)'],
@@ -2902,10 +2908,14 @@ function playbackSection(tc) {
   ]
   return `<div id="s-playback" class="ssec"><h2 class="stitle2">Playback</h2>
       <p class="dim" style="max-width:66ch">How hard the box works to convert a file the player cannot take as it is. A file it can play directly is not converted at all, and when only the sound needs it the picture is copied, so this only applies to the rare file whose picture has to be converted. That happens on its own, with nothing to allow.</p>
-      <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
-      <form id="tpf" class="person"><label class="dim" for="tprofile">Quality</label>
+      <div class="dim" role="status">Converting with <b>${esc(enc)}</b>${tc.rateControl ? `, rate control ${esc(tc.rateControl)}` : ''}${tc.steppedDown ? ' · stepped down by itself after falling behind' : ''}</div>
+      ${why ? `<p class="dim" style="max-width:66ch">${esc(why)}</p>` : ''}
+      <form id="tpf" class="person">
+        <label class="dim"><input type="checkbox" id="thw"${tc.hardwareAllowed ? ' checked' : ''}> Use this box's GPU to convert, when it has one<span class="dim"> — Quick Sync on Intel. If it turns out not to work, Flix uses the CPU by itself and never refuses to play a file.</span></label>
+        <label class="dim" for="tprofile">Quality</label>
         <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
         <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Only download copies that play as they are (H.264), so nothing has to be converted</label>
+        <div class="row-form"><button type="button" class="btn" id="trest">Test the encoder again</button></div>
         <div class="dim" id="tm2" role="status"></div></form></div>`
 }
 
@@ -2961,7 +2971,27 @@ function settingsPanel(data, root) {
       pmsg('Saving…')
       try {
         tc = (await api('/api/admin/settings/transcode', { mode: off ? 'off' : 'auto' }, 'PUT')).transcode; paint()
-        $('#tm2').textContent = off ? 'Saved. Only copies that play as they are are downloaded from now on.' : 'Saved. Any copy may be downloaded; one that needs it is converted on the CPU.'
+        $('#tm2').textContent = off ? 'Saved. Only copies that play as they are are downloaded from now on.' : 'Saved. Any copy may be downloaded; one that needs it is converted on this box.'
+      } catch (err) { pmsg(err.message) }
+    }
+    const hw = $('#thw')
+    if (hw) hw.onchange = async () => {
+      const on = hw.checked
+      pmsg('Saving…')
+      try {
+        tc = (await api('/api/admin/settings/transcode', { hardware: on }, 'PUT')).transcode; paint()
+        $('#tm2').textContent = on ? 'Saved. The GPU is tried from the next thing you play.' : 'Saved. Conversions run on the CPU from the next thing you play.'
+      } catch (err) { pmsg(err.message) }
+    }
+    // Measure again rather than trust the answer from startup: the driver, or the container's devices, may have changed.
+    const tr = $('#trest')
+    if (tr) tr.onclick = async () => {
+      pmsg('Testing the encoder…')
+      try {
+        const r = await api('/api/admin/settings/transcode/test', {})
+        if (r.transcode) tc = r.transcode
+        paint()
+        $('#tm2').textContent = r.hardware ? `The GPU's encoder works: ${r.encoder}.` : 'No GPU encoder opened a session, so the CPU is used.'
       } catch (err) { pmsg(err.message) }
     }
     const msg = (t) => { $('#bm').textContent = t }

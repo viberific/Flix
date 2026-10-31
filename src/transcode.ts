@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { config } from './config.ts'
 import { hitch, diag } from './diag.ts'
-import { videoEncode, notePace } from './encode.ts'
+import { videoEncode, notePace, demoteHardware, type EncodeTarget } from './encode.ts'
 
 const execFileP = promisify(execFile)
 export const rawUrl = (t: number, f: number) => `http://127.0.0.1:${config.port}/api/stream/${t}/${f}/raw?k=${config.internalKey}`
@@ -15,6 +15,8 @@ export interface SubTrack { n: number; lang: string; label: string; forced: bool
 export interface Chapter { start: number; end: number; title: string }
 export interface Probe {
   direct: boolean; videoCodec?: string; audioCodec?: string; container?: string; duration?: number; copyVideo: boolean; height?: number
+  /** The source's width, so a resize can be given to the GPU as whole pixels instead of an ffmpeg expression. */
+  width?: number
   hdr: boolean; audio: AudioTrack[]; subs: SubTrack[]; chapters: Chapter[]
   /** More about the picture, so the encoder settings can be sized to it instead of one guess for every file. */
   hdrKind?: 'pq' | 'hlg'; fps?: number; srcBitrate?: number; tenBit?: boolean
@@ -156,7 +158,7 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
   const chapters: Chapter[] = (j.chapters ?? []).map((c: any) => ({ start: Number(c.start_time), end: Number(c.end_time), title: String(c.tags?.title ?? '') })).filter((c: Chapter) => c.end > c.start)
   const p: Probe = {
     direct: false, videoCodec: v?.codec_name, audioCodec: a?.codec_name, container: fmt,
-    duration: j.format?.duration ? Number(j.format.duration) : undefined, copyVideo: vOk, height,
+    duration: j.format?.duration ? Number(j.format.duration) : undefined, copyVideo: vOk, height, width: v?.width ? Number(v.width) : undefined,
     hdr: HDR_TRC.has(v?.color_transfer ?? ''), audio, subs, chapters,
     hdrKind: v?.color_transfer === 'arib-std-b67' ? 'hlg' : v?.color_transfer === 'smpte2084' ? 'pq' : undefined,
     fps, srcBitrate: v?.bit_rate ? Number(v.bit_rate) : undefined,
@@ -178,7 +180,12 @@ interface Run { proc: ChildProcess; from: number; stopAt: number; exited: boolea
  * `bounds` holds where each piece starts, plus the end: SEG apart for a converted picture (its keyframes are forced
  * there), and on the file's own keyframes for a copied one, because a copied picture can only be cut on a keyframe.
  */
-interface Vod { count: number; bounds: number[]; copy?: boolean; start: (from: number, stopAt: number) => string[]; run: Run | null; done: Set<number> }
+interface Vod {
+  count: number; bounds: number[]; copy?: boolean; start: (from: number, stopAt: number) => string[]; run: Run | null; done: Set<number>
+  /** Rebuild the encoder flags on the CPU after a hardware encode failed on this file, once. */
+  rebuild?: () => Promise<void>
+  retried?: boolean
+}
 interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
@@ -197,6 +204,27 @@ const jobKey = (t: number, f: number, a = 0, hdr = false, encode = false, maxH =
 /** The sizes a viewer can ask for, as the box each fits inside: "720p" is 1280x720 whatever the shape of the picture. */
 export const QUALITIES: Record<number, [number, number]> = { 720: [1280, 720], 480: [854, 480] }
 export const qualityOf = (v: unknown) => { const n = Number(v); return n in QUALITIES ? n : 0 }
+
+/**
+ * The resize as whole pixels, for the GPU to do instead of the CPU. This is the same geometry as the `scale` expression
+ * in ensureHls (fit inside the box, never enlarge, even sides), and null when it cannot be worked out exactly -- a probe
+ * with no width leaves the CPU to scale rather than guessing a width that changes the aspect ratio.
+ */
+export function scaleTarget(w: number | undefined, h: number | undefined, box: [number, number] | null, outH: number): EncodeTarget | null {
+  if (!w || !h || w < 2 || h < 2) return null
+  let tw: number, th: number
+  if (box) {
+    const fitW = Math.min(w, box[0])
+    const fitH = Math.round(fitW * h / w)
+    if (fitH <= box[1]) { tw = fitW; th = fitH } else { th = Math.min(h, box[1]); tw = Math.round(th * w / h) }
+  } else if (h > outH) {
+    th = outH
+    tw = Math.round(w * outH / h)
+  } else return null
+  tw -= tw % 2; th -= th % 2
+  if (tw < 2 || th < 2 || (tw === w && th === h)) return null
+  return { w: tw, h: th }
+}
 
 /** A job touched this recently is being watched right now, and is never closed to make room for another. */
 const ACTIVE_MS = 90_000
@@ -337,7 +365,12 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
     }
     const r = v.run
     if (!(r && !r.exited && n >= r.from && n < r.stopAt && n <= vodNext(v, r) + AHEAD)) {
-      if (startedFor === n && r?.exited) throw new Error('ffmpeg failed')
+      if (startedFor === n && r?.exited) {
+        // A hardware encode that passed its probe can still stumble on one file. Demote to the CPU and rebuild the
+        // flags once instead of failing the play: hardware here is for speed, never a permission to break a stream.
+        if (v.rebuild && !v.retried) { v.retried = true; await v.rebuild(); startRun(j, n); startedFor = n; continue }
+        throw new Error('ffmpeg failed')
+      }
       startRun(j, n); startedFor = n
     }
     if (Date.now() > deadline) throw new Error('Timed out starting transcode')
@@ -474,17 +507,23 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     const copy = !hdr && !encodeAsked && copyIntoTs(p)
     const outH = Math.min(p.height ?? 720, 1080, maxH || 1080)
     const box = maxH ? QUALITIES[maxH] : null
-    // A chosen size fits the picture inside its box (a 2.40:1 film at "720p" is 1280 wide, not 1728), never larger than the source.
-    const scale = box ? [`scale=w='min(iw,${box[0]})':h='min(ih,${box[1]})':force_original_aspect_ratio=decrease:force_divisible_by=2`]
-      : (p.height ?? 0) > outH ? [`scale=-2:${outH}`] : []
-    const filters = [...scale, ...(tonemap ? [TONEMAP] : [])]
+    // The resize, twice: as whole pixels for the GPU (vpp_qsv and scale_vaapi take numbers, not expressions) and as
+    // ffmpeg's own expression for the CPU. A box fits the picture inside it (a 2.40:1 film at "720p" is 1280 wide, not
+    // 1728) and never enlarges the source.
+    const scaleExpr = box ? `scale=w='min(iw,${box[0]})':h='min(ih,${box[1]})':force_original_aspect_ratio=decrease:force_divisible_by=2`
+      : (p.height ?? 0) > outH ? `scale=-2:${outH}` : undefined
+    const target = scaleExpr ? scaleTarget(p.width, p.height, box, outH) : null
+    const filters = tonemap ? [TONEMAP] : []
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
     const input = ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = [...AUDIO_LEVEL, '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
     // Decided once per file: the profile does not change while it plays. The GPU when the container has one (see pickEncoder).
-    const enc = !hdr && !copy ? await videoEncode(outH, p.fps, filters, SEG, { capped: maxH > 0 }) : null
+    const encOpts = { capped: maxH > 0, scale: target, scaleExpr, filters }
+    const enc = !hdr && !copy ? await videoEncode(outH, p.fps, encOpts, SEG) : null
+    // Held so a failed hardware encode can be rebuilt on the CPU in place (see rebuild below and vodSegment).
+    const encRef = { current: enc }
     if (enc) diag('encode', `converting with ${enc.encoder} at ${enc.profile}`, { torrentId, fileIndex, height: outH, ...(maxH ? { quality: maxH } : {}) })
     // A copied picture of a whole file: its keyframes, read once, are where the pieces are cut. Waited for a while, since
     // a playlist that can be seeked is worth a few seconds; a read that takes longer carries on behind and the old
@@ -517,14 +556,23 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     } else if (!hdr && !copy && p.duration && p.duration > 0) {
       const count = Math.max(1, Math.ceil(p.duration / SEG))
       const bounds = Array.from({ length: count }, (_, n) => n * SEG).concat(p.duration)
-      const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...enc!.inputArgs, ...input, ...maps,
-        ...enc!.codecArgs, ...enc!.filterArgs, ...audioOut,
+      const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...encRef.current!.inputArgs, ...input, ...maps,
+        ...encRef.current!.codecArgs, ...encRef.current!.filterArgs, ...audioOut,
         ...(Number.isFinite(stopAt) ? ['-t', String((stopAt - from) * SEG)] : []),
         // The same clock whichever piece ffmpeg began at, so pieces made by different runs join without a jump.
         '-muxdelay', '0', '-muxpreload', '0', '-output_ts_offset', String(from * SEG),
         '-f', 'hls', '-hls_time', String(SEG), '-hls_list_size', '0', '-start_number', String(from),
         '-hls_flags', 'independent_segments+temp_file', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, `enc${from}.m3u8`)]
-      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds, start, run: null, done: new Set() } }
+      // Only a hardware encode can come back as x264 here: it fails once on this file, the flags are rebuilt and the
+      // piece is retried on the CPU (vodSegment asks for this). x264 has nothing below it to fall back to.
+      const rebuild = encRef.current && encRef.current.encoder !== 'libx264'
+        ? async () => {
+          demoteHardware('ffmpeg exited without making the piece')
+          encRef.current = await videoEncode(outH, p.fps, encOpts, SEG)
+          diag('encode', `retrying on ${encRef.current.encoder} after a hardware encode failed`, { torrentId, fileIndex })
+        }
+        : undefined
+      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds, start, run: null, done: new Set(), rebuild } }
       enforceJobCap()
       jobs.set(key, j)
     } else {
