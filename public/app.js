@@ -1373,26 +1373,47 @@ function playView(seriesId, season, label) {
     // the cursor, and any pointer move, tap, key or remote press brings them straight back and starts the five again.
     // A class of its own -- NOT `idle`, whose timer arms the paused-state artwork slideshow: hiding the bar in the middle
     // of an episode must never start that.
+    // The five seconds start at the viewer's own hand -- a tap, a pointer move, a key, a remote -- and at nothing else.
+    // They used to start again on anything the player did to itself (every v.play(), the ten-second seek reload, the TV's
+    // paint()), and the timer's callback gave up without leaving another one whenever it landed on a pause, a load or a
+    // menu; between them the bar and the pointer stayed over a show nobody had touched for the whole episode. Now one tick
+    // reads the clock: five seconds after the last input, and only while the picture is really running, the bar goes.
     let quietT = null
+    let quietFrom = Date.now() // when the bar's five seconds began
+    let wasRunning = false
+    const QUIET_MS = 5000
     const menuOpen = () => !!pl.querySelector('.p-menu .menu:not(.out)')
     /** Nothing in the bar keeps the focus once it should be gone: the bar stays up for as long as something in it has the
         focus (so a remote can see what it is on), which used to leave it stuck on screen after a tap on CC or a pick from
         the captions list, until the viewer left the episode and came back. */
     const dropFocus = () => { const a = document.activeElement; if (a && a !== document.body && pl.contains(a)) a.blur() }
     const hideBar = () => { dropFocus(); pl.classList.add('p-quiet') }
-    const armQuiet = () => {
-      clearTimeout(quietT)
-      pl.classList.remove('p-quiet')
-      quietT = setTimeout(function fade() {
-        if (!alive) return
-        // Paused is a menu to read, and nothing fades before the picture has started: leave the bar where it is (play
-        // arms this again). An open list is waited out rather than given up on: the old check simply stopped here, and
-        // nothing armed it again once the list closed, so the bar stayed up over the episode.
-        if (!v || v.paused || castingOnly || !started) return
-        if (menuOpen()) { quietT = setTimeout(fade, 1500); return }
-        hideBar()
-      }, 5000)
+    const showBar = () => pl.classList.remove('p-quiet')
+    /** The picture is really running. Not `started`, which stays true while it is paused, and not `v.paused` alone, which is
+        true of a show that has not opened yet. */
+    const runningNow = () => !!v && !v.paused && !castingOnly && started
+    /** The viewer did something. With `show` left on the bar comes back; input on the picture itself passes false, because
+        a tap there is the show/hide toggle and must not be undone by the bar reappearing under it. */
+    const quietTouch = (show) => { quietFrom = Date.now(); if (show !== false) showBar() }
+    /** The whole of the hiding, read off the clock rather than off the player: five seconds after the last input, and never
+        while there is nothing running to put the bar over. Paused is a menu to read and an open list is waited out, so
+        the tick keeps its own time and simply does nothing on those; the old timer stopped and left nothing armed. */
+    function quietTick() {
+      if (!alive) { clearInterval(quietT); quietT = null; return }
+      const now = Date.now(), running = runningNow()
+      // A show that starts playing starts the five seconds too: an episode opened and left alone must not begin with its
+      // controls already gone (the intro hold, a resume, the first frame after the wait screen).
+      if (running && !wasRunning) quietFrom = now
+      wasRunning = running
+      if (now - quietFrom < QUIET_MS) return
+      if (!running || menuOpen()) return
+      if (!pl.classList.contains('p-quiet')) hideBar()
     }
+    quietT = setInterval(quietTick, 500)
+    /** Bring the bar back, or keep it up, for whatever is left of the five seconds. The player calls this on its own events
+        (a play, a paint, a menu closing); being no input, those can no longer start the five again, and once the five are
+        up they can no longer bring the bar back either -- which is what kept it on screen for an episode at a time. */
+    const armQuiet = () => { if (Date.now() - quietFrom < QUIET_MS) showBar() }
     /** A list in the bar (captions, audio) closes: the bar starts its five seconds again, and nothing in it keeps the focus
         on a touch screen, where a tapped button holds it and with it the whole bar. A remote is put back on the button that
         opened the list, so the next press goes somewhere visible. */
@@ -1400,7 +1421,7 @@ function playView(seriesId, season, label) {
       if (!m) return
       closeMenu(m)
       if (refocus && isTv) refocus.focus({ preventScroll: true }); else dropFocus()
-      armQuiet()
+      quietTouch() // a pick from the list is the viewer's own hand: the bar gets its five seconds again
     }
     /** Leave the player for the show's page. Replaced, not pushed: Back from the show must not reopen the episode, and an
         episode reached through "Up next" must not leave the one before it in the history for Back to start playing again. */
@@ -1412,9 +1433,16 @@ function playView(seriesId, season, label) {
       else location.replace(show)
     }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
-    pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake() })
-    // Touching the bar itself only restarts the hide timer.
-    $('#pctl').addEventListener('pointerdown', wake)
+    pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') { quietTouch(); wake() } })
+    // Touching the bar itself restarts the five seconds and shows it.
+    $('#pctl').addEventListener('pointerdown', () => { quietTouch(); wake() })
+    // Every other way in: a tap anywhere on the player, a finger on the picture (which only restarts the clock -- the tap's
+    // own click handler decides whether the bar shows or goes), and any key or remote press, while a list or a button has
+    // the focus. This is the input the hiding is measured from; nothing the player does to itself counts.
+    pl.addEventListener('pointerdown', (e) => quietTouch(!e.target.closest?.('#vw')))
+    pl.addEventListener('touchstart', (e) => quietTouch(!e.target.closest?.('#vw')), { passive: true })
+    const onQuietKey = () => quietTouch()
+    document.addEventListener('keydown', onQuietKey, true)
     wake()
     // On a phone, play in landscape: fullscreen is what lets the browser lock the orientation. Needs a tap, so it is retried on the first one.
     const touchy = matchMedia('(pointer: coarse)').matches
@@ -1880,7 +1908,7 @@ function playView(seriesId, season, label) {
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
-      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearTimeout(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
       carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
