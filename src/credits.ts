@@ -100,7 +100,7 @@ export function pickCreditsAt(black: Run[], silence: Run[], duration: number): n
 }
 
 /** Run one ffmpeg pass over the tail of the file and give back its stderr, or null when it did not finish cleanly. */
-function stderrOf(args: string[]): Promise<string | null> {
+export function stderrOf(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     const proc = spawn(...lowPriority(args), { stdio: ['ignore', 'ignore', 'pipe'] })
     const chunks: Buffer[] = []

@@ -1304,7 +1304,7 @@ function playView(seriesId, season, label) {
     if (isCar) try { window.FlixCar?.immersive(true) } catch { /* an older app */ }
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
-    let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, v = null
+    let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, syncT = null, v = null
     let meta = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
@@ -2443,7 +2443,7 @@ function playView(seriesId, season, label) {
       // On unless the viewer has turned CC off on this device. A new key: the old one could hold an "off" left over from
       // the subtitle list, which kept CC off with nobody having asked for that.
       subPick = eng && store.get('cc', true) ? eng.n : null
-      if (eng) mountTrack(eng)
+      if (eng) { mountTrack(eng); watchSync(eng) }
       // Whatever adds a track of its own, or turns one on, is put back to the one choice. Idempotent, so it cannot loop.
       v.textTracks.onaddtrack = applySubs
       v.textTracks.onchange = applySubs
@@ -2456,10 +2456,23 @@ function playView(seriesId, season, label) {
         const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
         if (!alive) return
         if (subPick != null) { mountTrack(eng); applySubs() }
-        if (st && st.fileProgress >= 1) return
+        if (st && st.fileProgress >= 1) return watchSync(eng)
         subT = setTimeout(again, trackEls()[0]?.track?.cues?.length ? 90000 : 30000)
       }
       subT = setTimeout(again, 30000)
+    }
+    /* The server measures a subtitle against the sound in the background and says so with x-flix-sync: "pending" until the
+       answer is kept. Ask again every 15 s (twenty times at most) and load the track once more when it turns "done", so the
+       corrected timing arrives without anybody touching anything. "wait" means the video is not whole yet; the loop above
+       calls this again when it is. */
+    async function watchSync(s, tries = 0) {
+      clearTimeout(syncT)
+      if (!alive || tries > 20) return
+      const r = await fetch(s.url + '?r=' + Date.now(), { cache: 'no-store' }).catch(() => null)
+      if (!alive || !r) return
+      const st = r.headers.get('x-flix-sync')
+      if (st === 'done' && tries > 0) { if (subPick != null) { mountTrack(s); applySubs() } return }
+      if (st === 'pending') syncT = setTimeout(() => watchSync(s, tries + 1), 15000)
     }
     function mountTrack(s) {
       v.querySelector(`track[data-n="${s.n}"]`)?.remove()
@@ -3011,8 +3024,20 @@ function playbackSection(tc) {
         <div class="dim" id="tm2" role="status"></div></form></div>`
 }
 
+/** Downloads slow down while something plays: a switch, and how fast they may still go. */
+function paceSection(pc) {
+  if (!pc) return ''
+  return `<div id="s-pace" class="ssec"><h2 class="stitle2">While you watch</h2>
+      <p class="dim" style="max-width:66ch">A show can freeze when downloads and playback fight over the same drive. While something plays, Flix holds the download speed down to the limit below, and lets it go again a minute after you stop.</p>
+      <form id="pcf" class="person">
+        <label class="dim"><input type="checkbox" id="pcon"${pc.enabled ? ' checked' : ''}> Downloads slow down while you watch</label>
+        <label class="dim" for="pccap">Speed limit while watching (KB/s) — 2500 is about 20 Mbps</label>
+        <div class="row-form"><input class="field" id="pccap" type="number" min="100" step="100" value="${esc(String(pc.capKbps))}"><button type="button" class="btn" id="pcsave">Save</button></div>
+        <div class="dim" id="pcm" role="status"></div></form></div>`
+}
+
 function settingsPanel(data, root) {
-  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, os = data.opensubtitles, tc = data.transcode
+  let btn = data.btn, qbs = data.qb, tm = data.tmdb, om = data.omdb, os = data.opensubtitles, tc = data.transcode, pc = data.pace
   const paint = () => keepFocus(root, paintNow)
   const paintNow = () => {
     const state = btn.configured ? `Key set (ends in <code>${esc(btn.hint)}</code>)${btn.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'
@@ -3034,7 +3059,7 @@ function settingsPanel(data, root) {
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste TMDB API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="tt" ${tm.configured ? '' : 'disabled'}>Test connection</button>${tm.source === 'settings' ? '<button type="button" class="btn" id="tc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="tm" role="status"></div></form>
-      </div>${playbackSection(tc)}<div id="s-qb" class="ssec"><h2 class="stitle2">qBittorrent</h2>
+      </div>${playbackSection(tc)}${paceSection(pc)}<div id="s-qb" class="ssec"><h2 class="stitle2">qBittorrent</h2>
       <p class="dim" style="max-width:66ch">qBittorrent is the download engine. Use the address and web-UI login you set up in qBittorrent. Leave the password blank to keep the current one.</p>
       <form id="qf" class="person"><div class="dim">${qbs.passwordSet ? 'Password set' : 'No password set'}${qbs.source === 'environment' ? ', using the server environment' : ''}</div>
         <div class="row-form"><input class="field" name="url" value="${esc(qbs.url)}" placeholder="http://127.0.0.1:8080" autocomplete="off" required>
@@ -3066,6 +3091,15 @@ function settingsPanel(data, root) {
         $('#tm2').textContent = off ? 'Saved. Only copies that play as they are are downloaded from now on.' : 'Saved. Any copy may be downloaded; one that needs it is converted on this box.'
       } catch (err) { pmsg(err.message) }
     }
+    const pcm = (t) => { const el = $('#pcm'); if (el) el.textContent = t }
+    const savePace = async (body, done) => {
+      pcm('Saving…')
+      try { pc = (await api('/api/admin/settings/pace', body, 'PUT')).pace; paint(); pcm(done) } catch (err) { pcm(err.message) }
+    }
+    const pon = $('#pcon')
+    if (pon) pon.onchange = () => savePace({ enabled: pon.checked }, pon.checked ? 'Saved. Downloads slow down while you watch.' : 'Saved. Downloads keep their full speed while you watch.')
+    const psv = $('#pcsave')
+    if (psv) psv.onclick = () => savePace({ capKbps: Number($('#pccap').value) }, 'Saved. Takes effect the next time something plays.')
     const hw = $('#thw')
     if (hw) hw.onchange = async () => {
       const on = hw.checked

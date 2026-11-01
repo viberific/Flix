@@ -87,6 +87,9 @@ export const qb = {
       listen_port: config.p2pPort, random_port: false, upnp: true,
     }) })
   },
+  /** The engine-wide download limit in bytes per second; 0 means unlimited. */
+  async downloadLimit(): Promise<number> { return Number((await json<{ dl_limit?: number }>('/api/v2/app/preferences')).dl_limit) || 0 },
+  async setDownloadLimit(bytesPerSec: number) { await post('/api/v2/app/setPreferences', { json: JSON.stringify({ dl_limit: Math.max(0, Math.round(bytesPerSec)) }) }) },
   async version(): Promise<string> { return (await raw('/api/v2/app/version').then((r) => r.text())) },
   async info(hash: string): Promise<QbTorrent | undefined> {
     return (await json<QbTorrent[]>(`/api/v2/torrents/info?hashes=${hash}`))[0]

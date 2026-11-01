@@ -130,4 +130,13 @@ db.exec(`CREATE TABLE IF NOT EXISTS credits_marker (
   PRIMARY KEY (torrent_id, file_index)
 )`)
 
+// How far a subtitle sits from the speech in the audio, measured once per subtitle (see subsync.ts). `subtitle_key` names which
+// one it was (embedded:<index>, file:<name>, online:<lang>); a row is never measured again, so the numbers are kept raw and
+// whether to trust them is decided when they are read.
+db.exec(`CREATE TABLE IF NOT EXISTS sub_sync (
+  torrent_id INTEGER NOT NULL, file_index INTEGER NOT NULL, subtitle_key TEXT NOT NULL,
+  offset_ms INTEGER NOT NULL, scale REAL NOT NULL, confidence REAL NOT NULL, cues INTEGER NOT NULL, measured_at INTEGER NOT NULL,
+  PRIMARY KEY (torrent_id, file_index, subtitle_key)
+)`)
+
 export const now = () => Math.floor(Date.now() / 1000)

@@ -11,6 +11,7 @@ const envOpenSubtitlesKey = config.subs.openSubtitlesKey
 const envTranscodeProfile = config.transcode.profile
 const envTranscodeHardware = config.transcode.hardware
 const envTranscodeMode = config.transcode.mode
+const envPace = { ...config.pace }
 
 const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value
 const put = (k: string, v: string) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v)
@@ -29,6 +30,19 @@ export function loadSettings() {
   // Saved from the Settings page; without reading it back here a restart quietly went back to TRANSCODE_MODE.
   const mode = get('transcode_mode')
   config.transcode.mode = mode === 'off' || mode === 'auto' ? mode : envTranscodeMode
+  config.pace.enabled = get('pace_enabled') !== 'off'
+  config.pace.capKbps = Number(get('pace_cap_kbps')) > 0 ? Number(get('pace_cap_kbps')) : envPace.capKbps
+}
+
+/** Slow the downloads while something plays: on or off, and how fast they may still go (kilobytes a second). Bad numbers are ignored. */
+export function setPace(v: { enabled?: boolean; capKbps?: number }) {
+  if (typeof v.enabled === 'boolean') put('pace_enabled', v.enabled ? 'on' : 'off')
+  if (v.capKbps !== undefined && Number.isFinite(v.capKbps) && v.capKbps >= 100 && v.capKbps <= 1_000_000) put('pace_cap_kbps', String(Math.round(v.capKbps)))
+  loadSettings()
+}
+
+export function paceStatus() {
+  return { enabled: config.pace.enabled, capKbps: config.pace.capKbps }
 }
 
 export function setBtnApiKey(key: string) {

@@ -123,6 +123,11 @@ export const config = {
      */
     maxJobs: num('TRANSCODE_MAX_JOBS', 1),
   },
+  /**
+   * Downloads slow down while something plays (see pace.ts). capKbps is kilobytes a second, not kilobits, despite the name:
+   * 2500 is about 20 Mbps, enough to keep downloading and small enough to leave the drives to the episode being watched.
+   */
+  pace: { enabled: true, capKbps: 2500 },
   sweepIntervalSec: num('SWEEP_INTERVAL_SEC', 60),
   /** A torrent added less than this long ago is never swept (its first viewer is still being recorded). */
   sweepGraceSec: num('SWEEP_GRACE_SEC', 300),

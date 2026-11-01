@@ -1102,3 +1102,152 @@ test('the GPU resize is the same geometry as the scale expression, or none at al
   assert.equal(scaleTarget(640, 360, [1280, 720], 0), null, 'a picture already inside the box is never enlarged')
   assert.equal(scaleTarget(undefined, 1080, null, 720), null, 'no width known: the CPU scales rather than guessing an aspect')
 })
+
+// ---- subtitles synced to the audio ---------------------------------------------------------------------
+
+/** Speech runs with uneven lengths and gaps, from a fixed seed so the test is the same every time. */
+function fakeSpeech(count: number) {
+  let seed = 12345
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+  const runs: { start: number; end: number }[] = []
+  let at = 3
+  for (let i = 0; i < count; i++) {
+    const len = 1 + rnd() * 0.6
+    runs.push({ start: at, end: at + len })
+    at += len + 0.5 + rnd() * 3.5
+  }
+  return runs
+}
+
+test('shiftVtt moves every timing line, clamps at zero, and leaves the rest byte for byte', async () => {
+  const { shiftVtt, cueStarts } = await import('../src/subsync.ts')
+  const vtt = 'WEBVTT\r\n\r\n1\r\n00:00:01.000 --> 00:00:02.500 align:start\r\nHello --> there\r\n\r\n00:01:00.000 --> 01:00:00.250\r\nBye\r\n'
+  assert.equal(shiftVtt(vtt, 0, 1), vtt, 'no shift returns the text itself')
+  assert.equal(
+    shiftVtt(vtt, 500),
+    'WEBVTT\r\n\r\n1\r\n00:00:01.500 --> 00:00:03.000 align:start\r\nHello --> there\r\n\r\n00:01:00.500 --> 01:00:00.750\r\nBye\r\n',
+  )
+  assert.equal(shiftVtt('WEBVTT\n\n00:00:00.400 --> 00:00:01.000\nHi\n', -1000), 'WEBVTT\n\n00:00:00.000 --> 00:00:00.000\nHi\n', 'never below zero')
+  assert.ok(shiftVtt('WEBVTT\n\n01:00.000 --> 02:00.000\nHi\n', 0, 2).includes('00:02:00.000 --> 00:04:00.000'), 'mm:ss timings and a scale')
+  assert.deepEqual(cueStarts(vtt), [1000, 60000])
+})
+
+test('estimateOffset finds an early subtitle, leaves a right one alone, and is unsure of one that fits nothing', async () => {
+  const { estimateOffset, CONFIDENCE_MIN } = await import('../src/subsync.ts')
+  const runs = fakeSpeech(90)
+  const onTime = runs.map((r) => Math.round((r.start + 0.1) * 1000))
+  const right = estimateOffset(onTime, runs)
+  assert.equal(right.offsetMs, 0, 'a subtitle that is already on the speech is not moved')
+  assert.ok(right.confidence > CONFIDENCE_MIN, `confidence ${right.confidence}`)
+  const early = estimateOffset(onTime.map((c) => c - 1500), runs)
+  assert.ok(Math.abs(early.offsetMs - 1500) <= 300, `offset ${early.offsetMs}`)
+  assert.ok(early.confidence > CONFIDENCE_MIN, `confidence ${early.confidence}`)
+  // Lines in the middle of every silence between two runs of speech: no shift within ±6 s can put most of them inside speech.
+  const gapMiddles = runs.slice(1).map((r, i) => Math.round(((runs[i].end + r.start) / 2) * 1000))
+  const noise = estimateOffset(gapMiddles, runs)
+  assert.ok(noise.confidence <= CONFIDENCE_MIN, 'lines nowhere near the speech give no confident answer')
+})
+
+test('fitSync reads a frame-rate mismatch as drift and fits t*scale+offset', async () => {
+  const { fitSync } = await import('../src/subsync.ts')
+  const runs = fakeSpeech(240)
+  const real = runs.map((r) => Math.round((r.start + 0.1) * 1000))
+  const duration = runs[runs.length - 1].end + 5
+  const drifted = real.map((c) => Math.round(c / 1.01)) // the subtitle runs 1% fast, so it ends up far too early
+  const fit = fitSync(drifted, runs, duration)
+  assert.ok(Math.abs(fit.scale - 1.01) < 0.004, `scale ${fit.scale}`)
+  const worst = Math.max(...drifted.map((c, i) => Math.abs(c * fit.scale + fit.offsetMs - real[i])))
+  assert.ok(worst < 700, `worst line off by ${worst} ms`)
+})
+
+test('syncApplies: a shift needs confidence, enough lines, and something to do', async () => {
+  const { syncApplies } = await import('../src/subsync.ts')
+  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.6, cues: 300 }), true)
+  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.1, cues: 300 }), false, 'not sure enough')
+  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.9, cues: 11 }), false, 'too few lines')
+  assert.equal(syncApplies({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300 }), false, 'nothing to move')
+  assert.equal(syncApplies(undefined), false)
+})
+
+test('speechFrom is the complement of the silences, clipped to the file', async () => {
+  const { speechFrom } = await import('../src/subsync.ts')
+  assert.deepEqual(speechFrom([{ start: 0, end: 2 }, { start: 5, end: 7 }, { start: 98, end: 120 }], 100), [{ start: 2, end: 5 }, { start: 7, end: 98 }])
+  assert.deepEqual(speechFrom([], 60), [{ start: 0, end: 60 }])
+})
+
+// ---- downloads slow down while something plays -----------------------------------------------------------
+
+/** A qBittorrent that only knows its download limit: reads of the preferences and writes of dl_limit, every call counted. */
+function fakeEngine(limit: number) {
+  const st = { limit, calls: 0, sets: [] as number[] }
+  globalThis.fetch = (async (u: any, init: any) => {
+    st.calls++
+    const url = String(u)
+    if (url.endsWith('/api/v2/app/preferences')) return new Response(JSON.stringify({ dl_limit: st.limit }))
+    if (url.endsWith('/api/v2/app/setPreferences')) {
+      st.limit = JSON.parse(init.body.get('json')).dl_limit
+      st.sets.push(st.limit)
+      return new Response('')
+    }
+    return new Response('', { status: 404 })
+  }) as any
+  return st
+}
+const paceRows = async () => (await import('../src/db.ts')).db.prepare(`SELECT COUNT(*) AS n FROM settings WHERE key IN ('pace_saved_limit','pace_capped')`).get() as { n: number }
+
+test('pace: watching caps the downloads, idling restores the original limit exactly once', async () => {
+  const { setWatching, tick } = await import('../src/pace.ts')
+  const realFetch = globalThis.fetch
+  config.pace.enabled = true
+  config.pace.capKbps = 2500
+  const cap = 2500 * 1024
+  const eng = fakeEngine(1_000_000)
+  try {
+    await setWatching(true, '1:0')
+    assert.equal(eng.limit, cap)
+    await tick(Date.now() + 30_000)
+    assert.equal(eng.limit, cap, 'half a minute of quiet is not yet idle')
+    await tick(Date.now() + 61_000)
+    assert.equal(eng.limit, 1_000_000, 'the person\'s own limit is back')
+    await setWatching(false)
+    await tick(Date.now() + 120_000)
+    assert.deepEqual(eng.sets, [cap, 1_000_000], 'restored once, not again')
+    assert.equal((await paceRows()).n, 0)
+  } finally { globalThis.fetch = realFetch }
+})
+
+test('pace: a second setWatching(true) is a no-op, and an old cap never replaces the saved original', async () => {
+  const { setWatching } = await import('../src/pace.ts')
+  const { db } = await import('../src/db.ts')
+  const realFetch = globalThis.fetch
+  config.pace.enabled = true
+  config.pace.capKbps = 2500
+  const cap = 2500 * 1024
+  // A cap left on by an earlier run: the engine reports OUR cap, and 500000 is what the person had.
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('pace_saved_limit', '500000'), ('pace_capped', '1')`).run()
+  const eng = fakeEngine(cap)
+  try {
+    await setWatching(true)
+    const calls = eng.calls
+    await setWatching(true)
+    await setWatching(true, 'again')
+    assert.equal(eng.calls, calls, 'no engine calls for a repeat')
+    await setWatching(false)
+    assert.equal(eng.limit, 500000, 'the original, not the cap')
+  } finally { globalThis.fetch = realFetch }
+})
+
+test('pace: on start, a cap left behind by a crash is taken off before anything else', async () => {
+  const { recoverPace } = await import('../src/pace.ts')
+  const { db } = await import('../src/db.ts')
+  const realFetch = globalThis.fetch
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('pace_saved_limit', '750000'), ('pace_capped', '1')`).run()
+  const eng = fakeEngine(2500 * 1024)
+  try {
+    await recoverPace()
+    assert.equal(eng.limit, 750000)
+    await recoverPace()
+    assert.deepEqual(eng.sets, [750000], 'nothing left to restore the second time')
+    assert.equal((await paceRows()).n, 0)
+  } finally { globalThis.fetch = realFetch }
+})

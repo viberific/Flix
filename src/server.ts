@@ -11,10 +11,12 @@ import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowe
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
-import { btnKeyStatus, clearQb, omdbKeyStatus, openSubtitlesKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setOpenSubtitlesApiKey, setQb, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, tmdbKeyStatus, transcodeStatus } from './settings.ts'
+import { btnKeyStatus, clearQb, omdbKeyStatus, openSubtitlesKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setOpenSubtitlesApiKey, setQb, setPace, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, paceStatus, tmdbKeyStatus, transcodeStatus } from './settings.ts'
 import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { enableNextFile } from './ahead.ts'
+import { recoverPace, setWatching, tick as paceTick } from './pace.ts'
+import { shiftVtt, startSync, syncApplies, syncRow } from './subsync.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
@@ -538,6 +540,8 @@ app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   // The next episode of a pack is lined up from here because this is the only place that sees, while a person watches,
   // how much of THIS file is actually on disk. Fire and forget: it never holds up the status the player asked for.
   if (!('error' in s)) void enableNextFile(+t, +f).catch(() => {})
+  // The same poll says something is playing, which is what slows the downloads down (pace.ts). Fire and forget as well.
+  void setWatching(true, `${t}:${f}`).catch(() => {})
   return s
 })
 
@@ -648,12 +652,29 @@ async function onlineSubFor(t: number, f: number, base: string) {
   return subs.length ? { n: 'o' as number | string, lang: 'eng', label: 'English', forced: false, default: false, url: `${base}/osubs/best.vtt` } : undefined
 }
 
+/**
+ * A subtitle as it should be served: shifted if it has been measured against the sound and the measurement is sure enough,
+ * as it is otherwise. x-flix-sync tells the player where things stand, the way x-flix-complete does for a file still arriving:
+ * "done" (measured, nothing more to wait for), "pending" (a measurement was just started or is running, ask again in a
+ * little while) or "wait" (the video is not whole yet, so there is nothing to measure against). The request never waits for
+ * the measurement. Needs the whole video and the whole subtitle, and `vtt` is the unshifted text.
+ */
+function syncedVtt(reply: any, t: number, f: number, key: string, vtt: string, whole: { source: string; duration: number } | null): string {
+  const row = syncRow(t, f, key)
+  if (!row && whole) startSync(t, f, key, whole.source, whole.duration, vtt)
+  reply.header('x-flix-sync', row ? 'done' : whole ? 'pending' : 'wait')
+  return syncApplies(row) ? shiftVtt(vtt, row.offset_ms, row.scale) : vtt
+}
+
 app.get('/api/stream/:t/:f/osubs/best.vtt', guarded, async (req, reply) => {
   const { t, f } = req.params as any
   const q = await onlineQuery(+t, +f)
   const vtt = q ? await bestOnlineSubVtt(q).catch(() => null) : null
   if (vtt == null) return reply.code(404).send({ error: 'subtitle unavailable' })
-  return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', '1').send(vtt)
+  const fi = await fileInfo(+t, +f)
+  const p = fi && fi.file.progress >= 1 ? await probe(+t, +f, { complete: true }) : null
+  const whole = fi && p?.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null
+  return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', '1').send(syncedVtt(reply, +t, +f, 'online:eng', vtt, whole))
 })
 
 /** Subtitle files shipped beside the video (".srt" etc.): in a season pack only the ones for this episode. Needs the file fully downloaded to be read. */
@@ -676,7 +697,10 @@ app.get('/api/stream/:t/:f/xsubs/:file', guarded, async (req, reply) => {
   if (!fi || !sub) return reply.code(404).send({ error: 'no such subtitle' })
   const ready = sub.progress >= 1
   reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', ready ? '1' : '0')
-  return ready ? fileSubtitleVtt(join(fi.layout.savePath, sub.name)) : 'WEBVTT\n\n'
+  if (!ready) return 'WEBVTT\n\n'
+  const vtt = await fileSubtitleVtt(join(fi.layout.savePath, sub.name))
+  const p = fi.file.progress >= 1 ? await probe(+t, +f, { complete: true }) : null
+  return syncedVtt(reply, +t, +f, `file:${sub.name}`, vtt, p?.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null)
 })
 
 /** An embedded text subtitle as WebVTT. While the file is still arriving it covers what has arrived; x-flix-complete says when to stop asking. */
@@ -688,7 +712,8 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
   const fi = await fileInfo(+t, +f)
   if (!fi || !p.subs.some((s) => s.n === +m[1])) return reply.code(404).send({ error: 'no such subtitle' })
   const { vtt, complete } = await subtitleVtt(+t, +f, +m[1], fi.file.progress, p.duration ?? 0)
-  return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0').send(vtt)
+  reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0')
+  return syncedVtt(reply, +t, +f, `embedded:${m[1]}`, vtt, complete && p.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null)
 })
 
 // ---- downloads to a device ----------------------------------------------------
@@ -889,6 +914,7 @@ async function lineUpNext(userId: number, torrentId: number, fileIndex: number) 
 }
 app.post('/api/progress', auth, async (req) => {
   const { torrentId, fileIndex, position, duration, ended } = req.body as any
+  if (!ended) void setWatching(true, `${torrentId}:${fileIndex}`).catch(() => {}) // a position report is a pulse of playback too
   const frac = duration > 0 ? position / duration : 0
   // "Watched" means played past the threshold (92% by default: the credits are rarely sat through), or to the end -- the player says
   // so when the video ends, and the last few seconds count as the end (the reported length and the playing position rarely
@@ -1073,7 +1099,12 @@ app.delete('/api/admin/users/:id', admin, async (req) => {
 
 // ---- settings ----------------------------------------------------------------
 // The BTN key is write-only: the API reports whether it is set and its last 4 characters, never the key.
-app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus(), opensubtitles: openSubtitlesKeyStatus(), transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }))
+app.get('/api/admin/settings', admin, async () => ({ btn: btnKeyStatus(), qb: qbStatus(), tmdb: tmdbKeyStatus(), omdb: omdbKeyStatus(), opensubtitles: openSubtitlesKeyStatus(), pace: paceStatus(), transcode: { ...transcodeStatus(), ...(await encoderStatus()) } }))
+app.put('/api/admin/settings/pace', admin, async (req) => {
+  const b = (req.body as any) ?? {}
+  setPace({ enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined, capKbps: b.capKbps === undefined ? undefined : Number(b.capKbps) })
+  return { pace: paceStatus() }
+})
 app.put('/api/admin/settings/transcode', admin, async (req) => {
   const b = (req.body as any) ?? {}
   if (typeof b.profile === 'string') setTranscodeProfile(b.profile)
@@ -1178,6 +1209,7 @@ startOfflineSweeper()
 startSpriteSweeper()
 startExtrasPlanner()
 const runSweep = startSweeper()
+setInterval(() => void paceTick().catch(() => {}), 15_000).unref() // lets the downloads speed back up once nobody has played for a minute
 
 let btnSyncStarted = false
 /** Start the periodic catalog sync once a key exists; safe to call again (e.g. after the key is saved). */
@@ -1193,6 +1225,7 @@ function startBtnSync() {
 export async function start() {
   try {
     await qb.setup()
+    await recoverPace() // before anything else: a box that rebooted mid-episode must not stay throttled
     app.log.info(`qBittorrent ${await qb.version()} connected`)
   } catch (e: any) {
     app.log.error(`Cannot reach qBittorrent at ${config.qb.url}: ${e.message}. Playback will fail until it is available.`)
