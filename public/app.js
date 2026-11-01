@@ -1638,6 +1638,7 @@ function playView(seriesId, season, label) {
     const setT = (t) => {
       t = Math.max(0, Math.min(totalT() || 1e9, t))
       userSeeked = true
+      resumeOwed = 0 // the viewer chose where to be: no resume point is owed after this
       if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) { const was = !v.paused; v.currentTime = t; guardSeek(t, was) }
     }
     /**
@@ -2116,6 +2117,10 @@ function playView(seriesId, season, label) {
           // Playing for real: not paused, a picture to show, and the clock has moved on since the last tick.
           const moving = !v.paused && v.readyState >= 2 && lastT >= 0 && v.currentTime > lastT
           lastT = v.currentTime
+          // The first seek has landed: the element's own clock now says where the show is, so nothing may hand the old
+          // resume point to a stream that opens again.
+          if (resumeOwed && v.currentTime >= resumeOwed - 5) resumeOwed = 0
+          if (v.currentTime > 1) wasAt = v.currentTime
           if (moving && !castingOnly) firstFrame()
           // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
           // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
@@ -2184,19 +2189,38 @@ function playView(seriesId, season, label) {
       const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       ignoreError = false // a source is about to be set: from here on an error is a real one
       resumeAt = startAt > 5 ? startAt : 0
+      resumeOwed = resumeAt
+      wasAt = 0 // a different source: what the last one was playing to says nothing about this one
+      /**
+       * Where this source has to be: the resume point while the first seek is still owed, then the element's own clock,
+       * and -- when a swap has just taken that clock to zero -- the last position it showed.
+       */
+      const wantAt = () => resumeOwed || (v && v.currentTime > 1 ? v.currentTime : wasAt)
       if (viaHls) {
-        // startPosition: open straight at the resume point instead of loading the first piece and jumping.
+        // startPosition: open straight at the resume point instead of loading the first piece and jumping -- but only while
+        // that point is still owed. It does not expire inside hls.js: StreamController.onMediaAttached calls
+        // startLoad(config.startPosition) after every attachMedia(), and recoverMediaError() is detachMedia() + attachMedia()
+        // with the element's clock already taken back to zero, so the position it restored was the stale resume point -- an
+        // episode half an hour in went back to the minute it had been opened at. The first attach is the only one that gets
+        // it; swapMedia() below hands any re-attach the live clock.
         // No CEA-608 captions from inside the picture: they arrived as a second, unlabelled captions track of their own,
         // which is how the CC list ended up with two entries ticked at once.
-        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true, ...(startAt > 5 ? { startPosition: startAt } : {}) })
+        const openAt = wantAt()
+        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true, ...(openAt > 5 ? { startPosition: openAt } : {}) })
         hls.loadSource(url); hls.attachMedia(v)
         let mediaFixes = 0
+        // An undefined start is hls.js's own "no position given"; anything above five seconds is a place to open at.
+        const liveOrNothing = () => (wantAt() > 5 ? wantAt() : undefined)
+        // hls.js recovers a decoder error by dropping the media and attaching it again, and it reads config.startPosition
+        // when it does. Told the live clock first, the re-attach comes back to where the viewer is; told nothing, it would
+        // go back to whatever resume point this instance was created with.
+        const swapMedia = () => { hls.config.startPosition = wantAt() || -1; hls.recoverMediaError() }
         hls.on(Hls.Events.ERROR, (_, d) => {
           if (!d.fatal) return
           // A dropped request or a decoder hiccup is not the end of the episode: hls.js can pick up from both, which is
           // what it is asked to do (twice) before anything is said to the viewer.
-          if (d.type === Hls.ErrorTypes.NETWORK_ERROR && mediaFixes < 2) { mediaFixes++; hls.startLoad(); return }
-          if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaFixes < 2) { mediaFixes++; hls.recoverMediaError(); return }
+          if (d.type === Hls.ErrorTypes.NETWORK_ERROR && mediaFixes < 2) { mediaFixes++; hls.startLoad(liveOrNothing()); return }
+          if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaFixes < 2) { mediaFixes++; swapMedia(); return }
           hls?.destroy(); hls = null
           // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(v.currentTime || startAt) } else fail('Something went wrong playing this. Go back and try again.')
@@ -2208,9 +2232,11 @@ function playView(seriesId, season, label) {
         const el = v
         let tries = 0
         const jump = () => {
-          if (!alive || v !== el || userSeeked || tries >= 6 || el.currentTime >= startAt - 5) return stop()
+          if (!alive || v !== el || userSeeked || tries >= 6) return stop()
+          const at = wantAt() // the resume point only until it has been reached; after that, where the picture already is
+          if (!at || Math.abs(el.currentTime - at) < 5) return stop()
           tries++
-          try { el.currentTime = startAt } catch { /* not seekable yet */ }
+          try { el.currentTime = at } catch { /* not seekable yet */ }
         }
         const evs = ['loadedmetadata', 'canplay', 'playing']
         const stop = () => evs.forEach((ev) => el.removeEventListener(ev, jump))
@@ -2226,7 +2252,7 @@ function playView(seriesId, season, label) {
         stuckRetried = true
         hls?.destroy(); hls = null
         releaseVideo(v)
-        loadInfo(info.audioIndex ?? 0, startAt).catch((e) => fail(e.message))
+        loadInfo(info.audioIndex ?? 0, wantAt() || startAt).catch((e) => fail(e.message))
       }, 30_000)
     }
 
@@ -2237,6 +2263,12 @@ function playView(seriesId, season, label) {
      * looked like it was on another episode altogether.
      */
     let resumeAt = 0
+    // The resume point this source has not reached yet, and 0 from the moment the first seek has actually landed. It is
+    // what attach() hands hls.js as startPosition, and the only thing that may do so: see the note there.
+    let resumeOwed = 0
+    // The last position the clock actually showed. A MediaSource swap takes the element back to zero, and a recovery that
+    // arrives after it has no live clock to read -- this is what the picture was last at, and it is where it comes back to.
+    let wasAt = 0
     let startedAt = 0
     const canReport = () => started && !!v && (userSeeked || !resumeAt || Math.abs(v.currentTime - resumeAt) < 30 || v.currentTime > resumeAt || Date.now() - startedAt > 120_000)
     function report(ended) {
