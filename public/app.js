@@ -2018,6 +2018,9 @@ function playView(seriesId, season, label) {
       try {
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
         if (!alive) return
+        // What the server holds for this file, read fresh as the episode is opened: the resume condition that outranks
+        // whatever startAt the caller passed (see resumeTarget in attach).
+        savedPos = Number(play.position) > 5 ? Number(play.position) : 0
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
         $('#rep').hidden = false
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
@@ -2060,6 +2063,25 @@ function playView(seriesId, season, label) {
     function attach(startAt) {
       if (castingOnly) return // the TV has it; nothing plays here
       hls?.destroy(); hls = null
+      /**
+       * Where this source has to land, in precedence order, decided in one place and asked the same way by everything
+       * in the player that needs a position. The order is not the order the arguments arrive in, and that is the point:
+       *
+       *   1. the live clock, once the picture has moved off its first frame. Nothing in here drags playback backwards;
+       *   2. the freshest position the server is known to hold for THIS file. An episode that has been played before
+       *      resumes where it was left, whatever startAt a caller captured before that was known -- a retry that says
+       *      0:00 because no frame has played yet, or a stale capture from an earlier open, must not reopen at the start;
+       *   3. the caller's startAt, while the server holds nothing for this file;
+       *   4. zero.
+       *
+       * The saved point is only ever adopted while the resume is still owed (clock at ~0: a fresh attach, the first
+       * frame, a recovery whose swap zeroed the clock). Behind the live clock it is ignored, not applied.
+       */
+      const resumeTarget = () => {
+        if (v && v.currentTime > 1) return v.currentTime
+        if (savedPos > 5) return savedPos
+        return startAt > 5 ? startAt : 0
+      }
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
@@ -2166,11 +2188,13 @@ function playView(seriesId, season, label) {
           if (!fileRetry) {
             fileRetry = true
             $('#msg').textContent = 'Trying that again…'
-            const at = v.currentTime || 0 // read first: emptying the element puts it back at zero
+            // Read before the element is emptied: load() puts its clock back to zero. With nothing played yet this is
+            // the saved position, not 0:00 -- asking for 0:00 here dropped the resume point and then wrote it back.
+            const land = resumeTarget()
             v.removeAttribute('src')
             ignoreError = true
             try { v.load() } catch { /* nothing to unload */ }
-            loadInfo(info.audioIndex ?? 0, at).catch((e) => fail(e.message))
+            loadInfo(info.audioIndex ?? 0, land).catch((e) => fail(e.message))
             return
           }
           fail('Something went wrong playing this. Go back and try again.')
@@ -2188,7 +2212,7 @@ function playView(seriesId, season, label) {
       // signed path in a cast link stands in for: it gets the same URL as everyone else.
       const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       ignoreError = false // a source is about to be set: from here on an error is a real one
-      resumeAt = startAt > 5 ? startAt : 0
+      resumeAt = resumeTarget()
       resumeOwed = resumeAt
       wasAt = 0 // a different source: what the last one was playing to says nothing about this one
       /**
@@ -2223,12 +2247,12 @@ function playView(seriesId, season, label) {
           if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaFixes < 2) { mediaFixes++; swapMedia(); return }
           hls?.destroy(); hls = null
           // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
-          if (canHdr) { info.useHdrOff = true; canHdr = false; attach(v.currentTime || startAt) } else fail('Something went wrong playing this. Go back and try again.')
+          if (canHdr) { info.useHdrOff = true; canHdr = false; attach(resumeTarget()) } else fail('Something went wrong playing this. Go back and try again.')
         })
       } else v.src = url
       // Open at the resume point. Some TV WebViews ignore a jump made before the picture can play, so it is tried again as the
       // picture becomes playable, until it has taken (or the viewer has moved it themselves, or a few tries have gone by).
-      if (startAt > 5) {
+      if (resumeAt > 5) {
         const el = v
         let tries = 0
         const jump = () => {
@@ -2252,7 +2276,7 @@ function playView(seriesId, season, label) {
         stuckRetried = true
         hls?.destroy(); hls = null
         releaseVideo(v)
-        loadInfo(info.audioIndex ?? 0, wantAt() || startAt).catch((e) => fail(e.message))
+        loadInfo(info.audioIndex ?? 0, wantAt() || resumeTarget()).catch((e) => fail(e.message))
       }, 30_000)
     }
 
@@ -2269,13 +2293,21 @@ function playView(seriesId, season, label) {
     // The last position the clock actually showed. A MediaSource swap takes the element back to zero, and a recovery that
     // arrives after it has no live clock to read -- this is what the picture was last at, and it is where it comes back to.
     let wasAt = 0
+    // The freshest position the server is known to hold for this file: what /api/watch answered when the episode was
+    // opened, and then every place written back since. It outranks a startAt captured earlier, because a show that has
+    // been played before resumes where it was left (see resumeTarget in attach).
+    let savedPos = 0
     let startedAt = 0
     const canReport = () => started && !!v && (userSeeked || !resumeAt || Math.abs(v.currentTime - resumeAt) < 30 || v.currentTime > resumeAt || Date.now() - startedAt > 120_000)
     function report(ended) {
       if (!v || !play) return
       if (!isFinite(v.duration) && !info?.duration) return
       if (ended !== true && !canReport()) return
-      return api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: ended === true ? (Number(info?.duration) || v.currentTime) : v.currentTime, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
+      const position = ended === true ? (Number(info?.duration) || v.currentTime) : v.currentTime
+      // The server is being told where this file is: that is now the freshest point it holds, and a later attach must
+      // resume from here rather than from a startAt captured before this write.
+      if (position > 5) savedPos = position
+      return api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position, duration: info?.duration || v.duration, ended: ended === true }).catch(() => {})
     }
 
     /* ---------- up next ----------
