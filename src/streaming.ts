@@ -4,19 +4,21 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { db, now } from './db.ts'
 import { config } from './config.ts'
-import { convertCost } from './pick.ts'
+import { convertCost, pickRelease } from './pick.ts'
 import { copyOnly } from './settings.ts'
 import { qb, type QbFile } from './qb.ts'
-import { fetchTorrentFile } from './btn/client.ts'
+import { DeadTorrentLinkError, fetchTorrentFile } from './btn/client.ts'
 import { isVideo, parseEpisodeTag } from './btn/parse.ts'
 import { assertSpace } from './health.ts'
 import { SUBFILE } from './transcode.ts'
 import { diag, hitch } from './diag.ts'
 import { catalogChanged } from './seasons.ts'
+import { candidatesFor } from './candidates.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export interface Release { size: number | null; is_pack: number; torrent_id: number; info_hash: string; torrent_link: string; series: string; group_name: string }
+export interface Release { size: number | null; is_pack: number; torrent_id: number; info_hash: string; torrent_link: string; series: string; group_name: string
+  series_id: number | null; season: number | null; episode: number | null; label: string | null; release_name: string | null }
 export const getRelease = (id: number) => db.prepare('SELECT * FROM releases WHERE torrent_id = ?').get(id) as Release | undefined
 
 const adding = new Map<number, Promise<void>>()
@@ -81,10 +83,77 @@ function pickFromPack(files: QbFile[], userId: number, torrentId: number, label?
 /** Disk a play will take: always the whole release -- a season is fetched whole, so a pack counts in full. */
 const bytesToFetch = (rel: Release): number => Number(rel.size ?? 0)
 
+/**
+ * How many other releases one play will try after the best one turns out to be dead. Two is enough to get past a stale
+ * cached listing to the one BTN actually has (Get Jiro S01E04: three releases listed, the first two gone).
+ */
+const MAX_DEAD_SKIPS = 2
+
+/** BTN no longer serves this release's .torrent: remember it, so the picker never chooses it again. */
+function markDead(rel: Release, why: string) {
+  db.prepare('UPDATE releases SET dead_at = ? WHERE torrent_id = ?').run(now(), rel.torrent_id)
+  catalogChanged() // a dead release stops counting as available, so the cached listings have to see it
+  diag('play', `release ${rel.torrent_id} is dead: ${why}`, { torrentId: rel.torrent_id, series: rel.series, label: rel.label }, 'warn')
+}
+
+/** The next release for the same slot (the same episode, or the same season's pack), leaving out what this play has tried. */
+function nextSource(rel: Release, tried: Set<number>) {
+  // Read through a map rather than adding torrent_link to every candidate row: the link carries the passkey and the
+  // candidate rows travel towards the client.
+  const links = new Map((db.prepare('SELECT torrent_id, torrent_link FROM releases WHERE series_id = ?').all(rel.series_id) as { torrent_id: number; torrent_link: string | null }[])
+    .map((r) => [r.torrent_id, r.torrent_link]))
+  const same = candidatesFor(Number(rel.series_id)).filter((r) =>
+    !tried.has(r.torrent_id) && !!links.get(r.torrent_id) && (rel.is_pack
+      ? r.is_pack === 1 && r.season === rel.season
+      : r.is_pack === 0 && r.season === rel.season && r.episode === rel.episode))
+  return pickRelease(same)
+}
+
+/**
+ * Play a release, moving on to the next-best one when BTN no longer has it.
+ *
+ * A listing cached months ago can point at a torrent BTN has since deleted. That used to end the play with "Failed to
+ * download .torrent (HTTP 404)" with nothing else tried, even though the same episode had two healthy releases beside
+ * it. Now the dead one is recorded as dead (so the picker never chooses it again), the next candidate is played, and
+ * the person only hears about a dead link when every copy of that episode is gone.
+ *
+ * `fileIndex` is a position in one release's file list, so it is dropped once the source changes: the new release picks
+ * its own file, by the episode label when it is a pack.
+ */
+export async function withSourceFallback<T>(torrentId: number, fileIndex: number | undefined, play: (rel: Release, fileIndex?: number) => Promise<T>): Promise<T> {
+  const tried = new Set<number>()
+  let id = torrentId
+  let index = fileIndex
+  let skips = 0
+  for (;;) {
+    const rel = getRelease(id)
+    if (!rel) throw new Error('Unknown release')
+    tried.add(id)
+    try {
+      return await play(rel, index)
+    } catch (e) {
+      if (!(e instanceof DeadTorrentLinkError)) throw e
+      if (e.permanent) markDead(rel, e.message)
+      const next = nextSource(rel, tried)
+      if (!next || skips >= MAX_DEAD_SKIPS) {
+        // Plain words for the viewer (the client shows this text as it is); the cause BTN gave is in the log.
+        diag('play', `every release for ${rel.series} ${rel.label ?? ''} is dead`, { series: rel.series, label: rel.label, tried: [...tried], why: e.message }, 'warn')
+        throw new Error(`Every copy of this episode that BTN lists is gone (${tried.size} tried). Flix looks for new copies when it next refreshes the show, so try again later.`)
+      }
+      id = next.torrent_id
+      index = undefined
+      skips++
+    }
+  }
+}
+
 /** Start (or join) a download for a user and return the file to play. */
 export async function startPlayback(userId: number, torrentId: number, fileIndex?: number, opts: { episodeLabel?: string; auto?: boolean } = {}) {
-  const rel = getRelease(torrentId)
-  if (!rel) throw new Error('Unknown release')
+  return withSourceFallback(torrentId, fileIndex, (rel, index) => playOne(userId, rel, index, opts))
+}
+
+async function playOne(userId: number, rel: Release, fileIndex: number | undefined, opts: { episodeLabel?: string; auto?: boolean }) {
+  const torrentId = rel.torrent_id
   // The last gate before any byte is fetched: in copy-only mode a release whose picture would have to be re-encoded
   // is refused here too, so a stale link, a pack or a warm-ahead fetch cannot slip one past the picker.
   if (copyOnly() && convertCost(rel as any) !== 0) {

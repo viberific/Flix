@@ -91,6 +91,9 @@ try { db.exec('ALTER TABLE releases ADD COLUMN youtube_trailer TEXT') } catch { 
 try { db.exec('ALTER TABLE releases ADD COLUMN leechers INTEGER') } catch { /* already present */ }
 // Last episode a multi-episode file covers (S01E01E02 -> 2); null for everything else.
 try { db.exec('ALTER TABLE releases ADD COLUMN episode_end INTEGER') } catch { /* already present */ }
+// When BTN stopped serving this release's .torrent (a listing cached months ago whose torrent was since deleted):
+// the row stays for its name and size, but it is never picked again. Marked by playback, never by a cache refresh.
+try { db.exec('ALTER TABLE releases ADD COLUMN dead_at INTEGER') } catch { /* already present */ }
 // The videos inside a season pack, read from its .torrent, so a pack lists as individual episodes before anything is downloaded.
 db.exec(`CREATE TABLE IF NOT EXISTS pack_files (
   torrent_id INTEGER NOT NULL, idx INTEGER NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,

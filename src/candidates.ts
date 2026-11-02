@@ -7,10 +7,10 @@ export interface Row extends Cand { season: number | null; episode: number | nul
 
 /** Every release we know for a show, with whether we already hold it on disk. */
 export function candidatesFor(seriesId: number): Row[] {
-  const rows = db.prepare(`SELECT r.torrent_id, r.season, r.episode, r.episode_end, r.label, r.is_pack, r.resolution, r.codec, r.seeders, r.size,
+  const rows = db.prepare(`SELECT r.torrent_id, r.season, r.episode, r.episode_end, r.label, r.is_pack, r.resolution, r.codec, r.seeders, r.size, r.time, r.dead_at,
       EXISTS(SELECT 1 FROM downloads d WHERE d.torrent_id = r.torrent_id AND d.state = 'active') AS on_server
     FROM releases r WHERE r.series_id = ?`).all(seriesId) as any[]
-  return rows.map((r) => ({ ...r, on_server: !!r.on_server }))
+  return rows.map((r) => ({ ...r, on_server: !!r.on_server, dead: r.dead_at ? 1 : 0 }))
 }
 
 /**

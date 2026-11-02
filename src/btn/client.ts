@@ -106,11 +106,35 @@ export async function getTorrents(query: Record<string, unknown>, results = 100,
   return { total: Number(r?.results ?? list.length), torrents: list }
 }
 
+/**
+ * The .torrent link no longer gives a torrent: BTN deleted the release, or it answered with a page instead of a file.
+ * Playback answers this by moving to the next-best release instead of failing the play.
+ *
+ * `permanent` says whether BTN proved THIS release is gone. 404, 410 and a body that is not a torrent do. A 403 does
+ * not: the same reply comes back for every release when BTN is refusing this address, so marking releases dead on it
+ * would empty the whole library over a network problem. A 403 skips the release for this play and keeps the row.
+ */
+export class DeadTorrentLinkError extends Error {
+  readonly permanent: boolean
+  constructor(message: string, permanent: boolean) {
+    super(message)
+    this.name = 'DeadTorrentLinkError'
+    this.permanent = permanent
+  }
+}
+
 /** Download the .torrent file server-side so the passkey-bearing URL never leaves this process. */
 export async function fetchTorrentFile(link: string): Promise<Buffer> {
   const res = await fetch(link, { headers: { 'user-agent': 'Flix/0.1' }, signal: AbortSignal.timeout(30_000) })
-  if (!res.ok) throw new Error(`Failed to download .torrent (HTTP ${res.status})`)
+  if (!res.ok) {
+    const gone = res.status === 404 || res.status === 410
+    const denied = res.status === 403
+    const msg = `Failed to download .torrent (HTTP ${res.status})`
+    if (gone || denied) throw new DeadTorrentLinkError(msg, gone)
+    throw new Error(msg)
+  }
   const buf = Buffer.from(await res.arrayBuffer())
-  if (buf[0] !== 0x64) throw new Error('BTN did not return a valid .torrent file')
+  // A torrent starts with 'd' (a bencoded dictionary). An HTML error page, a login screen or an empty body is not one.
+  if (buf[0] !== 0x64) throw new DeadTorrentLinkError('BTN did not return a valid .torrent file (the link answers with a page, not a file)', true)
   return buf
 }

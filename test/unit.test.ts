@@ -74,6 +74,29 @@ test('source pick tie-breaks: on-server, then H.264, then the smaller file, then
   assert.deepEqual(['1080p', '2160p', '1080i', 'SD'].map(qualityLabel), ['1080p', '4K', '1080p', 'SD'])
 })
 
+test('source pick: a few KB of size is not a difference -- seeders and freshness decide', () => {
+  // Get Jiro S01E04, from the live box: the cached 2280208 (size 970,313,565) is 16 KB smaller than 2280736
+  // (970,329,631) and had been picked for it, ahead of 103 seeders against 100. The 0.002% difference is noise from
+  // a listing months old; the swarm is the real signal.
+  assert.equal(pickRelease([
+    c(2280208, '1080p', { size: 970_313_565, seeders: 100, time: 1_700_000_000 }),
+    c(2280736, '1080p', { size: 970_329_631, seeders: 103, time: 1_750_000_000 }),
+  ])!.torrent_id, 2280736)
+  // Same seeders: the newer release wins, because a stale listing is the one whose torrent has since been deleted.
+  assert.equal(pickRelease([
+    c(1, '1080p', { size: 970_313_565, seeders: 100, time: 1_700_000_000 }),
+    c(2, '1080p', { size: 970_329_631, seeders: 100, time: 1_750_000_000 }),
+  ])!.torrent_id, 2)
+  // A released marked dead is never picked again, whatever seeders its cached row still claims.
+  assert.equal(pickRelease([c(1, '1080p', { seeders: 100, dead: 1 }), c(2, '1080p', { seeders: 1 })])!.torrent_id, 2)
+  assert.equal(pickRelease([c(1, '1080p', { seeders: 100, dead: 1 })])?.torrent_id, 1) // the only copy left still fills the tile: the play then reports it
+  // A genuinely smaller file still wins against far more seeders: 300 MB less is a shorter download, not noise.
+  assert.equal(pickRelease([
+    c(1, '1080p', { size: 1_800_000_000, seeders: 200 }),
+    c(2, '1080p', { size: 1_500_000_000, seeders: 2 }),
+  ])!.torrent_id, 2)
+})
+
 test('youtubeUrl only ever yields a youtube.com watch link', () => {
   assert.equal(youtubeUrl('dQw4w9WgXcQ'), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
   assert.equal(youtubeUrl('https://youtu.be/dQw4w9WgXcQ?t=3'), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
