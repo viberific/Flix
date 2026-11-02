@@ -461,7 +461,11 @@ app.post('/api/watch', auth, async (req) => {
   const seriesName = (db.prepare('SELECT series FROM releases WHERE series_id = ? LIMIT 1').get(Number(seriesId)) as any)?.series
   const titles = episodeInfoFor(Number(seriesId))
   const nameOf = (e: { season: number | null; episode: number | null }) => (e.season !== null && e.episode !== null ? titles.get(`${e.season}|${e.episode}`)?.name ?? null : null)
-  return { ...play, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
+  // Progress is kept per episode (it follows the episode across releases), but startPlayback only knows the position of this
+  // exact file. When the episode now comes from another release than the one it was started on, that is 0 and the episode
+  // restarted: fall back to where the episode itself was left.
+  const position = play.position > 5 || ep.watched ? play.position : ep.position
+  return { ...play, position, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
 /** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */

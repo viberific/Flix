@@ -993,7 +993,10 @@ async function seriesView(id) {
   const keys = [...seasons.keys()]
   const wantedN = (list) => list.filter((e) => e.available && !e.watched).length
   const wanted = (list) => wantedN(list) > 0
-  let cur = hero ? (hero.season ?? 'x') : keys[keys.length - 1]
+  // Open on the season the person is in, even when that episode cannot be played right now (its file was cleaned up, say):
+  // otherwise the page fell back to the first unwatched episode, which is season 1 of a long show.
+  const curKey = current ? (current.season ?? 'x') : null
+  let cur = curKey !== null && seasons.has(curKey) ? curKey : hero ? (hero.season ?? 'x') : keys[keys.length - 1]
   const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
   const saved = new Set(canDownload ? (await dl.list()).map((m) => m.id) : [])
   return () => {
