@@ -597,7 +597,14 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     const filters = tonemap ? [TONEMAP] : []
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
-    const input = opts.lowPriority ? ['-threads', '1', '-i', rawUrl(torrentId, fileIndex)] : ['-i', rawUrl(torrentId, fileIndex)]
+    // A finished file is read from disk, never through its own range endpoint. ffmpeg can SEEK a file, so a piece asked
+    // for at 17:28 costs one seek; over HTTP the same ask walked the source from byte 0 -- 614 MB and 28.5 s for one
+    // segment of South Park S29E02 (measured 2026-11-04 14:53:56), which the player spent starving, and every piece made
+    // after it was late too. An unfinished file still comes through the range endpoint, exactly as before.
+    const disk = opts.complete && opts.source && existsSync(opts.source) ? opts.source : null
+    const input = disk
+      ? (opts.lowPriority ? ['-threads', '1', '-i', disk] : ['-i', disk])
+      : opts.lowPriority ? ['-threads', '1', '-i', rawUrl(torrentId, fileIndex)] : ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = [...AUDIO_LEVEL, '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
     // Decided once per file: the profile does not change while it plays. The GPU when the container has one (see pickEncoder).
@@ -704,6 +711,20 @@ export function releaseHls(torrentId: number, fileIndex: number) {
     clearTimeout(j.idle)
     j.idle = setTimeout(() => stopJob(key), 90_000).unref()
   }
+}
+
+/**
+ * Stop ONE rendition at once, because the player has left it for another one. releaseHls is the wrong tool for that: it
+ * gives the job ninety seconds of grace, and a job inside that grace counts as live, so the next size was started over
+ * the box's job cap -- 14:53:55 on 2026-11-04: `starting a conversion over the job cap {cap:1,running:3}`, and the viewer
+ * waited for every segment after it. Only what is actually abandoned is dropped; the caller names the playlist it left.
+ */
+export function dropHls(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0) {
+  const key = jobKey(torrentId, fileIndex, audio, hdr, encode, maxH)
+  if (!jobs.has(key)) return false
+  hitch('encode', 'dropped a rendition the player left, to free the slot', { job: key })
+  stopJob(key)
+  return true
 }
 
 export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0) {

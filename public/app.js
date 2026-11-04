@@ -2072,9 +2072,69 @@ function playView(seriesId, season, label) {
       wireSubs(); wireSubMenu(); wireNudge(); wireAudio(); wireQuality(); wireExtras()
     }
 
+    /** Which rendition /info has just handed the player: a copied picture, a converted one, a smaller one, or a file. */
+    const sourceFamily = () => {
+      if (!info) return null
+      const u = String(info.url ?? '')
+      if (info.mode === 'direct') return 'raw'
+      if (info.mode === 'file') return 'file'
+      if (/\/hls-q\//.test(u)) return 'encode-small'
+      if (/\/hls-x\//.test(u)) return 'encode'
+      if (/\/hls-a\//.test(u)) return 'copy-audio'
+      return 'copy'
+    }
+    /** The sound the source carries, so a change of track across a swap sits in the log beside the drift. */
+    const sourceAudio = () => {
+      const a = info?.audio?.[info?.audioIndex ?? 0]
+      return a ? `${a.lang || 'und'}${a.channels ? 'x' + a.channels : ''}` : null
+    }
+    /**
+     * Picture against sound, measured rather than guessed. The element's clock is driven by the audio renderer, and
+     * requestVideoFrameCallback reports the media time of the frame actually on screen, so the gap between the two IS the
+     * A/V skew at that moment. Every source carries a fixed render latency in that gap, so what is kept is the skew
+     * relative to the first ten seconds of THIS source: that difference is the drift, and past 150 ms a person hears it.
+     * Once a second, one line only when it is over, never more than one per ten seconds -- this must cost the picture
+     * nothing, which is also why there is no Web Audio tap: routing the sound through an AudioContext to measure it
+     * would change the very pipeline being measured, and break a television and a cast receiver.
+     */
+    let driftT = null, frameMt = null, rvfcOn = false, skewBase = [], driftOver = 0, driftSentAt = 0
+    const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1] }
+    function startDrift() {
+      clearInterval(driftT)
+      skewBase = []; driftOver = 0; driftSentAt = 0; frameMt = null
+      if (v && !rvfcOn && v.requestVideoFrameCallback) {
+        rvfcOn = true
+        const tick = (_now, md) => { frameMt = md.mediaTime; v.requestVideoFrameCallback(tick) }
+        v.requestVideoFrameCallback(tick)
+      }
+      driftT = setInterval(sampleDrift, 1000)
+    }
+    function sampleDrift() {
+      if (!alive || !v || frameMt == null || v.paused || v.readyState < 2 || !(v.currentTime > 1)) return
+      const skew = v.currentTime - frameMt
+      // The source's own latency, taken once: before it is known there is nothing to compare against.
+      if (skewBase.length < 10) { skewBase.push(skew); return }
+      const driftMs = Math.round((skew - median(skewBase)) * 1000)
+      if (Math.abs(driftMs) <= 150) { driftOver = 0; return }
+      if (++driftOver < 2 || Date.now() - driftSentAt < 10_000) return
+      driftSentAt = Date.now()
+      api('/api/diag/client', { kind: 'drift', at: Math.round(v.currentTime * 10) / 10, driftMs, height: v.videoHeight || null,
+        readyState: v.readyState, paused: !!v.paused, family: sourceFamily(), audio: sourceAudio(),
+        torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null }).catch(() => {})
+    }
     function attach(startAt) {
       if (castingOnly) return // the TV has it; nothing plays here
+      /**
+       * A source is never swapped UNDER a running pipeline. Destroying the playlist and setting the next one left the
+       * element's own audio output carrying the clock of the source that had gone, and picture and sound then ran at
+       * different speeds for the rest of the episode -- the one thing a stop and a restart fixes, because a restart tears
+       * the whole pipeline down (reported 2026-11-04: "the sound does not match up to the video"). So an attach that
+       * replaces a source goes through exactly the teardown a fresh open starts from: paused, playlist destroyed, src
+       * removed, load() run. What it lands back on is heldPos(), never the clock load() has just zeroed.
+       */
+      const replacing = !!(hls || (v && (v.getAttribute('src') || v.currentSrc || v.srcObject)))
       hls?.destroy(); hls = null
+      if (replacing) releaseVideo(v)
       /**
        * Where this source has to land, in precedence order, decided in one place and asked the same way by everything
        * in the player that needs a position. The order is not the order the arguments arrive in, and that is the point:
@@ -2225,6 +2285,12 @@ function playView(seriesId, season, label) {
       const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       ignoreError = false // a source is about to be set: from here on an error is a real one
       resumeAt = resumeTarget()
+      // Which source this is, and whether one had to be torn down to be here: a swap mid-episode is never invisible
+      // again, and neither is the drift it may have caused. Both fire per attach, so they are a handful of lines an hour.
+      api('/api/diag/client', { kind: 'attach', at: Math.round(resumeAt * 10) / 10, family: sourceFamily(), audio: sourceAudio(),
+        height: info.quality || null, destroyed: replacing, readyState: v?.readyState ?? null,
+        torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null }).catch(() => {})
+      startDrift()
       resumeOwed = resumeAt
       /**
        * Where this source has to be: the resume point while the first seek is still owed, then the element's own clock,
@@ -2602,6 +2668,10 @@ function playView(seriesId, season, label) {
       // show is half an hour in. The held position is what the viewer was actually watching.
       const at = heldPos()
       noteRecover('quality', at, v?.currentTime || 0)
+      // The rendition being left is given up NOW. Left alone it counts as live for ninety seconds, so the size being asked
+      // for was started over the box's conversion cap and starved for the rest of the episode (2026-11-04 14:53:55).
+      const left = String(info?.url || '')
+      if (left && play) fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: left }) }).catch(() => {})
       try { await loadInfo(info.audioIndex ?? 0, at) } catch (err) { fail(err.message) }
     }
     /**

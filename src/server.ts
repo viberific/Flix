@@ -19,7 +19,7 @@ import { recoverPace, setWatching, tick as paceTick } from './pace.ts'
 import { manualOffset, needsMeasure, offsetAsk, setManualOffset, shiftFor, shiftVtt, startSync, syncRow } from './subsync.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
-import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
+import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { startPrebuild } from './prebuild.ts'
 import { copyPictureFor, ensureHls, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
@@ -550,9 +550,21 @@ app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   return s
 })
 
-/** The player was closed: drop the temporary converted copy (if there was one) after a short grace period. */
+/**
+ * The player was closed, or moved to another size: drop the converted copy it was watching. With a `url` -- the playlist
+ * it just left -- that one rendition goes at once; without one, everything for the file goes after the usual grace
+ * period. The grace is right for closing the player and wrong for a swap: a job inside it still counts as live, so the
+ * next size started over the box's cap (2026-11-04 14:53:55: cap 1, running 3) and starved for the rest of the episode.
+ */
 app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
   const { t, f } = req.params as any
+  const m = /\/hls(?:-a\/(\d+)|-x\/(\d+)|-q\/(\d+)\/(\d+))?\//.exec(String((req.body as any)?.url ?? ''))
+  if (m) {
+    const audio = Number(m[1] ?? m[2] ?? m[4] ?? 0)
+    const maxH = Number(m[3] ?? 0)
+    const encode = !!(m[2] || m[3])
+    if (dropHls(+t, +f, audio, false, encode, maxH)) return { ok: true, dropped: true }
+  }
   releaseHls(+t, +f)
   return { ok: true }
 })
@@ -1029,7 +1041,12 @@ app.post('/api/diag/client', auth, async (req) => {
     torrent: Number(b.torrentId) || null, file: Number.isInteger(b.fileIndex) ? b.fileIndex : null, at, bufferedAhead: Number(b.bufferedAhead) || 0,
     height: Number(b.height) || null, readyState: Number(b.readyState) || null, paused: !!b.paused,
     stalledForMs: Number(b.stalledForMs) || null, from: Number(b.from) || null, attempts: Number(b.attempts) || null, why: b.why == null ? null : String(b.why).slice(0, 20), code: b.code == null ? null : String(b.code).slice(0, 40), message: b.message == null ? null : String(b.message).slice(0, 300), user: req.user!.id,
-  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' || kind === 'recover' ? 'warn' : 'info')
+    // Which kind of source the player attached (copy, encode, file), what sound it carries, whether a pipeline had to be
+    // torn down first, and -- for 'drift' -- how far the picture is behind the sound. Without these, "the sound does not
+    // match the video" cannot be told from a plain stall in the log.
+    family: b.family == null ? null : String(b.family).slice(0, 12), audio: b.audio == null ? null : String(b.audio).slice(0, 24),
+    destroyed: b.destroyed == null ? null : !!b.destroyed, driftMs: Number.isFinite(Number(b.driftMs)) ? Number(b.driftMs) : null,
+  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' || kind === 'recover' || kind === 'drift' ? 'warn' : 'info')
   return { ok: true }
 })
 app.get('/api/admin/reports', admin, async () => ({
