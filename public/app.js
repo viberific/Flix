@@ -1293,9 +1293,7 @@ function playView(seriesId, season, label) {
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Quality" aria-haspopup="true" hidden></button></div>
-              <button class="p-btn sub" id="psubm" aria-label="Subtitles a quarter of a second earlier" hidden>−</button>
-              <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-pressed="false" hidden>CC</button><b class="p-subv" id="psubv" hidden aria-live="polite"></b></div>
-              <button class="p-btn sub" id="psubp" aria-label="Subtitles a quarter of a second later" hidden>+</button>
+              <div class="p-sub"><button class="p-btn sub" id="psubm" aria-label="Subtitles a quarter of a second earlier" hidden>−</button><div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-pressed="false" hidden>CC</button><b class="p-subv" id="psubv" hidden aria-live="polite"></b></div><button class="p-btn sub" id="psubp" aria-label="Subtitles a quarter of a second later" hidden>+</button></div>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div class="p-under"><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div></div>`
@@ -2671,7 +2669,9 @@ function playView(seriesId, season, label) {
       catch { /* the number stays on screen and the next press sends it again; nothing about playing depends on it */ }
       offBusy = false
       if (offAgain) { offAgain = false; return pushOff(s) }
-      if (alive) remountSub(s)
+      // The episode can change while that request is out: a track for the one that has gone must not be put back afterwards,
+      // or an online subtitle (every one of them is n = 'o') would be shown over the episode that replaced it.
+      if (alive && engSub() === s) remountSub(s)
     }
     function nudgeSub(delta) {
       const s = engSub()

@@ -390,8 +390,10 @@ html.tv .player #pfull { display: none; }
 .p-btn.cc.on { color: var(--accent); }
 /* The subtitle nudge: a slightly smaller round button either side of CC, and the same one as the transport buttons, so hover,
    the television's white focus state and the focus ring all come for free. It is only in the bar when the episode really has a
-   subtitle to move (public/app.js, wireNudge), so a video without one gains no focus stops and no width. */
-.p-btn.sub { width: 36px; height: 36px; font-size: 20px; line-height: 1; font-weight: 400; }
+   subtitle to move (public/app.js, wireNudge), so a video without one gains no focus stops and no width. The three are one
+   group so that a bar with no room left for them can move the whole group rather than squeeze one of them to a sliver. */
+.p-sub { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.p-btn.sub { width: 36px; height: 36px; font-size: 20px; line-height: 1; font-weight: 400; flex: 0 0 auto; }
 /* How far it has been nudged: over CC rather than beside it, so a number appearing and going again never moves the bar under a
    finger, and it fades in on its own instead of pushing anything. */
 .p-subv { position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); white-space: nowrap; pointer-events: none;
@@ -411,7 +413,12 @@ html.tv .player #pfull { display: none; }
 .player.paused::after { opacity: 1; }
 @media (max-width: 640px) {
   .p-btn { width: 38px; height: 38px; } .p-btn.big { width: 54px; height: 54px; }
-  .p-btn.sub { width: 32px; height: 32px; font-size: 18px; }
+  /* A phone's row has no room left for two more stops: the times and the transport buttons already fill it, and the grid
+     squeezes whatever is added there down to a sliver of its glyph. So on a narrow screen the group takes a line of its own,
+     centred just above the bar, where a thumb reaches it and nothing else moves. Same buttons, same numbers, same focus order. */
+  .p-sub { position: absolute; left: 0; right: 0; bottom: 100%; justify-content: center; padding: 6px 0 10px; pointer-events: none; }
+  .p-sub > * { pointer-events: auto; }
+  .p-btn.sub { width: 34px; height: 34px; font-size: 19px; }
   .p-row { gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) { .p-ctl, .player::after, .p-dot { transition: none; } .p-subv { animation: none; } }
