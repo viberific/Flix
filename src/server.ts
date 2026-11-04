@@ -19,8 +19,9 @@ import { recoverPace, setWatching, tick as paceTick } from './pace.ts'
 import { shiftVtt, startSync, syncApplies, syncRow } from './subsync.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
-import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, cleanHlsCache, directPlay, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
+import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
+import { startPrebuild } from './prebuild.ts'
 import { copyPictureFor, ensureHls, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
@@ -1004,8 +1005,8 @@ app.post('/api/diag/client', auth, async (req) => {
     // File 0 is the first file of a torrent, not a missing one; and what a client sends is cut short before it is kept.
     torrent: Number(b.torrentId) || null, file: Number.isInteger(b.fileIndex) ? b.fileIndex : null, at, bufferedAhead: Number(b.bufferedAhead) || 0,
     height: Number(b.height) || null, readyState: Number(b.readyState) || null, paused: !!b.paused,
-    stalledForMs: Number(b.stalledForMs) || null, code: b.code == null ? null : String(b.code).slice(0, 40), message: b.message == null ? null : String(b.message).slice(0, 300), user: req.user!.id,
-  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' ? 'warn' : 'info')
+    stalledForMs: Number(b.stalledForMs) || null, from: Number(b.from) || null, attempts: Number(b.attempts) || null, why: b.why == null ? null : String(b.why).slice(0, 20), code: b.code == null ? null : String(b.code).slice(0, 40), message: b.message == null ? null : String(b.message).slice(0, 300), user: req.user!.id,
+  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' || kind === 'recover' ? 'warn' : 'info')
   return { ok: true }
 })
 app.get('/api/admin/reports', admin, async () => ({
@@ -1208,7 +1209,10 @@ app.post('/api/admin/settings/qb/test', admin, async () => {
 })
 
 // ---- boot -------------------------------------------------------------------
-cleanHlsCache()
+// Not wiped on boot any more: a copy made ahead of time is worth keeping across a restart. It is trimmed to the cache cap
+// instead, oldest first, which is the same guard that runs while the app is up.
+evictHls(Math.round(config.hls.cacheMaxGb * 1e9))
+startPrebuild()
 startOfflineSweeper()
 startSpriteSweeper()
 startExtrasPlanner()

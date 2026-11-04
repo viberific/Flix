@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
-import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -186,9 +186,19 @@ interface Vod {
   rebuild?: () => Promise<void>
   retried?: boolean
 }
-interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number }
+interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number; low?: boolean }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
+
+/**
+ * ffmpeg at a lower priority than everything else, for the copies made ahead of time (prebuild.ts). A copy built while
+ * nobody is watching must never be the reason a play, a download or the app itself stutters: the decoder is limited with
+ * -threads 1 before -i (see ensureHls), and the whole process is niced if this box has nice.
+ */
+const NICE = existsSync('/bin/nice') || existsSync('/usr/bin/nice')
+const spawnFf = (args: string[], low?: boolean) => (low && NICE
+  ? spawn('nice', ['-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'inherit'] })
+  : spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] }))
 
 /**
  * One job (and folder) per file and chosen audio track, so switching language doesn't disturb anyone else watching.
@@ -271,6 +281,62 @@ export function stopJobsFor(torrentId: number) {
 }
 export function cleanHlsCache() { rmSync(hlsRoot(), { recursive: true, force: true }) }
 
+/** Every byte the copy cache is holding, per folder. */
+export function hlsCacheBytes(): { dir: string; bytes: number }[] {
+  if (!existsSync(hlsRoot())) return []
+  const out: { dir: string; bytes: number }[] = []
+  for (const d of readdirSync(hlsRoot())) {
+    let bytes = 0
+    try { for (const f of readdirSync(join(hlsRoot(), d))) bytes += statSync(join(hlsRoot(), d, f)).size } catch { /* being written right now */ }
+    out.push({ dir: d, bytes })
+  }
+  return out
+}
+
+/**
+ * Make room. The oldest folders nobody is watching go until the cache is back under `maxBytes`: a copy is well over 700 MB
+ * for a 1080p episode, so a few of them would fill the box. A folder in use -- the job the player is reading, or one a
+ * caller named in `keep` -- is never evicted, whatever the cap says: the guard must not take away what is on screen.
+ */
+export function evictHls(maxBytes: number, keep: string[] = []): { removed: string[]; freed: number; left: number } {
+  const now = Date.now()
+  const all = hlsCacheBytes()
+  let left = all.reduce((n, x) => n + x.bytes, 0)
+  const candidates = all.map((x) => {
+    const key = [...jobs.keys()].find((k) => jobs.get(k)!.dir === join(hlsRoot(), x.dir))
+    const j = key ? jobs.get(key) : undefined
+    // A folder with no job is left over from an earlier run: its own last write is the best idea of when it was made.
+    let touched = j?.touched ?? 0
+    if (!j) { try { touched = statSync(join(hlsRoot(), x.dir)).mtimeMs } catch { /* gone */ } }
+    return { ...x, key, touched, active: !!j && now - j.touched < ACTIVE_MS }
+  }).filter((x) => !x.active && !keep.includes(x.dir)).sort((a, b) => a.touched - b.touched)
+  const removed: string[] = []
+  let freed = 0
+  for (const x of candidates) {
+    if (left <= maxBytes) break
+    if (x.key) stopJob(x.key)
+    else rmSync(join(hlsRoot(), x.dir), { recursive: true, force: true })
+    left -= x.bytes; freed += x.bytes; removed.push(x.dir)
+  }
+  return { removed, freed, left }
+}
+
+/** Whether anything is being watched right now: a job touched within the last minute and a half has a player on it. */
+export function hlsBusy(): boolean {
+  const now = Date.now()
+  return [...jobs.values()].some((j) => now - j.touched < ACTIVE_MS)
+}
+
+/** A copy made ahead of time is kept until the disk guard wants the room, not closed for idleness after ten minutes. */
+export function keepHls(torrentId: number, fileIndex: number, ms: number, audio = 0, hdr = false, encode = false, maxH = 0) {
+  const key = jobKey(torrentId, fileIndex, audio, hdr, encode, maxH)
+  const j = jobs.get(key)
+  if (!j) return false
+  clearTimeout(j.idle)
+  j.idle = setTimeout(() => stopJob(key), ms).unref()
+  return true
+}
+
 let zscale: boolean | null = null
 /** HDR to SDR needs ffmpeg's zscale filter; checked once. Without it HDR is passed through (and looks washed out). */
 export async function canToneMap(): Promise<boolean> {
@@ -327,7 +393,7 @@ function startRun(j: Job, n: number) {
   let stopAt = n + 1
   while (stopAt < v.count && !v.done.has(stopAt)) stopAt++ // stop where the next piece already exists instead of encoding it again
   const started = Date.now()
-  const proc = spawn('ffmpeg', v.start(n, stopAt >= v.count ? Infinity : stopAt), { stdio: ['ignore', 'ignore', 'inherit'] })
+  const proc = spawnFf(v.start(n, stopAt >= v.count ? Infinity : stopAt), !!j.low)
   const run: Run = { proc, from: n, stopAt: stopAt >= v.count ? Infinity : stopAt, exited: false }
   proc.on('exit', () => {
     run.exited = true
@@ -345,6 +411,7 @@ function startRun(j: Job, n: number) {
  */
 export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false, encode = false, maxH = 0): Promise<string | null | undefined> {
   const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode, maxH))
+  if (j) j.touched = Date.now() // a player is on this job: the cap and the prebuild both read this
   const v = j?.vod
   if (!j || !v) return undefined
   const m = /^seg(\d{5})\.ts$/.exec(file)
@@ -496,13 +563,27 @@ export function copyPlanFor(kf: number[] | null, p: { duration?: number; startTi
  * `encode` asks for the converted cut even where the picture could be copied: the player cannot decode it (HEVC).
  * `maxHeight` asks for a smaller converted cut (720 or 480, see QUALITIES), with its bitrate capped, for a slow connection.
  */
-export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false, opts: { complete?: boolean; source?: string; encode?: boolean; maxHeight?: number } = {}): Promise<string> {
+export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, audio = 0, hdr = false, opts: { complete?: boolean; source?: string; encode?: boolean; maxHeight?: number; lowPriority?: boolean } = {}): Promise<string> {
   const maxH = hdr ? 0 : qualityOf(opts.maxHeight)
   const encodeAsked = (!!opts.encode || maxH > 0) && !hdr
   const key = jobKey(torrentId, fileIndex, audio, hdr, encodeAsked, maxH)
+  const dir = jobDir(torrentId, fileIndex, audio, hdr, encodeAsked, maxH)
   let j = jobs.get(key)
+  let mine = false
   if (!j) {
-    const dir = jobDir(torrentId, fileIndex, audio, hdr, encodeAsked, maxH)
+    // The key is claimed here, BEFORE anything is awaited, and the one request that claimed it is the one that builds it.
+    // The playlist and its first piece are asked for at the same moment, and while the job was only registered after the
+    // first awaits, both requests found no job and built one each: two ffprobe walks of the whole 682 MB file and two
+    // ffmpeg runs writing into one folder, each wiping it under the other (measured 2026-11-04 14:10-14:11). A second
+    // request for a job that is still being made now waits on the first instead of starting a second ffmpeg.
+    mine = true
+    j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), low: !!opts.lowPriority }
+    jobs.set(key, j)
+  }
+  if (mine) {
+    const job = j
+    clearTimeout(job.idle)
+    job.ready = (async () => {
     const tonemap = p.hdr && (await canToneMap())
     const copy = !hdr && !encodeAsked && copyIntoTs(p)
     const outH = Math.min(p.height ?? 720, 1080, maxH || 1080)
@@ -516,7 +597,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     const filters = tonemap ? [TONEMAP] : []
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
-    const input = ['-i', rawUrl(torrentId, fileIndex)]
+    const input = opts.lowPriority ? ['-threads', '1', '-i', rawUrl(torrentId, fileIndex)] : ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = [...AUDIO_LEVEL, '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
     // Decided once per file: the profile does not change while it plays. The GPU when the container has one (see pickEncoder).
@@ -551,8 +632,7 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
           ...(last - from > 1 ? ['-segment_times', b.slice(from + 1, last).map((_t, i) => copyPieceLen(b, from, from + 1 + i, gap).toFixed(3)).join(',')] : []),
           '-segment_list', join(dir, `list${from}.csv`), '-segment_list_type', 'csv', join(dir, 'seg%05d.ts')]
       }
-      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds: b, copy: true, start, run: null, done: new Set() } }
-      jobs.set(key, j)
+      Object.assign(j, { vod: { count, bounds: b, copy: true, start, run: null, done: new Set() } })
     } else if (!hdr && !copy && p.duration && p.duration > 0) {
       const count = Math.max(1, Math.ceil(p.duration / SEG))
       const bounds = Array.from({ length: count }, (_, n) => n * SEG).concat(p.duration)
@@ -572,9 +652,8 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
           diag('encode', `retrying on ${encRef.current.encoder} after a hardware encode failed`, { torrentId, fileIndex })
         }
         : undefined
-      j = { proc: null, dir, idle: setTimeout(() => {}, 0), torrentId, ready: Promise.resolve(), touched: Date.now(), vod: { count, bounds, start, run: null, done: new Set(), rebuild } }
+      Object.assign(j, { vod: { count, bounds, start, run: null, done: new Set(), rebuild } })
       enforceJobCap()
-      jobs.set(key, j)
     } else {
       const args = ['-hide_banner', '-loglevel', 'error', ...(enc?.inputArgs ?? []), ...input, ...maps,
         ...(hdr
@@ -589,21 +668,25 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
             '-hls_segment_filename', join(dir, 'seg%05d.m4s'), join(dir, 'index.m3u8')]
           : ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
             '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')])]
-      const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] })
-      const ready = (async () => {
-        for (let i = 0; i < 600; i++) {
-          if (existsSync(join(dir, hdr ? 'seg00000.m4s' : 'seg00000.ts')) && existsSync(join(dir, 'index.m3u8'))) return
-          if (proc.exitCode !== null && proc.exitCode !== 0) throw new Error('ffmpeg failed')
-          await new Promise((r) => setTimeout(r, 250))
-        }
-        throw new Error('Timed out starting transcode')
-      })()
-      ready.catch(() => stopJob(key))
-      j = { proc, dir, idle: setTimeout(() => {}, 0), torrentId, ready, touched: Date.now() }
+      const proc = spawnFf(args, !!opts.lowPriority)
+      j.proc = proc
       if (!copy) enforceJobCap()
-      jobs.set(key, j)
       proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
+      // This branch has no complete playlist to hand back: the caller's job is done once the first piece and the playlist
+      // are on disk, which is what the build itself waits for.
+      for (let i = 0; i < 600; i++) {
+        if (existsSync(join(dir, hdr ? 'seg00000.m4s' : 'seg00000.ts')) && existsSync(join(dir, 'index.m3u8'))) return
+        if (proc.exitCode !== null && proc.exitCode !== 0) throw new Error('ffmpeg failed')
+        await new Promise((r) => setTimeout(r, 250))
+      }
+      throw new Error('Timed out starting transcode')
     }
+    })().catch((e) => {
+      // A build that failed leaves no claimed key behind: the next ask builds it again rather than waiting on a job that
+      // will never arrive.
+      if (jobs.get(key) === job) stopJob(key)
+      throw e
+    })
   }
   clearTimeout(j.idle)
   j.idle = setTimeout(() => stopJob(key), 10 * 60_000).unref() // a timer, not a reason to keep the process alive
@@ -627,6 +710,10 @@ export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = 
   const key = jobKey(torrentId, fileIndex, audio, hdr, encode, maxH)
   const j = jobs.get(key)
   if (!j) return false
+  // Being watched, not merely existing: touched is what enforceJobCap reads before closing a job to make room, and what
+  // the prebuild checks before it starts reading the same disk. It was only ever set when the job was created, so a job
+  // playing for half an hour looked idle to both.
+  j.touched = Date.now()
   clearTimeout(j.idle)
   j.idle = setTimeout(() => stopJob(key), 10 * 60_000).unref()
   return true

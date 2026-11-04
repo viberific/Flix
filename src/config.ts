@@ -124,6 +124,26 @@ export const config = {
     maxJobs: num('TRANSCODE_MAX_JOBS', 1),
   },
   /**
+   * The copy made ahead of time (prebuild.ts). An episode whose sound the browser cannot decode is served as a playlist with
+   * the picture copied and the sound converted, and that copy is built while the episode is first opened -- 46 seconds for
+   * a 1080p episode on 2026-11-04, with the viewer watching a spinner and the box out of memory. Built when the download
+   * finishes instead, pressing play finds the pieces already there.
+   *
+   * It costs disk: well over 700 MB per 1080p episode. So the cache has a cap (gb), only this many are built at once, and
+   * the oldest ones nobody is watching are evicted to stay under it. HLS_PREBUILD=off turns it off altogether.
+   */
+  hls: {
+    prebuild: (env.HLS_PREBUILD ?? 'on') !== 'off',
+    /** Total size the copy cache may reach before the oldest unused folders are evicted. */
+    cacheMaxGb: num('HLS_CACHE_MAX_GB', 8),
+    /** Copies built at once. One: a second full read of a file halves the speed of both. */
+    buildMax: Math.max(1, num('HLS_BUILD_MAX', 1)),
+    /** Stop building ahead when the box has less free memory than this (MB): it must never be the reason a play stalls. */
+    minFreeMb: num('HLS_PREBUILD_MIN_FREE_MB', 400),
+    /** How long a finished copy is kept for a play that has not happened yet. */
+    keepHours: num('HLS_PREBUILD_KEEP_HOURS', 12),
+  },
+  /**
    * Downloads slow down while something plays (see pace.ts). capKbps is kilobytes a second, not kilobits, despite the name:
    * 2500 is about 20 Mbps, enough to keep downloading and small enough to leave the drives to the episode being watched.
    */

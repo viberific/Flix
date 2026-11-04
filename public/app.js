@@ -1642,6 +1642,9 @@ function playView(seriesId, season, label) {
       t = Math.max(0, Math.min(totalT() || 1e9, t))
       userSeeked = true
       resumeOwed = 0 // the viewer chose where to be: no resume point is owed after this
+      // The viewer's own move is the position from now on, including backwards: a recovery must not haul them forward again.
+      held = t
+      if (savedPos > t) savedPos = t
       if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) { const was = !v.paused; v.currentTime = t; guardSeek(t, was) }
     }
     /**
@@ -1890,7 +1893,8 @@ function playView(seriesId, season, label) {
       if (!alive || !v || !info || castingOnly) return
       if (!v.error && !(v.currentSrc && v.readyState === 0 && !v.paused)) return
       fileRetry = false
-      loadInfo(info.audioIndex ?? 0, v.currentTime || 0).catch((e) => fail(e.message))
+      noteRecover('revive', heldPos(), v.currentTime)
+      loadInfo(info.audioIndex ?? 0, heldPos()).catch((e) => fail(e.message))
     }
     // Named, so leaving the player really removes it: the old arrow function could never be taken off again, and every
     // episode ever opened left one more listener behind.
@@ -2021,6 +2025,8 @@ function playView(seriesId, season, label) {
       try {
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
         if (!alive) return
+        // A different episode: the position kept for the last one says nothing about this one.
+        held = 0
         // What the server holds for this file, read fresh as the episode is opened: the resume condition that outranks
         // whatever startAt the caller passed (see resumeTarget in attach).
         savedPos = Number(play.position) > 5 ? Number(play.position) : 0
@@ -2081,9 +2087,8 @@ function playView(seriesId, season, label) {
        * frame, a recovery whose swap zeroed the clock). Behind the live clock it is ignored, not applied.
        */
       const resumeTarget = () => {
-        if (v && v.currentTime > 1) return v.currentTime
-        if (savedPos > 5) return savedPos
-        return startAt > 5 ? startAt : 0
+        const at = resumePoint({ clock: v && v.currentTime, held, saved: savedPos, asked: startAt })
+        return at > 1 ? at : 0
       }
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
@@ -2145,7 +2150,7 @@ function playView(seriesId, season, label) {
           // The first seek has landed: the element's own clock now says where the show is, so nothing may hand the old
           // resume point to a stream that opens again.
           if (resumeOwed && v.currentTime >= resumeOwed - 5) resumeOwed = 0
-          if (v.currentTime > 1) wasAt = v.currentTime
+          if (v.currentTime > 1 && v.currentTime > held) held = v.currentTime
           if (moving && !castingOnly) firstFrame()
           // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
           // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
@@ -2194,6 +2199,7 @@ function playView(seriesId, season, label) {
             // Read before the element is emptied: load() puts its clock back to zero. With nothing played yet this is
             // the saved position, not 0:00 -- asking for 0:00 here dropped the resume point and then wrote it back.
             const land = resumeTarget()
+            noteRecover('error', land, v.currentTime)
             v.removeAttribute('src')
             ignoreError = true
             try { v.load() } catch { /* nothing to unload */ }
@@ -2217,12 +2223,11 @@ function playView(seriesId, season, label) {
       ignoreError = false // a source is about to be set: from here on an error is a real one
       resumeAt = resumeTarget()
       resumeOwed = resumeAt
-      wasAt = 0 // a different source: what the last one was playing to says nothing about this one
       /**
        * Where this source has to be: the resume point while the first seek is still owed, then the element's own clock,
        * and -- when a swap has just taken that clock to zero -- the last position it showed.
        */
-      const wantAt = () => resumeOwed || (v && v.currentTime > 1 ? v.currentTime : wasAt)
+      const wantAt = () => resumeOwed || (v && v.currentTime > 1 ? Math.max(v.currentTime, held) : heldPos())
       if (viaHls) {
         // startPosition: open straight at the resume point instead of loading the first piece and jumping -- but only while
         // that point is still owed. It does not expire inside hls.js: StreamController.onMediaAttached calls
@@ -2269,6 +2274,30 @@ function playView(seriesId, season, label) {
         const stop = () => evs.forEach((ev) => el.removeEventListener(ev, jump))
         evs.forEach((ev) => el.addEventListener(ev, jump))
         if (!viaHls) jump() // an hls.js playlist opens at startPosition itself; the listeners above only catch a miss
+        /**
+         * Nothing may leave the picture behind where this play already was. A swap takes the element's clock to zero, and
+         * hls.js can open a fresh playlist at the start however it was told to start; either used to put an episode back
+         * at 0:00 under the viewer. For the first twenty seconds of a rebuilt source, a clock more than three seconds
+         * behind where the rebuild was aimed is put back -- unless the viewer has moved it themselves -- and the log keeps
+         * the fact that it happened, which is what was missing on 2026-11-04.
+         */
+        if (openAt > 5) {
+          const el = v
+          const from = openAt
+          const endsAt = Date.now() + 20_000
+          let tries = 0
+          const noRewind = () => {
+            if (!alive || v !== el || userSeeked) return
+            if (Date.now() > endsAt || tries >= 3) return el.removeEventListener('timeupdate', noRewind)
+            if (el.readyState >= 2 && el.currentTime < from - 3) {
+              const back = el.currentTime
+              tries++
+              try { el.currentTime = from } catch { /* not seekable yet */ }
+              if (tries === 1) noteRecover('rewound', from, back)
+            }
+          }
+          el.addEventListener('timeupdate', noRewind)
+        }
       }
       v.play?.().catch(() => {})
       // A finished file that has not started playing half a minute after it was handed over is stuck, not slow: nothing
@@ -2293,9 +2322,29 @@ function playView(seriesId, season, label) {
     // The resume point this source has not reached yet, and 0 from the moment the first seek has actually landed. It is
     // what attach() hands hls.js as startPosition, and the only thing that may do so: see the note there.
     let resumeOwed = 0
-    // The last position the clock actually showed. A MediaSource swap takes the element back to zero, and a recovery that
-    // arrives after it has no live clock to read -- this is what the picture was last at, and it is where it comes back to.
-    let wasAt = 0
+    /**
+     * The furthest this play has been, kept out of reach of the element, and never moved backwards by a recovery.
+     *
+     * A source that has to be built again -- a media error, a swap, a quality change, the app coming back to the front --
+     * takes the element's clock to zero for a moment, sometimes before the code rebuilding it can read that clock at all.
+     * Reading the clock back at that point returned 0, the new source opened at the start, and the episode played from
+     * the beginning again (measured 2026-11-04: a stall at 0:28, then the same file from 0:00). Every path that puts the
+     * picture back asks heldPos() instead of the clock, so no rebuild can be behind where the viewer already was.
+     * Reset only when a different episode is opened.
+     */
+    let held = 0
+    const heldPos = () => {
+      const at = resumePoint({ clock: v && v.currentTime, held, saved: savedPos })
+      return at > 1 ? at : 0
+    }
+    /** A rebuild that put the picture back somewhere else, recorded: restarts used to leave no trace in the log at all. */
+    let recoveries = 0
+    const noteRecover = (why, at, from) => {
+      recoveries++
+      api('/api/diag/client', { kind: 'recover', at: Math.round(at * 10) / 10, from: Math.round((from || 0) * 10) / 10, why: String(why).slice(0, 40),
+        height: v?.videoHeight || null, readyState: v?.readyState ?? null, paused: !!v?.paused, attempts: recoveries,
+        torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null }).catch(() => {})
+    }
     // The freshest position the server is known to hold for this file: what /api/watch answered when the episode was
     // opened, and then every place written back since. It outranks a startAt captured earlier, because a show that has
     // been played before resumes where it was left (see resumeTarget in attach).
@@ -2501,7 +2550,7 @@ function playView(seriesId, season, label) {
           const n = +b.dataset.n; closePlayerMenu(m, btn)
           if (n === info.audioIndex) return
           store.set('audio', info.audio[n].lang)
-          const at = v.currentTime
+          const at = heldPos()
           try { await loadInfo(n, at) } catch (err) { fail(err.message) }
         })
       }
@@ -2539,7 +2588,10 @@ function playView(seriesId, season, label) {
     let qQuietUntil = 0
     async function switchQuality() {
       qQuietUntil = Date.now() + 15_000
-      const at = v?.currentTime || 0
+      // Never the clock alone: a step-down happens because the picture stalled, and a stalled element can read 0 while the
+      // show is half an hour in. The held position is what the viewer was actually watching.
+      const at = heldPos()
+      noteRecover('quality', at, v?.currentTime || 0)
       try { await loadInfo(info.audioIndex ?? 0, at) } catch (err) { fail(err.message) }
     }
     /**
@@ -2548,7 +2600,11 @@ function playView(seriesId, season, label) {
      * size down is asked for. Never stepped back up mid-episode: a size that flips back and forth stalls more than either.
      */
     function watchQuality(v) {
-      let stalls = [], longT = null
+      // Only a wait a person would notice counts toward stepping the picture down. Sub-second gaps are what a copied
+      // stream does while ffmpeg is a piece behind, and three of those in a row used to force a smaller cut -- which built
+      // a whole second encode on a box already short of memory, and made the stalls worse rather than better.
+      const MIN_STALL_MS = 3000
+      let stalls = [], longT = null, since = 0
       const stepDown = () => {
         clearTimeout(longT); stalls = []
         if (qSetting() !== 'auto' || castingOnly || !alive) return
@@ -2558,16 +2614,27 @@ function playView(seriesId, season, label) {
         flashNote(`Slow connection: switched to ${next}p`)
         switchQuality()
       }
+      // A wait is measured from the moment the picture ran dry to the moment it had data again; anything shorter than
+      // MIN_STALL_MS is smoothed through, with no change of source.
+      const ended = () => {
+        const d = since ? Date.now() - since : 0
+        since = 0
+        clearTimeout(longT)
+        if (d < MIN_STALL_MS) return
+        const now = Date.now()
+        stalls = stalls.filter((t) => now - t < 90_000).concat(now)
+        if (stalls.length >= 3) stepDown()
+      }
       v.addEventListener('seeking', () => { qQuietUntil = Math.max(qQuietUntil, Date.now() + 4000) })
       v.addEventListener('waiting', () => {
         if (!started || v.paused || Date.now() < qQuietUntil || qSetting() !== 'auto') return
-        const now = Date.now()
-        stalls = stalls.filter((t) => now - t < 90_000).concat(now)
-        if (stalls.length >= 3) return stepDown()
+        if (!since) since = Date.now()
         clearTimeout(longT)
         longT = setTimeout(() => { if (v.readyState < 3 && !v.paused && Date.now() >= qQuietUntil) stepDown() }, 10_000)
       })
-      for (const ev of ['playing', 'emptied']) v.addEventListener(ev, () => clearTimeout(longT))
+      // 'canplay' as well as 'playing': a wait that ends in a picture that is ready but not yet moving is over.
+      for (const ev of ['playing', 'canplay']) v.addEventListener(ev, ended)
+      v.addEventListener('emptied', () => { since = 0; clearTimeout(longT) })
     }
 
     /* captions: CC is a switch, not a list. On means the English subtitles, off means none. */
@@ -3720,6 +3787,31 @@ function liftCues(el) {
     for (const c of el.track?.cues ?? []) if (c.line === 'auto') { c.snapToLines = true; c.line = -2 }
   })
 }
+
+/**
+ * Where a source that has to be built again must open, in one place and never behind where the play already was.
+ *
+ * `clock` is the element's own currentTime, and it is the least trustworthy number here: a MediaSource swap, a decoder that
+ * dropped the media and a recovery that arrives a moment too late all leave it at 0 while the show is twenty minutes in.
+ * So the position this play has actually reached (`held`) and the place the server holds for the file (`saved`) are kept
+ * beside it, and the answer is the furthest of them -- a recovery can go forward to where the viewer is, never back to
+ * where the file starts. `asked` is what the caller passed and only counts while nothing else is known: a retry that says
+ * 0:00 because no frame has played yet must not reopen at the start.
+ *
+ * Measured 2026-11-04 14:11: an episode at 0:28 had its element re-initialised and came back at 0:00.
+ */
+/* resume-hold */
+function resumePoint(p) {
+  const clock = Number(p.clock) > 1 ? Number(p.clock) : 0
+  const held = Number(p.held) > 1 ? Number(p.held) : 0
+  const saved = Number(p.saved) > 5 ? Number(p.saved) : 0
+  const asked = Number(p.asked) > 5 ? Number(p.asked) : 0
+  const live = Math.max(clock, held)
+  if (live > 1) return live
+  const kept = Math.max(held, saved)
+  return kept > 1 ? kept : asked
+}
+/* end-resume-hold */
 
 /**
  * Report what the player felt, so a hitch has a time on both ends: the browser knows it ran dry and when, the server knows
