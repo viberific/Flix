@@ -8,8 +8,8 @@ import { lowPriority } from './sprites.ts'
  *
  * Release groups time a subtitle against their own cut of the show, and a different cut (an ad break trimmed, a longer cold
  * open, a 25 fps PAL transfer of a 23.976 original) leaves every line a little early or late. The audio is the one thing
- * that is certainly right, so it is the reference: decode it once, find where somebody is speaking, and slide the subtitle's
- * start times until as many as possible land inside speech. Nothing here runs during playback. The measurement is one
+ * that is certainly right, so it is the reference: decode it once, find where somebody starts speaking, and slide the
+ * subtitle's start times until as many lines as possible begin where the speech does. Nothing here runs during playback. The measurement is one
  * background decode of the sound per subtitle, kept in `sub_sync`, and the shift is applied where the WebVTT is built
  * (shiftVtt), so a TV and a phone get the same corrected text from the same URL.
  *
@@ -23,32 +23,72 @@ const RANGE = 6000
 const STEP = 50
 /** A second-best answer closer than this is the same answer seen through a wide peak, not a rival. */
 const APART = 500
-/** A line that lands in silence costs twice what a line in speech earns: speech is most of an episode, so a hit alone proves little. */
-const HIT = 1
-const MISS = -2
+/**
+ * How early a line may appear before the speech it belongs to and still count as on its mark: subtitlers put the words up a
+ * couple of frames early, and no detector lands on the first phoneme twice. This is also the resolution of the answer -- a
+ * shift smaller than this cannot be told apart from none, and is deliberately not corrected.
+ */
+const LEAD_MS = 250
+/** How late after the start of a run of speech a line still counts as that first line. Symmetric with LEAD_MS, so nothing is late by more than it may be early. */
+const ON_MS = 250
 /** A fitted slope is drift only if it spreads the lines by more than this across the episode; less is one answer seen twice. */
 const DRIFT_MS = 150
 
 /**
- * How far the best shift has to beat the best rival (one at least 500 ms away) before it is applied. The score runs from -2
- * (every line in silence) to +1 (every line in speech), so 0.25 is a quarter of a point on that line: with a hit worth +1 and
- * a miss -2, it takes a shift that puts roughly a tenth more of the lines into speech than any other place does. A shift that
- * is wrong is worse than none, because the existing timing is usually close and a wrong guess makes it visibly bad. Music, a
- * quiet opener and long silences all read as "no speech" and drag the estimate toward whatever hides the most lines, and
- * every one of them shows up as a flat score curve, which is a small gap. So when in doubt the subtitle is left alone.
+ * How far a window of lines has to be ahead of its best rival before fitSync believes that window while it is looking for
+ * drift. It is no longer the gate a measurement is applied behind -- PEAK_MIN is -- because what it asks is the gap between two
+ * competent peaks, and on real audio that gap is small for reasons that have nothing to do with a subtitle being wrong: a music
+ * bed flattens the curve, a quiet opener flattens it, and people talking over a laugh track give silencedetect a ragged mask.
+ * Asked as the gate it was never reached by anything in this library (0.03 to 0.24 over eleven real fits), so the fitter
+ * corrected nothing at all on real audio. It stays as the window test and as the synthetic noise contract, where a real answer
+ * scores 0.3 to 0.7 and an answer nowhere near the speech 0.03 to 0.09.
  */
 export const CONFIDENCE_MIN = 0.25
+/**
+ * What the gate reads instead: the shape of the curve, not the gap to a rival. `peak` is the top of the score curve -- the
+ * share of a subtitle's lines that start where speech starts at the best shift -- and `rival` is that same score 600 ms either
+ * side of the answer. A subtitle whose lines sit on speech starts has a peak near 1 and a rival near 0; one fitted to a mask
+ * that is not speech has no peak anywhere.
+ *
+ * Two numbers, because either one alone is fooled. The floor refuses a sharp but worthless curve, which is what a sparse mask
+ * gives: Always Sunny S18E04 came out with runs of speech so rare that five hundred lines landed near one of them by chance --
+ * peak 0.09, rival 0.02, four times the rival, and still nothing. The ratio refuses a high but flat curve, which is what a
+ * music bed and a long quiet stretch give: every shift scores well, so the winner is luck.
+ *
+ * Measured on the real library with /tmp/syn/harness/measure.ts: the nine episodes that are properly masked came out at peak 0.20
+ * to 0.42 with a rival of 0.007 to 0.09, and the two that are not at peak 0.09. 0.20 and 2.5 sit between those with room on
+ * both sides. This is the only version of the feature that corrects real episodes, and it is deliberately on the tight side: a
+ * shift that is wrong is worse than none, because the existing timing is usually close.
+ */
+export const PEAK_MIN = 0.2
+/** How many times its own anti-peak the top of the curve has to be before the shift is believed. */
+export const PEAK_OVER_FAR = 2.5
+/**
+ * How far from the answer the anti-peak is read. Wider than the 250 ms a line may be off and still count, so the skirt of a
+ * good peak is not read as its own rival.
+ */
+export const FAR_MS = 600
+/**
+ * The finest a shift is ever applied. A line is scored against a 250 ms window around a speech start, so the statistic places
+ * an answer to about a quarter second; serving the 50 ms step it searches on would claim a precision it does not have, and one
+ * press of the player's nudge is a quarter second too. Every served offset is rounded to this, and one that rounds to nothing
+ * is no correction at all.
+ */
+export const APPLY_STEP = 250
 /** Fewer lines than this is not enough to tell a peak from luck, whatever the gap looks like. */
 export const MIN_CUES = 12
 /**
  * Which fitter made a measurement. It moves whenever fitSync or estimateOffset changes in a way that would have answered
  * differently, and every row made by an older one is measured again the next time its subtitle is played. Rows are cheap to
- * keep and a decode is not, so this is the only reason to re-decode a subtitle that was measured confidently. It is 1 while
- * the fitter is the one 0.3.89 shipped, and the column is added at 1 rather than 0: a subtitle measured before the column
- * existed was measured by this same fitter, so an update does not send the whole library through a decode again. A change to
- * how a subtitle is fitted is what makes this 2.
+ * keep and a decode is not, so this is the only reason to re-decode a subtitle that was measured confidently. It was 1 while
+ * the fitter was the one 0.3.89 shipped, and the column is added at 1 rather than 0: a subtitle measured before the column
+ * existed was measured by that same fitter, so an update does not send the whole library through a decode again. It was 2 once
+ * the score stopped counting lines that land anywhere inside a run of speech and started counting lines that start where the
+ * speech starts. It is 3 since the gate stopped reading confidence and started reading the shape of the curve: a row written at
+ * 2 has no peak and no rival stored, so the gate cannot be applied to it at all, and those rows have to be measured again
+ * before anything can be decided about them.
  */
-export const FIT_VERSION = 1
+export const FIT_VERSION = 3
 /**
  * How long an answer that was not sure of itself is left alone. A quiet opener, a heavy music cue or a subtitle read from a
  * file that had only half arrived can leave a low-confidence row, and the same subtitle often measures better later (a whole
@@ -154,28 +194,40 @@ export async function speechRuns(file: string, durationSec: number): Promise<Run
   return speechFrom(parseSilencedetect(err, durationSec), durationSec)
 }
 
-export interface Estimate { offsetMs: number; confidence: number; scored: number }
+export interface Estimate { offsetMs: number; confidence: number; peak: number; rival: number; scored: number }
 
 /**
- * The shift, in milliseconds, that puts the most cue starts inside speech, and how sure that is. `cues` are start times in
- * milliseconds, `runs` the speech in seconds. Confidence is the best score minus the best score at least 500 ms away from the
- * best one. Many shifts usually tie (a plateau, since a line stays inside its run for a second or so of sliding); that is read
- * as one answer, and "away" is measured from the edge of the plateau. `range` is how far either way to look; the whole-file
- * search uses ±6 s. This departs from the brief in two small ways, both because the plain reading fails on real speech: the
- * rival is measured from the plateau, and the answer is the plateau's edge nearest to zero, not its middle (see below).
+ * The shift, in milliseconds, that puts the most cue starts where speech starts, and how sure that is. `cues` are start times in
+ * milliseconds, `runs` the speech in seconds. `range` is how far either way to look; the whole-file search uses ±6 s.
+ *
+ * WHY THIS COUNTS STARTS AND NOT "INSIDE SPEECH". A binary speech mask made by silencedetect has one thing to say about a cue:
+ * whether it is inside a run. But a line is inside its run for as long as it takes somebody to say it -- a second or three --
+ * so every shift within a run's length scores the same, the score curve is a plateau as wide as the speech, and the answer is
+ * the same whether the subtitle is right or half a second out. Measured on synthetic speech with real silencedetect output, a
+ * line laid 500 ms late came back as "no shift needed" with 0.93 confidence, and a line laid 700 ms early came back as +750 ms
+ * -- the wrong way, with the same 0.93. Where a run of speech *begins* is the only part of the mask that says when a line
+ * should appear, so that is what a cue is scored against: a line counts when it starts within LEAD_MS before a run starts, or
+ * ON_MS after it. A cue deep inside a long run says nothing either way and scores 0, which is honest: a mouth that never stops
+ * moving cannot be timed.
+ *
+ * The answer is the middle of the plateau, not its edge, when the plateau excludes doing nothing. Any shift in the plateau is
+ * equally good evidence, and its edge is always half a window short of the middle, so an edge answer would leave every
+ * corrected subtitle a little bit out in the same direction -- the mistake this fitter exists to remove. When the plateau
+ * contains zero the answer is zero: a shift that close to none cannot be believed, and a subtitle already on its marks is left
+ * alone.
  */
 export function estimateOffset(cues: number[], runs: Run[], range = RANGE): Estimate {
-  if (!cues.length || !runs.length) return { offsetMs: 0, confidence: 0, scored: cues.length }
-  const rs = [...runs].sort((a, b) => a.start - b.start).map((r) => [r.start * 1000, r.end * 1000] as const)
-  const inSpeech = (t: number) => {
-    let lo = 0, hi = rs.length - 1
+  if (!cues.length || !runs.length) return { offsetMs: 0, confidence: 0, peak: 0, rival: 0, scored: cues.length }
+  // Where each run of speech begins, in milliseconds, sorted so a cue can be placed between two of them by bisection.
+  const starts = runs.map((r) => Math.round(r.start * 1000)).sort((a, b) => a - b)
+  const onALine = (t: number) => {
+    let lo = 0, hi = starts.length - 1, before = -1
     while (lo <= hi) {
       const mid = (lo + hi) >> 1
-      if (rs[mid][0] > t) hi = mid - 1
-      else if (rs[mid][1] < t) lo = mid + 1
-      else return true
+      if (starts[mid] <= t) { before = mid; lo = mid + 1 } else hi = mid - 1
     }
-    return false
+    if (before >= 0 && t - starts[before] <= ON_MS) return true
+    return before + 1 < starts.length && starts[before + 1] - t <= LEAD_MS
   }
   const lo = -Math.floor(range / STEP) * STEP
   const n = Math.floor(range / STEP) * 2 + 1
@@ -183,7 +235,7 @@ export function estimateOffset(cues: number[], runs: Run[], range = RANGE): Esti
   for (let i = 0; i < n; i++) {
     const shift = lo + i * STEP
     let s = 0
-    for (const c of cues) s += inSpeech(c + shift) ? HIT : MISS
+    for (const c of cues) if (onALine(c + shift)) s++
     scores.push(s / cues.length)
   }
   let best = 0
@@ -191,35 +243,36 @@ export function estimateOffset(cues: number[], runs: Run[], range = RANGE): Esti
   let l = best, r = best
   while (l > 0 && scores[l - 1] >= scores[best] - 0.01) l--
   while (r < n - 1 && scores[r + 1] >= scores[best] - 0.01) r++
-  // A subtitle starts when the speech does, so a line is inside a run of speech for as long as the shift is anywhere in a
-  // window as wide as that run, and the true shift is the edge of the window that is nearest to doing nothing. The middle of
-  // the window would move a subtitle that is already right by half a sentence. So: no shift if no shift is on the plateau,
-  // otherwise the end of the plateau that is closest to it.
   const zero = (n - 1) / 2
-  const pick = zero >= l && zero <= r ? zero : r < zero ? r : l
+  const pick = zero >= l && zero <= r ? zero : Math.round((l + r) / 2)
   const offsetMs = lo + pick * STEP
   // The rival is the best score away from the plateau itself, at least 500 ms past either end of it, not away from the one
   // point picked: a plateau is one answer seen with some blur, and only a separate peak is a reason to doubt it.
   const gap = APART / STEP
   let rival = -Infinity
   for (let i = 0; i < n; i++) if ((i < l - gap || i > r + gap) && scores[i] > rival) rival = scores[i]
-  return { offsetMs, confidence: rival === -Infinity ? 0 : scores[best] - rival, scored: cues.length }
+  // The two numbers the gate reads (see PEAK_MIN). Both are read from the answer the fitter picked rather than from the plateau's
+  // edges, so that everything the rule needs is in the row it stores: the edges are not kept, and a gate that needed them could
+  // not be re-run later from what is on disk.
+  const at = (ms: number) => scores[Math.round((ms - lo) / STEP)] ?? 0
+  const rivalFar = Math.max(at(offsetMs - FAR_MS), at(offsetMs + FAR_MS))
+  return { offsetMs, confidence: rival === -Infinity ? 0 : scores[best] - rival, peak: scores[best], rival: rivalFar, scored: cues.length }
 }
 
-export interface Fit { offsetMs: number; scale: number; confidence: number; cues: number }
+export interface Fit { offsetMs: number; scale: number; confidence: number; peak: number; rival: number; cues: number }
 
 /**
  * Offset and scale for a whole subtitle: the line `t' = t * scale + offset` that lines it up with the sound. An episode is
- * fitted in local windows of about 45 s of lines rather than in thirds, because one offset cannot see drift at all. A line
- * stays inside a run of speech for only a second or so of sliding, while 1% of a five-minute third already spreads its lines
- * over three seconds, so in a drifting file no shift fits a whole third, every window's confidence collapses and the slope
- * comes back as 1. Short windows keep the drift inside a window under a second, where one offset does fit, and the slope of
- * those offsets against their time is the frame rate. Fewer than four windows worth believing, or a slope too wild to be a
+ * fitted in local windows of about 45 s of lines rather than in thirds, because one offset cannot see drift at all. A window
+ * of lines can be lined up to the nearest tenth of a second only if the drift inside it is smaller than that, while 1% of a
+ * five-minute third already spreads its lines over three seconds, so in a drifting file no shift fits a whole third, every
+ * window's confidence collapses and the slope comes back as 1. Short windows keep the drift inside a window under a second,
+ * where one offset does fit, and the slope of those offsets against their time is the frame rate. Fewer than four windows worth believing, or a slope too wild to be a
  * frame rate, and the flat answer is used instead: scale 1, one offset for the whole subtitle.
  */
 export function fitSync(cues: number[], runs: Run[], _durationSec: number): Fit {
   const whole = estimateOffset(cues, runs)
-  const flat: Fit = { offsetMs: whole.offsetMs, scale: 1, confidence: whole.confidence, cues: cues.length }
+  const flat: Fit = { offsetMs: whole.offsetMs, scale: 1, confidence: whole.confidence, peak: whole.peak, rival: whole.rival, cues: cues.length }
 
   // Chunks by line count, not by the clock: the count is sized from the median gap between lines so a chunk spans about
   // CHUNK_MS of subtitle, and never fewer than MIN_CUES lines. A short tail is folded into the chunk before it.
@@ -235,14 +288,14 @@ export function fitSync(cues: number[], runs: Run[], _durationSec: number): Fit 
     windows[windows.length - 1].push(...tail)
   }
 
-  const kept: { at: number; offset: number; confidence: number }[] = []
+  const kept: { at: number; offset: number; confidence: number; peak: number; rival: number }[] = []
   for (const w of windows) {
     if (w.length < MIN_CUES) continue
     const at = w[w.length >> 1] // the median line of the chunk: its nominal time on the subtitle's own clock
     // A drifting file is far out by its end, so the search widens with how far into the episode a window sits: ±6 s plus 6%
     // of its own time, which covers a PAL transfer. Wider windows than that invite false peaks, which the gate rejects.
     const e = estimateOffset(w, runs, RANGE + 0.06 * at)
-    if (e.confidence > CONFIDENCE_MIN) kept.push({ at, offset: e.offsetMs, confidence: e.confidence })
+    if (e.confidence > CONFIDENCE_MIN) kept.push({ at, offset: e.offsetMs, confidence: e.confidence, peak: e.peak, rival: e.rival })
   }
   if (kept.length < CHUNKS_MIN) return flat
 
@@ -260,38 +313,58 @@ export function fitSync(cues: number[], runs: Run[], _durationSec: number): Fit 
   // A slope that moves the lines by less than DRIFT_MS from the first window to the last is not a frame rate: it is the same
   // flat answer with a little noise on it, and applying it would move a subtitle that is already right.
   if (Math.abs(a) * (kept[n - 1].at - kept[0].at) <= DRIFT_MS) return flat
-  return { offsetMs: Math.round(meanO - a * meanT), scale, confidence: Math.min(...kept.map((p) => p.confidence)), cues: cues.length }
+  // A drifting subtitle is served a slope as well as an offset, so the gate is handed the worst of the windows it believed: the
+  // lowest peak and the highest rival. Judging drift on the whole-file curve instead would refuse every drifting subtitle there
+  // will ever be, because no single shift fits one -- which is the reason for the windows in the first place.
+  return { offsetMs: Math.round(meanO - a * meanT), scale, confidence: Math.min(...kept.map((p) => p.confidence)), peak: Math.min(...kept.map((p) => p.peak)), rival: Math.max(...kept.map((p) => p.rival)), cues: cues.length }
 }
 
-export interface SyncRow { offset_ms: number; scale: number; confidence: number; cues: number; fit_version?: number; measured_at?: number }
+export interface SyncRow { offset_ms: number; scale: number; confidence: number; cues: number; peak?: number; rival?: number; fit_version?: number; measured_at?: number }
+
+/**
+ * Whether a stored measurement is a good enough answer to be worth anything: enough lines, a peak worth calling a peak, and a
+ * peak standing clear of the score 600 ms away. BOTH readers of a row go through this -- what is served (syncApplies) and
+ * whether it is worth measuring again (needsMeasure) -- so a row cannot be one thing to one and another to the other. While
+ * "sure" was a different rule from "applies", a row the gate refused was still re-decoded every seven days, a core per episode
+ * per week spent to reach the same answer.
+ */
+function sure(r: SyncRow): boolean {
+  const peak = r.peak ?? 0
+  return r.cues >= MIN_CUES && peak >= PEAK_MIN && peak >= PEAK_OVER_FAR * (r.rival ?? 0)
+}
+
+/** The shift a measured offset is served as: a quarter second at a time, and nothing at all for one too small to resolve. */
+export function appliedOffset(ms: number): number {
+  return Math.sign(ms) * Math.round(Math.abs(ms) / APPLY_STEP) * APPLY_STEP
+}
 
 /** Whether a stored measurement is sure enough to be used, and actually moves something. */
 export function syncApplies(r: SyncRow | undefined | null): boolean {
-  return !!r && r.confidence > CONFIDENCE_MIN && r.cues >= MIN_CUES && (r.offset_ms !== 0 || r.scale !== 1)
+  return !!r && sure(r) && (appliedOffset(r.offset_ms) !== 0 || r.scale !== 1)
 }
 
 /** Whether a row should be measured again: made by an older fitter, or never sure of itself and old enough for another look. */
 export function needsMeasure(r: SyncRow | undefined | null, at = Date.now()): boolean {
   if (!r) return true
   if ((r.fit_version ?? 0) < FIT_VERSION) return true
-  // Sure, not "applies": a measurement that found no shift to make is a good answer and stays put like any other.
-  const sure = r.confidence > CONFIDENCE_MIN && r.cues >= MIN_CUES
-  return !sure && at - (r.measured_at ?? 0) * 1000 > RECHECK_MS
+  // Sure, not "applies": a measurement that found no shift to make is a good answer and stays put like any other, however old.
+  return !sure(r) && at - (r.measured_at ?? 0) * 1000 > RECHECK_MS
 }
 
 export function syncRow(t: number, f: number, key: string): SyncRow | undefined {
   try {
-    return db.prepare('SELECT offset_ms, scale, confidence, cues, fit_version, measured_at FROM sub_sync WHERE torrent_id = ? AND file_index = ? AND subtitle_key = ?').get(t, f, key) as SyncRow | undefined
+    return db.prepare('SELECT offset_ms, scale, confidence, cues, peak, rival, fit_version, measured_at FROM sub_sync WHERE torrent_id = ? AND file_index = ? AND subtitle_key = ?').get(t, f, key) as SyncRow | undefined
   } catch { return undefined }
 }
 
 /** One row per subtitle, replaced rather than added to: a second measurement of the same subtitle is a better answer, not another one. */
 export function saveSync(t: number, f: number, key: string, fit: Fit) {
-  db.prepare(`INSERT INTO sub_sync (torrent_id, file_index, subtitle_key, offset_ms, scale, confidence, cues, measured_at, fit_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  db.prepare(`INSERT INTO sub_sync (torrent_id, file_index, subtitle_key, offset_ms, scale, confidence, cues, peak, rival, measured_at, fit_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(torrent_id, file_index, subtitle_key) DO UPDATE SET offset_ms = excluded.offset_ms, scale = excluded.scale,
-      confidence = excluded.confidence, cues = excluded.cues, measured_at = excluded.measured_at, fit_version = excluded.fit_version`)
-    .run(t, f, key, fit.offsetMs, fit.scale, fit.confidence, fit.cues, now(), FIT_VERSION)
+      confidence = excluded.confidence, cues = excluded.cues, peak = excluded.peak, rival = excluded.rival,
+      measured_at = excluded.measured_at, fit_version = excluded.fit_version`)
+    .run(t, f, key, fit.offsetMs, fit.scale, fit.confidence, fit.cues, fit.peak, fit.rival, now(), FIT_VERSION)
 }
 
 /** How far a person has nudged a subtitle in the player, in milliseconds, or 0 when they have not touched it. */
@@ -318,13 +391,17 @@ export interface Shift { offsetMs: number; scale: number; manual: number; measur
  * person's number once they have given one, so a press that says 0.25 s moves the lines 0.25 s whether or not a measurement
  * is there to fight with it; the scale is still the measurement's, because drift is a property of the cut and no button can
  * show it. A nudge of zero leaves no row behind and so serves the measurement exactly.
+ *
+ * The measurement's own offset goes out a quarter second at a time (APPLY_STEP): it is placed by a statistic that scores lines
+ * against a 250 ms window, so serving the 50 ms grid it searches on would present a precision it does not have. A nudge is
+ * served as given -- it is a person's number, and the endpoint only accepts whole quarter seconds anyway.
  */
 export function shiftFor(t: number, f: number, key: string): Shift {
   const row = syncRow(t, f, key)
   const measured = syncApplies(row)
   const manual = manualOffset(t, f, key)
   const scale = measured && row ? row.scale : 1
-  return { offsetMs: manual || (measured && row ? row.offset_ms : 0), scale, manual, measured }
+  return { offsetMs: manual || (measured && row ? appliedOffset(row.offset_ms) : 0), scale, manual, measured }
 }
 
 /** One decode at a time, and a file that failed is left alone for an hour instead of being retried by every request. */

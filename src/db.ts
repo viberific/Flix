@@ -143,6 +143,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS sub_sync (
   PRIMARY KEY (torrent_id, file_index, subtitle_key)
 )`)
 try { db.exec('ALTER TABLE sub_sync ADD COLUMN fit_version INTEGER NOT NULL DEFAULT 1') } catch { /* already present */ }
+// What the gate reads (see PEAK_MIN in subsync.ts): the top of the score curve, and what the same curve is worth 600 ms away
+// from the answer. Stored rather than derived, because the ratio cannot be recovered from a difference of two scores that were
+// never kept. Both default to 0, which no rule believes, so a row written before these columns is measured again.
+try { db.exec('ALTER TABLE sub_sync ADD COLUMN peak REAL NOT NULL DEFAULT 0') } catch { /* already present */ }
+try { db.exec('ALTER TABLE sub_sync ADD COLUMN rival REAL NOT NULL DEFAULT 0') } catch { /* already present */ }
 
 // A nudge somebody gave the subtitles themselves with the + and − in the player (see subsync.ts). It sits beside the
 // measurement rather than inside it, so measuring a subtitle again never throws away a correction a person made by eye. The

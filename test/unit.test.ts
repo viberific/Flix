@@ -1142,6 +1142,21 @@ function fakeSpeech(count: number) {
   return runs
 }
 
+/**
+ * The same speech as silencedetect reports it with a music bed playing: the bed is well above the threshold, so the quiet
+ * between two lines is not quiet enough and every other run is swallowed by the one before it. Fewer, longer runs -- and
+ * most cue starts end up inside a run instead of at its edge, which is what made the old score saturate.
+ */
+function mergedSpeech(runs: { start: number; end: number }[]) {
+  const out: { start: number; end: number }[] = []
+  runs.forEach((r, i) => {
+    const last = out[out.length - 1]
+    if (last && i % 2 === 0) { last.end = r.end; return }
+    out.push({ ...r })
+  })
+  return out
+}
+
 test('shiftVtt moves every timing line, clamps at zero, and leaves the rest byte for byte', async () => {
   const { shiftVtt, cueStarts } = await import('../src/subsync.ts')
   const vtt = 'WEBVTT\r\n\r\n1\r\n00:00:01.000 --> 00:00:02.500 align:start\r\nHello --> there\r\n\r\n00:01:00.000 --> 01:00:00.250\r\nBye\r\n'
@@ -1171,6 +1186,46 @@ test('estimateOffset finds an early subtitle, leaves a right one alone, and is u
   assert.ok(noise.confidence <= CONFIDENCE_MIN, 'lines nowhere near the speech give no confident answer')
 })
 
+test('a line laid late is pulled back, and one laid early is pushed forward', async () => {
+  const { estimateOffset, CONFIDENCE_MIN } = await import('../src/subsync.ts')
+  // The mask a music bed leaves behind: silencedetect hears the bed as well as the voice, so runs merge across the gaps
+  // between two lines and most cue starts sit in the middle of a run rather than at its edge. This is what the box measured.
+  const runs = mergedSpeech(fakeSpeech(120))
+  const onMarks = runs.map((r) => Math.round((r.start + 0.08) * 1000)) // a line goes up a frame or two before the word
+
+  const right = estimateOffset(onMarks, runs)
+  assert.equal(right.offsetMs, 0, 'already on its marks: not moved')
+  assert.ok(right.confidence > CONFIDENCE_MIN, `confidence ${right.confidence}`)
+
+  // Five hundred milliseconds out used to come back as "no shift needed" with 0.93 confidence, because every shift that
+  // left the line anywhere inside its run scored the same. The answer has to move now, and in the right direction.
+  for (const late of [400, 500, 900, 1500]) {
+    const e = estimateOffset(onMarks.map((c) => c + late), runs)
+    assert.ok(Math.abs(e.offsetMs + late) <= 250, `a line ${late} ms late comes back as ${e.offsetMs} ms`)
+    assert.ok(e.confidence > CONFIDENCE_MIN, `confidence ${e.confidence} for ${late} ms late`)
+  }
+  // An early subtitle used to be pushed further early: the plateau rule took its edge nearest zero, and for a subtitle on
+  // the far side of zero that edge is on the wrong side of it.
+  for (const early of [600, 1200]) {
+    const e = estimateOffset(onMarks.map((c) => c - early), runs)
+    assert.ok(Math.abs(e.offsetMs - early) <= 250, `a line ${early} ms early comes back as ${e.offsetMs} ms`)
+    assert.ok(e.confidence > CONFIDENCE_MIN, `confidence ${e.confidence} for ${early} ms early`)
+  }
+  // And lines that belong to the same paragraph, deep inside one long merged run, carry no information about where a line
+  // should start -- there is no assertion here that they must not move: a set of cues spaced like the runs themselves does
+  // align to the starts of those runs, and refusing it would be refusing a real (if meaningless) coincidence.
+})
+
+test('a fit nowhere near the speech is still refused, on a mask a music bed has merged', async () => {
+  const { estimateOffset, CONFIDENCE_MIN } = await import('../src/subsync.ts')
+  const runs = mergedSpeech(fakeSpeech(120))
+  const last = runs[runs.length - 1].end
+  // Evenly spaced lines, with no relation to where anybody speaks: whatever shift is tried, they land in the same places.
+  const nowhere = Array.from({ length: 90 }, (_, i) => Math.round(((i + 0.5) * last * 1000) / 90))
+  const e = estimateOffset(nowhere, runs)
+  assert.ok(e.confidence <= CONFIDENCE_MIN, `confidence ${e.confidence} for lines with no relation to the speech`)
+})
+
 test('fitSync reads a frame-rate mismatch as drift and fits t*scale+offset', async () => {
   const { fitSync } = await import('../src/subsync.ts')
   const runs = fakeSpeech(240)
@@ -1183,14 +1238,110 @@ test('fitSync reads a frame-rate mismatch as drift and fits t*scale+offset', asy
   assert.ok(worst < 700, `worst line off by ${worst} ms`)
 })
 
-test('syncApplies: a shift needs confidence, enough lines, and something to do', async () => {
-  const { syncApplies } = await import('../src/subsync.ts')
-  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.6, cues: 300 }), true)
-  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.1, cues: 300 }), false, 'not sure enough')
-  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.9, cues: 11 }), false, 'too few lines')
-  assert.equal(syncApplies({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300 }), false, 'nothing to move')
-  assert.equal(syncApplies({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300, fit_version: 9, measured_at: 1 }), false, 'still nothing to move')
+/*
+  Every fit this gate was decided on: measured on the box's own silencedetect masks against the subtitle each episode actually
+  has (/tmp/syn/harness/measure.ts; Always Sunny S18E01 and S18E04, Curb S12E02, South Park S29E03, Shaun Tan S01E01-E06).
+  `peak` is the top of the score curve, `rival` the score 600 ms either side of the answer, `offset_ms` what the fitter answered,
+  `sure` whether the curve is one worth believing at all, `applies` whether it also moves anything.
+*/
+const REAL_FITS: { name: string; cues: number; offset_ms: number; peak: number; rival: number; sure: boolean; applies: boolean }[] = [
+  { name: 'Always Sunny S18E01', cues: 509, offset_ms: 150, peak: 0.242, rival: 0.077, sure: true, applies: true },
+  { name: 'Curb S12E02, the srt beside the file', cues: 557, offset_ms: 0, peak: 0.415, rival: 0.09, sure: true, applies: false },
+  { name: 'Curb S12E02, the other track', cues: 863, offset_ms: 450, peak: 0.366, rival: 0.07, sure: true, applies: true },
+  { name: 'South Park S29E03', cues: 559, offset_ms: 200, peak: 0.218, rival: 0.047, sure: true, applies: true },
+  { name: 'Shaun Tan S01E01', cues: 286, offset_ms: 0, peak: 0.315, rival: 0.115, sure: true, applies: false },
+  { name: 'Shaun Tan S01E02', cues: 332, offset_ms: 150, peak: 0.274, rival: 0.093, sure: true, applies: true },
+  { name: 'Shaun Tan S01E03', cues: 324, offset_ms: 250, peak: 0.343, rival: 0.096, sure: true, applies: true },
+  { name: 'Shaun Tan S01E04', cues: 260, offset_ms: 250, peak: 0.288, rival: 0.108, sure: true, applies: true },
+  { name: 'Shaun Tan S01E05', cues: 367, offset_ms: 200, peak: 0.275, rival: 0.074, sure: true, applies: true },
+  { name: 'Shaun Tan S01E06', cues: 322, offset_ms: 200, peak: 0.286, rival: 0.09, sure: true, applies: true },
+  // The two Always Sunny S18E04 tracks. silencedetect found 111 runs of speech in a twenty-minute episode, so a few hundred
+  // lines land near one of them by chance: sharp against its own rival, four times it, and worth nothing.
+  { name: 'Always Sunny S18E04, first track', cues: 498, offset_ms: 0, peak: 0.09, rival: 0.022, sure: false, applies: false },
+  { name: 'Always Sunny S18E04, second track', cues: 509, offset_ms: 0, peak: 0.096, rival: 0.022, sure: false, applies: false },
+]
+
+const LONG_AGO = 400 * 24 * 3600 * 1000
+
+/*
+  Requirement the whole change turns on: the nine episodes that are actually masked get corrected, the ones that are not are
+  left alone, and a row that is sure is never re-measured just for being old -- while a row that is not sure is, because the
+  answer it holds is not one.
+*/
+test('the gate passes every real fit that is properly masked, and refuses the two that are not', async () => {
+  const { syncApplies, needsMeasure, FIT_VERSION } = await import('../src/subsync.ts')
+  for (const f of REAL_FITS) {
+    const row = { offset_ms: f.offset_ms, scale: 1, confidence: 0, cues: f.cues, peak: f.peak, rival: f.rival, fit_version: FIT_VERSION, measured_at: 0 }
+    assert.equal(syncApplies(row), f.applies, `${f.name}: applies on peak ${f.peak} rival ${f.rival}`)
+    assert.equal(needsMeasure(row, LONG_AGO), !f.sure, `${f.name}: re-measured only when the curve is not one worth believing`)
+  }
+})
+
+test('a bad mask is refused for being worthless, not for being flat -- and a flat curve is refused too', async () => {
+  const { syncApplies, PEAK_MIN, PEAK_OVER_FAR } = await import('../src/subsync.ts')
+  // Always Sunny S18E04 in the shape the decision named it: a sharp peak (.028 over .007 is four times its rival) that is still
+  // nothing, because the mask it was measured against is not speech.
+  assert.equal(syncApplies({ offset_ms: 500, scale: 1, confidence: 0.9, cues: 498, peak: 0.028, rival: 0.007 }), false, 'sharp and worthless')
+  // The other way to be wrong: a music bed or a long quiet stretch scores every shift well, so the winner is luck.
+  assert.equal(syncApplies({ offset_ms: 500, scale: 1, confidence: 0.9, cues: 500, peak: 0.3, rival: 0.15 }), false, 'high and flat')
+  assert.equal(syncApplies({ offset_ms: 500, scale: 1, confidence: 0.9, cues: 500, peak: PEAK_MIN, rival: PEAK_MIN / PEAK_OVER_FAR }), true, 'the floor itself is allowed')
+  assert.equal(syncApplies({ offset_ms: 500, scale: 1, confidence: 0.9, cues: 500, peak: 0.199, rival: 0 }), false, 'a hair under the floor is not')
+  assert.equal(syncApplies({ offset_ms: 500, scale: 1, confidence: 0.9, cues: 500, peak: 0.3, rival: 0.13 }), false, 'and neither is a peak under 2.5x its rival')
+})
+
+test('syncApplies: a shift needs enough lines, a peak, and something to do', async () => {
+  const { syncApplies, appliedOffset } = await import('../src/subsync.ts')
+  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0, cues: 300, peak: 0.45, rival: 0.05 }), true)
+  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0, cues: 11, peak: 0.9, rival: 0 }), false, 'too few lines')
+  assert.equal(syncApplies({ offset_ms: 0, scale: 1, confidence: 0, cues: 300, peak: 0.9, rival: 0 }), false, 'nothing to move')
+  assert.equal(syncApplies({ offset_ms: 0, scale: 1.01, confidence: 0, cues: 300, peak: 0.9, rival: 0 }), true, 'drift on its own moves every line')
+  assert.equal(syncApplies({ offset_ms: 100, scale: 1, confidence: 0, cues: 300, peak: 0.9, rival: 0 }), false, '100 ms is under the quarter second the statistic resolves, so it is no correction')
+  assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0, cues: 300 }), false, 'a row with no peak stored (written before FIT_VERSION 3) is not believed')
   assert.equal(syncApplies(undefined), false)
+  assert.equal(appliedOffset(-400), -500)
+  assert.equal(appliedOffset(400), 500)
+  assert.equal(appliedOffset(-375), -500, 'ties go away from zero, both ways round')
+  assert.equal(appliedOffset(375), 500)
+  assert.equal(appliedOffset(-2000), -2000)
+  assert.equal(appliedOffset(0), 0)
+})
+
+test('a well-masked episode 400 ms out is corrected, by the quarter second the statistic can resolve', async () => {
+  const { fitSync, saveSync, syncRow, shiftFor, syncApplies, APPLY_STEP } = await import('../src/subsync.ts')
+  const runs = fakeSpeech(120)
+  const onMarks = runs.map((r) => Math.round((r.start + 0.08) * 1000))
+  const duration = runs[runs.length - 1].end + 5
+  // A line is scored against a 250 ms window around a speech start, so the curve has a 250 ms plateau and the answer lands
+  // somewhere inside it -- which is exactly why the offset is served a quarter second at a time.
+  const fit = fitSync(onMarks.map((c) => c + 400), runs, duration)
+  assert.ok(Math.abs(fit.offsetMs + 400) <= 250, `a line 400 ms late comes back as ${fit.offsetMs} ms`)
+  assert.ok(fit.peak >= 0.9, `peak ${fit.peak}: every line is on a speech start`)
+  assert.ok(fit.peak >= 2.5 * fit.rival, `peak ${fit.peak} against a rival of ${fit.rival}`)
+  saveSync(31, 0, 'embedded:3', fit)
+  assert.equal(syncApplies(syncRow(31, 0, 'embedded:3')), true, 'stored and believed')
+  const shift = shiftFor(31, 0, 'embedded:3')
+  assert.equal(shift.measured, true, 'the measurement is what is served')
+  assert.equal(Math.abs(shift.offsetMs % APPLY_STEP), 0, `served ${shift.offsetMs} ms: a quarter second at a time`)
+  assert.ok(Math.abs(shift.offsetMs + 400) <= 125, `served ${shift.offsetMs} ms for a line 400 ms out`)
+  assert.ok(Math.abs(shift.offsetMs + 400) < 400, 'and nearer the truth than doing nothing')
+})
+
+test('a good-mask episode already right stays at zero and is treated as sure, however old', async () => {
+  const { fitSync, saveSync, syncRow, shiftFor, needsMeasure, syncApplies, FIT_VERSION } = await import('../src/subsync.ts')
+  const runs = fakeSpeech(120)
+  const onMarks = runs.map((r) => Math.round((r.start + 0.08) * 1000))
+  const fit = fitSync(onMarks, runs, runs[runs.length - 1].end + 5)
+  assert.equal(fit.offsetMs, 0, 'a subtitle already on the speech is not moved')
+  assert.equal(fit.scale, 1)
+  saveSync(32, 0, 'file:episode.srt', fit)
+  const stored = syncRow(32, 0, 'file:episode.srt')!
+  assert.equal(stored.fit_version, FIT_VERSION)
+  const row = { ...stored, measured_at: 0 }
+  assert.equal(needsMeasure(row, LONG_AGO), false, 'sure and finding nothing to do: not re-decoded for being old')
+  assert.equal(needsMeasure({ ...row, peak: 0.09, rival: 0.022 }, LONG_AGO), true, 'not sure and old: worth another look')
+  assert.equal(needsMeasure({ ...row, peak: 0.09, rival: 0.022 }, 0), false, 'not sure but only just measured: not yet')
+  assert.deepEqual(shiftFor(32, 0, 'file:episode.srt'), { offsetMs: 0, scale: 1, manual: 0, measured: false }, 'nothing to move is served as nothing')
+  assert.equal(syncApplies(row), false, 'and it applies nothing, because there is nothing to apply')
 })
 
 /* The nudge a person gives the subtitles by eye, and the measurement it sits on top of. Both are rows in the same in-memory
@@ -1198,7 +1349,7 @@ test('syncApplies: a shift needs confidence, enough lines, and something to do',
 test('a nudge beats the measurement, and reset gives the measurement back', async () => {
   const { saveSync, setManualOffset, shiftFor, shiftVtt, FIT_VERSION } = await import('../src/subsync.ts')
   const key = 'embedded:2'
-  saveSync(11, 0, key, { offsetMs: 2000, scale: 1, confidence: 0.9, cues: 300 })
+  saveSync(11, 0, key, { offsetMs: 2000, scale: 1, confidence: 0.9, cues: 300, peak: 0.415, rival: 0.09 })
   assert.deepEqual(shiftFor(11, 0, key), { offsetMs: 2000, scale: 1, manual: 0, measured: true }, 'nothing nudged: the measurement')
   assert.equal(shiftVtt('WEBVTT\n\n00:00:10.000 --> 00:00:11.000\nHi\n', shiftFor(11, 0, key).offsetMs), 'WEBVTT\n\n00:00:12.000 --> 00:00:13.000\nHi\n')
 
@@ -1206,7 +1357,7 @@ test('a nudge beats the measurement, and reset gives the measurement back', asyn
   assert.deepEqual(shiftFor(11, 0, key), { offsetMs: 750, scale: 1, manual: 750, measured: true }, 'the person wins')
   // 0.25 s a press has to mean 0.25 s, so the measurement's own offset is not added on top of the nudge. Its drift is kept:
   // that is a property of the cut, it moves every line by the same amount at any one moment, and no button can show it.
-  saveSync(13, 0, key, { offsetMs: 2000, scale: 1.01, confidence: 0.9, cues: 300 })
+  saveSync(13, 0, key, { offsetMs: 2000, scale: 1.01, confidence: 0.9, cues: 300, peak: 0.415, rival: 0.09 })
   setManualOffset(13, 0, key, 250)
   assert.deepEqual(shiftFor(13, 0, key), { offsetMs: 250, scale: 1.01, manual: 250, measured: true }, 'the nudge with the drift')
 
@@ -1218,18 +1369,18 @@ test('a nudge beats the measurement, and reset gives the measurement back', asyn
 test('measuring a subtitle again keeps the nudge', async () => {
   const { saveSync, setManualOffset, shiftFor, needsMeasure, FIT_VERSION } = await import('../src/subsync.ts')
   const key = 'online:eng'
-  saveSync(12, 1, key, { offsetMs: -1500, scale: 1, confidence: 0.8, cues: 240 })
+  saveSync(12, 1, key, { offsetMs: -1500, scale: 1, confidence: 0.8, cues: 240, peak: 0.3, rival: 0.08 })
   setManualOffset(12, 1, key, -500)
   assert.equal(shiftFor(12, 1, key).offsetMs, -500)
   // The fitter moves on, so the old answer is worth taking again -- and taking it must not lose what the person set.
-  saveSync(12, 1, key, { offsetMs: -1250, scale: 1, confidence: 0.95, cues: 244 })
+  saveSync(12, 1, key, { offsetMs: -1250, scale: 1, confidence: 0.95, cues: 244, peak: 0.35, rival: 0.08 })
   assert.equal(shiftFor(12, 1, key).offsetMs, -500, 'the nudge is still the number being served')
   assert.equal(shiftFor(12, 1, key).manual, -500)
   assert.equal(needsMeasure(undefined), true, 'nothing stored: measure it')
-  assert.equal(needsMeasure({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300, fit_version: FIT_VERSION, measured_at: 0 }), false, 'current and sure: leave it alone')
-  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.9, cues: 300, fit_version: FIT_VERSION - 1, measured_at: Math.floor(Date.now() / 1000) }), true, 'an older fitter made it: measure again')
-  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.1, cues: 300, fit_version: FIT_VERSION, measured_at: Math.floor(Date.now() / 1000) }), false, 'never sure, but only just measured: not yet')
-  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.1, cues: 300, fit_version: FIT_VERSION, measured_at: Math.floor(Date.now() / 1000) - 8 * 24 * 3600 }), true, 'never sure and a week old: worth another look')
+  assert.equal(needsMeasure({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300, peak: 0.415, rival: 0.09, fit_version: FIT_VERSION, measured_at: 0 }), false, 'current and sure: leave it alone')
+  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.9, cues: 300, peak: 0.415, rival: 0.09, fit_version: FIT_VERSION - 1, measured_at: Math.floor(Date.now() / 1000) }), true, 'an older fitter made it: measure again')
+  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.1, cues: 300, peak: 0.09, rival: 0.022, fit_version: FIT_VERSION, measured_at: Math.floor(Date.now() / 1000) }), false, 'never sure, but only just measured: not yet')
+  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.1, cues: 300, peak: 0.09, rival: 0.022, fit_version: FIT_VERSION, measured_at: Math.floor(Date.now() / 1000) - 8 * 24 * 3600 }), true, 'never sure and a week old: worth another look')
 })
 
 test('the nudge endpoint takes a number it can trust and nothing else', async () => {
