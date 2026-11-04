@@ -10,8 +10,12 @@ import { lowPriority } from './sprites.ts'
  * open, a 25 fps PAL transfer of a 23.976 original) leaves every line a little early or late. The audio is the one thing
  * that is certainly right, so it is the reference: decode it once, find where somebody is speaking, and slide the subtitle's
  * start times until as many as possible land inside speech. Nothing here runs during playback. The measurement is one
- * background decode of the sound per subtitle, kept in `sub_sync` for good, and the shift is applied where the WebVTT is
- * built (shiftVtt), so a TV and a phone get the same corrected text from the same URL.
+ * background decode of the sound per subtitle, kept in `sub_sync`, and the shift is applied where the WebVTT is built
+ * (shiftVtt), so a TV and a phone get the same corrected text from the same URL.
+ *
+ * Nothing here is for good any more. A measurement is kept until it is worth taking again -- a better fitter than the one that
+ * made it (FIT_VERSION), or an answer that was never sure of itself and is now old (RECHECK_MS) -- and a person can correct
+ * the result by eye with the + and − in the player, which is kept separately (`sub_offset`) so measuring again cannot undo it.
  */
 
 /** Candidate shifts are tried from -RANGE to +RANGE in STEP milliseconds. Subtitles are rarely off by more than a few seconds. */
@@ -36,6 +40,52 @@ const DRIFT_MS = 150
 export const CONFIDENCE_MIN = 0.25
 /** Fewer lines than this is not enough to tell a peak from luck, whatever the gap looks like. */
 export const MIN_CUES = 12
+/**
+ * Which fitter made a measurement. It moves whenever fitSync or estimateOffset changes in a way that would have answered
+ * differently, and every row made by an older one is measured again the next time its subtitle is played. Rows are cheap to
+ * keep and a decode is not, so this is the only reason to re-decode a subtitle that was measured confidently. It is 1 while
+ * the fitter is the one 0.3.89 shipped, and the column is added at 1 rather than 0: a subtitle measured before the column
+ * existed was measured by this same fitter, so an update does not send the whole library through a decode again. A change to
+ * how a subtitle is fitted is what makes this 2.
+ */
+export const FIT_VERSION = 1
+/**
+ * How long an answer that was not sure of itself is left alone. A quiet opener, a heavy music cue or a subtitle read from a
+ * file that had only half arrived can leave a low-confidence row, and the same subtitle often measures better later (a whole
+ * file, a different cut of the same episode). A confident row is never touched by age: nothing about it improves with waiting,
+ * and re-decoding it would cost a core every time it is watched.
+ */
+const RECHECK_MS = 7 * 24 * 60 * 60_000
+/**
+ * How far a person may nudge subtitles either way. Half a minute is already more than a different cut of the same episode
+ * costs, so a bigger number is a subtitle for something else rather than this one being late.
+ */
+export const OFFSET_MAX = 30_000
+/**
+ * The keys a subtitle is filed under, and the only shapes the nudge endpoint will take: an embedded track's number, a file
+ * sitting beside the video, or the language of the one picked from the web. Anything else never matches a served subtitle.
+ */
+export const SUB_KEY = /^(?:embedded:\d{1,2}|file:.{1,200}|online:[a-z]{2,3})$/
+
+/** A nudge as a browser sends it: which subtitle, and how far. */
+export interface OffsetAsk { t: number; f: number; key: string; offsetMs: number }
+
+/**
+ * A nudge as the player sends it, or a sentence saying why it is not one. The subtitle has to be named the way the server
+ * files them (SUB_KEY) and the offset has to be a whole number of milliseconds inside OFFSET_MAX: a browser can send
+ * anything at all, and a stored number that is not a number would shift a subtitle off the screen with nothing to correct it.
+ */
+export function offsetAsk(body: any): OffsetAsk | string {
+  const t = Number(body?.torrentId), f = Number(body?.fileIndex)
+  if (!Number.isInteger(t) || t < 0 || !Number.isInteger(f) || f < 0) return 'No such subtitle.'
+  const key = typeof body?.key === 'string' ? body.key : ''
+  if (!SUB_KEY.test(key)) return 'No such subtitle.'
+  const ms = body?.offsetMs
+  if (typeof ms !== 'number' || !Number.isInteger(ms) || Math.abs(ms) > OFFSET_MAX) {
+    return `A subtitle offset is a whole number of milliseconds, up to ${OFFSET_MAX / 1000} seconds either way.`
+  }
+  return { t, f, key, offsetMs: ms }
+}
 /**
  * How much of the episode one offset is fitted over. A window has to be short enough that 1% of it (0.45 s here) is well
  * inside the second or so a line stays in speech as the subtitle slides, or no single shift would fit even a local stretch.
@@ -213,22 +263,68 @@ export function fitSync(cues: number[], runs: Run[], _durationSec: number): Fit 
   return { offsetMs: Math.round(meanO - a * meanT), scale, confidence: Math.min(...kept.map((p) => p.confidence)), cues: cues.length }
 }
 
-export interface SyncRow { offset_ms: number; scale: number; confidence: number; cues: number }
+export interface SyncRow { offset_ms: number; scale: number; confidence: number; cues: number; fit_version?: number; measured_at?: number }
 
 /** Whether a stored measurement is sure enough to be used, and actually moves something. */
-export function syncApplies(r: SyncRow | undefined | null): r is SyncRow {
+export function syncApplies(r: SyncRow | undefined | null): boolean {
   return !!r && r.confidence > CONFIDENCE_MIN && r.cues >= MIN_CUES && (r.offset_ms !== 0 || r.scale !== 1)
+}
+
+/** Whether a row should be measured again: made by an older fitter, or never sure of itself and old enough for another look. */
+export function needsMeasure(r: SyncRow | undefined | null, at = Date.now()): boolean {
+  if (!r) return true
+  if ((r.fit_version ?? 0) < FIT_VERSION) return true
+  // Sure, not "applies": a measurement that found no shift to make is a good answer and stays put like any other.
+  const sure = r.confidence > CONFIDENCE_MIN && r.cues >= MIN_CUES
+  return !sure && at - (r.measured_at ?? 0) * 1000 > RECHECK_MS
 }
 
 export function syncRow(t: number, f: number, key: string): SyncRow | undefined {
   try {
-    return db.prepare('SELECT offset_ms, scale, confidence, cues FROM sub_sync WHERE torrent_id = ? AND file_index = ? AND subtitle_key = ?').get(t, f, key) as SyncRow | undefined
+    return db.prepare('SELECT offset_ms, scale, confidence, cues, fit_version, measured_at FROM sub_sync WHERE torrent_id = ? AND file_index = ? AND subtitle_key = ?').get(t, f, key) as SyncRow | undefined
   } catch { return undefined }
 }
 
-function saveSync(t: number, f: number, key: string, fit: Fit) {
-  db.prepare('INSERT OR IGNORE INTO sub_sync (torrent_id, file_index, subtitle_key, offset_ms, scale, confidence, cues, measured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(t, f, key, fit.offsetMs, fit.scale, fit.confidence, fit.cues, now())
+/** One row per subtitle, replaced rather than added to: a second measurement of the same subtitle is a better answer, not another one. */
+export function saveSync(t: number, f: number, key: string, fit: Fit) {
+  db.prepare(`INSERT INTO sub_sync (torrent_id, file_index, subtitle_key, offset_ms, scale, confidence, cues, measured_at, fit_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(torrent_id, file_index, subtitle_key) DO UPDATE SET offset_ms = excluded.offset_ms, scale = excluded.scale,
+      confidence = excluded.confidence, cues = excluded.cues, measured_at = excluded.measured_at, fit_version = excluded.fit_version`)
+    .run(t, f, key, fit.offsetMs, fit.scale, fit.confidence, fit.cues, now(), FIT_VERSION)
+}
+
+/** How far a person has nudged a subtitle in the player, in milliseconds, or 0 when they have not touched it. */
+export function manualOffset(t: number, f: number, key: string): number {
+  try {
+    const r = db.prepare('SELECT offset_ms FROM sub_offset WHERE torrent_id = ? AND file_index = ? AND subtitle_key = ?').get(t, f, key) as { offset_ms: number } | undefined
+    return r?.offset_ms ?? 0
+  } catch { return 0 }
+}
+
+/** Keep a nudge; forget it when it is back to zero, so the measurement speaks for itself again. */
+export function setManualOffset(t: number, f: number, key: string, offsetMs: number): void {
+  const ms = Math.round(offsetMs)
+  if (!ms) { db.prepare('DELETE FROM sub_offset WHERE torrent_id = ? AND file_index = ? AND subtitle_key = ?').run(t, f, key); return }
+  db.prepare(`INSERT INTO sub_offset (torrent_id, file_index, subtitle_key, offset_ms, set_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(torrent_id, file_index, subtitle_key) DO UPDATE SET offset_ms = excluded.offset_ms, set_at = excluded.set_at`)
+    .run(t, f, key, ms, now())
+}
+
+export interface Shift { offsetMs: number; scale: number; manual: number; measured: boolean }
+
+/**
+ * The shift actually served for a subtitle: the measurement's drift, moved by whatever a person nudged by. The offset is the
+ * person's number once they have given one, so a press that says 0.25 s moves the lines 0.25 s whether or not a measurement
+ * is there to fight with it; the scale is still the measurement's, because drift is a property of the cut and no button can
+ * show it. A nudge of zero leaves no row behind and so serves the measurement exactly.
+ */
+export function shiftFor(t: number, f: number, key: string): Shift {
+  const row = syncRow(t, f, key)
+  const measured = syncApplies(row)
+  const manual = manualOffset(t, f, key)
+  const scale = measured && row ? row.scale : 1
+  return { offsetMs: manual || (measured && row ? row.offset_ms : 0), scale, manual, measured }
 }
 
 /** One decode at a time, and a file that failed is left alone for an hour instead of being retried by every request. */
@@ -239,12 +335,16 @@ const RETRY_MS = 60 * 60_000
 /**
  * Measure a subtitle against the sound in the background and remember the answer. Returns at once; the request that asked
  * is served the subtitle as it is, and the player asks again when the response says a measurement is under way. `vtt` is the
- * unshifted text. Nothing is stored when it could not be measured, so the next play gets another try; a row that exists is
- * never measured again.
+ * unshifted text. Nothing is stored when it could not be measured, so the next play gets another try.
+ *
+ * A stored answer is not kept for good: needsMeasure says when one is worth taking again. That stays the one decode at a
+ * time it has always been -- a second subtitle is measured when the first is done, on the next play -- because this box is
+ * often short of memory while it is transcoding.
  */
 export function startSync(t: number, f: number, key: string, source: string, durationSec: number, vtt: string): void {
   const id = `${t}:${f}:${key}`
-  if (running.size || syncRow(t, f, key) || Date.now() - (failedAt.get(id) ?? 0) < RETRY_MS) return
+  if (running.size || Date.now() - (failedAt.get(id) ?? 0) < RETRY_MS) return
+  if (!needsMeasure(syncRow(t, f, key))) return
   const cues = cueStarts(vtt)
   if (!cues.length) return // nothing to line up (an empty read, or a track with no text): not worth a decode
   running.add(id)

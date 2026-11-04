@@ -388,6 +388,16 @@ html.tv .player #pfull { display: none; }
 .p-btn.big svg { width: 30px; height: 30px; }
 .p-btn.cc { width: auto; min-width: 44px; padding: 0 10px; border-radius: 10px; font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
 .p-btn.cc.on { color: var(--accent); }
+/* The subtitle nudge: a slightly smaller round button either side of CC, and the same one as the transport buttons, so hover,
+   the television's white focus state and the focus ring all come for free. It is only in the bar when the episode really has a
+   subtitle to move (public/app.js, wireNudge), so a video without one gains no focus stops and no width. */
+.p-btn.sub { width: 36px; height: 36px; font-size: 20px; line-height: 1; font-weight: 400; }
+/* How far it has been nudged: over CC rather than beside it, so a number appearing and going again never moves the bar under a
+   finger, and it fades in on its own instead of pushing anything. */
+.p-subv { position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  padding: 4px 9px; border-radius: 8px; background: rgba(20,22,30,.92); color: #fff; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 10px rgba(0,0,0,.35); animation: subvIn .18s var(--ease) both; }
+@keyframes subvIn { from { opacity: 0; transform: translate(-50%, 4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .p-btn[hidden] { display: none; }
 .player.casting #pfull, .player.casting #pcc, .player.casting #pq, .player.casting #aud, .player.casting #cast, .player.casting #rep { display: none; } /* those act on the phone's own picture; the TV is driven from the bar */
 .p-ctl .p-menu .menu { top: auto; bottom: 54px; right: 0; background: rgba(20,22,30,.97); color: #fff; max-height: 46vh; overflow: auto; }
@@ -401,9 +411,10 @@ html.tv .player #pfull { display: none; }
 .player.paused::after { opacity: 1; }
 @media (max-width: 640px) {
   .p-btn { width: 38px; height: 38px; } .p-btn.big { width: 54px; height: 54px; }
+  .p-btn.sub { width: 32px; height: 32px; font-size: 18px; }
   .p-row { gap: 4px; }
 }
-@media (prefers-reduced-motion: reduce) { .p-ctl, .player::after, .p-dot { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .p-ctl, .player::after, .p-dot { transition: none; } .p-subv { animation: none; } }
 
 /* ---------- Android Auto (html.car) ----------
    A car's screen is wide and short (1920x720 is common), and the car always draws a strip of its own buttons over its top

@@ -1189,7 +1189,66 @@ test('syncApplies: a shift needs confidence, enough lines, and something to do',
   assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.1, cues: 300 }), false, 'not sure enough')
   assert.equal(syncApplies({ offset_ms: 800, scale: 1, confidence: 0.9, cues: 11 }), false, 'too few lines')
   assert.equal(syncApplies({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300 }), false, 'nothing to move')
+  assert.equal(syncApplies({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300, fit_version: 9, measured_at: 1 }), false, 'still nothing to move')
   assert.equal(syncApplies(undefined), false)
+})
+
+/* The nudge a person gives the subtitles by eye, and the measurement it sits on top of. Both are rows in the same in-memory
+   database the rest of these tests use, so this is the real store rather than a stand-in. */
+test('a nudge beats the measurement, and reset gives the measurement back', async () => {
+  const { saveSync, setManualOffset, shiftFor, shiftVtt, FIT_VERSION } = await import('../src/subsync.ts')
+  const key = 'embedded:2'
+  saveSync(11, 0, key, { offsetMs: 2000, scale: 1, confidence: 0.9, cues: 300 })
+  assert.deepEqual(shiftFor(11, 0, key), { offsetMs: 2000, scale: 1, manual: 0, measured: true }, 'nothing nudged: the measurement')
+  assert.equal(shiftVtt('WEBVTT\n\n00:00:10.000 --> 00:00:11.000\nHi\n', shiftFor(11, 0, key).offsetMs), 'WEBVTT\n\n00:00:12.000 --> 00:00:13.000\nHi\n')
+
+  setManualOffset(11, 0, key, 750)
+  assert.deepEqual(shiftFor(11, 0, key), { offsetMs: 750, scale: 1, manual: 750, measured: true }, 'the person wins')
+  // 0.25 s a press has to mean 0.25 s, so the measurement's own offset is not added on top of the nudge. Its drift is kept:
+  // that is a property of the cut, it moves every line by the same amount at any one moment, and no button can show it.
+  saveSync(13, 0, key, { offsetMs: 2000, scale: 1.01, confidence: 0.9, cues: 300 })
+  setManualOffset(13, 0, key, 250)
+  assert.deepEqual(shiftFor(13, 0, key), { offsetMs: 250, scale: 1.01, manual: 250, measured: true }, 'the nudge with the drift')
+
+  setManualOffset(11, 0, key, 0)
+  assert.deepEqual(shiftFor(11, 0, key), { offsetMs: 2000, scale: 1, manual: 0, measured: true }, 'reset: back to the measurement')
+  assert.equal(FIT_VERSION >= 1, true)
+})
+
+test('measuring a subtitle again keeps the nudge', async () => {
+  const { saveSync, setManualOffset, shiftFor, needsMeasure, FIT_VERSION } = await import('../src/subsync.ts')
+  const key = 'online:eng'
+  saveSync(12, 1, key, { offsetMs: -1500, scale: 1, confidence: 0.8, cues: 240 })
+  setManualOffset(12, 1, key, -500)
+  assert.equal(shiftFor(12, 1, key).offsetMs, -500)
+  // The fitter moves on, so the old answer is worth taking again -- and taking it must not lose what the person set.
+  saveSync(12, 1, key, { offsetMs: -1250, scale: 1, confidence: 0.95, cues: 244 })
+  assert.equal(shiftFor(12, 1, key).offsetMs, -500, 'the nudge is still the number being served')
+  assert.equal(shiftFor(12, 1, key).manual, -500)
+  assert.equal(needsMeasure(undefined), true, 'nothing stored: measure it')
+  assert.equal(needsMeasure({ offset_ms: 0, scale: 1, confidence: 0.9, cues: 300, fit_version: FIT_VERSION, measured_at: 0 }), false, 'current and sure: leave it alone')
+  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.9, cues: 300, fit_version: FIT_VERSION - 1, measured_at: Math.floor(Date.now() / 1000) }), true, 'an older fitter made it: measure again')
+  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.1, cues: 300, fit_version: FIT_VERSION, measured_at: Math.floor(Date.now() / 1000) }), false, 'never sure, but only just measured: not yet')
+  assert.equal(needsMeasure({ offset_ms: 900, scale: 1, confidence: 0.1, cues: 300, fit_version: FIT_VERSION, measured_at: Math.floor(Date.now() / 1000) - 8 * 24 * 3600 }), true, 'never sure and a week old: worth another look')
+})
+
+test('the nudge endpoint takes a number it can trust and nothing else', async () => {
+  const { offsetAsk, OFFSET_MAX } = await import('../src/subsync.ts')
+  const good = { torrentId: 7, fileIndex: 0, key: 'embedded:1', offsetMs: -750 }
+  assert.deepEqual(offsetAsk(good), { t: 7, f: 0, key: 'embedded:1', offsetMs: -750 })
+  assert.deepEqual(offsetAsk({ ...good, offsetMs: OFFSET_MAX }), { t: 7, f: 0, key: 'embedded:1', offsetMs: OFFSET_MAX }, 'the edge itself is allowed')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: OFFSET_MAX + 250 }), 'string', 'past half a minute is not a late subtitle')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: -OFFSET_MAX - 1 }), 'string')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: '750' }), 'string', 'a number means a number')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: Number.NaN }), 'string')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: 250.5 }), 'string', 'quarter seconds, not fractions of one')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: undefined }), 'string')
+  assert.equal(typeof offsetAsk({ ...good, offsetMs: Infinity }), 'string')
+  assert.equal(typeof offsetAsk({ ...good, key: 'somewhere else' }), 'string', 'not a subtitle the server files')
+  assert.equal(typeof offsetAsk({ ...good, key: '' }), 'string')
+  assert.equal(typeof offsetAsk({ ...good, torrentId: 'seven' }), 'string')
+  assert.equal(typeof offsetAsk({ ...good, fileIndex: -1 }), 'string')
+  assert.equal(typeof offsetAsk(null), 'string')
 })
 
 test('speechFrom is the complement of the silences, clipped to the file', async () => {

@@ -16,7 +16,7 @@ import { encoderInfo, encoderStatus } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { enableNextFile } from './ahead.ts'
 import { recoverPace, setWatching, tick as paceTick } from './pace.ts'
-import { shiftVtt, startSync, syncApplies, syncRow } from './subsync.ts'
+import { manualOffset, needsMeasure, offsetAsk, setManualOffset, shiftFor, shiftVtt, startSync, syncRow } from './subsync.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
@@ -592,9 +592,11 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const token = tvToken(req.user!.id)
   // CC is one switch for one subtitle: the best English one in the file or beside it, else one from the web
   // (OpenSubtitles). Never a list to choose from, so this is at most one entry.
-  const local = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt` })), ...(await externalSubs(+t, +f, base))]
+  const local = [...p.subs.map((s) => ({ n: s.n as number | string, lang: s.lang, label: s.label, forced: s.forced, default: s.default, url: `${base}/subs/${s.n}.vtt`, sync: `embedded:${s.n}` })), ...(await externalSubs(+t, +f, base))]
   const cc = bestEnglishSub(local) ?? (await onlineSubFor(+t, +f, base))
-  const subsList = cc ? [cc] : []
+  // `sync` is the name this subtitle is filed under (see subsync.ts) and `offset` the nudge a person has given it, so the
+  // player can offer the +/- control already knowing what it says without asking the server a second question.
+  const subsList = cc ? [{ ...cc, offset: manualOffset(+t, +f, cc.sync) }] : []
   const copyFor = copyPictureFor(p, can)
   // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
   // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
@@ -654,21 +656,29 @@ async function onlineQuery(t: number, f: number) {
 async function onlineSubFor(t: number, f: number, base: string) {
   const q = await onlineQuery(t, f)
   const subs = q ? await findOnlineSubs(q).catch(() => []) : []
-  return subs.length ? { n: 'o' as number | string, lang: 'eng', label: 'English', forced: false, default: false, url: `${base}/osubs/best.vtt` } : undefined
+  return subs.length ? { n: 'o' as number | string, lang: 'eng', label: 'English', forced: false, default: false, url: `${base}/osubs/best.vtt`, sync: 'online:eng' } : undefined
 }
 
 /**
- * A subtitle as it should be served: shifted if it has been measured against the sound and the measurement is sure enough,
- * as it is otherwise. x-flix-sync tells the player where things stand, the way x-flix-complete does for a file still arriving:
- * "done" (measured, nothing more to wait for), "pending" (a measurement was just started or is running, ask again in a
- * little while) or "wait" (the video is not whole yet, so there is nothing to measure against). The request never waits for
- * the measurement. Needs the whole video and the whole subtitle, and `vtt` is the unshifted text.
+ * A subtitle as it should be served: shifted if it has been measured against the sound, by whatever the person watching nudged
+ * it, or both, and as it is otherwise. x-flix-sync tells the player where things stand, the way x-flix-complete does for a
+ * file still arriving: "done" (measured, nothing more to wait for), "pending" (a measurement was just started or is running,
+ * ask again in a little while) or "wait" (the video is not whole yet, so there is nothing to measure against). x-flix-sub-offset
+ * carries the person's own nudge back, so the player shows the number it set without asking for it separately. The request
+ * never waits for the measurement. Needs the whole video and the whole subtitle, and `vtt` is the unshifted text.
+ *
+ * A row the current fitter would not have made -- an older version's, or one that was never sure -- is measured again here
+ * rather than only when there is none at all. The old numbers are served meanwhile, so the worst case is that a subtitle
+ * sounds as it always did until the new answer arrives.
  */
 function syncedVtt(reply: any, t: number, f: number, key: string, vtt: string, whole: { source: string; duration: number } | null): string {
   const row = syncRow(t, f, key)
-  if (!row && whole) startSync(t, f, key, whole.source, whole.duration, vtt)
-  reply.header('x-flix-sync', row ? 'done' : whole ? 'pending' : 'wait')
-  return syncApplies(row) ? shiftVtt(vtt, row.offset_ms, row.scale) : vtt
+  const shift = shiftFor(t, f, key)
+  const settled = !!row && !needsMeasure(row)
+  if (whole && !settled) startSync(t, f, key, whole.source, whole.duration, vtt)
+  reply.header('x-flix-sync', settled ? 'done' : whole ? 'pending' : 'wait')
+  reply.header('x-flix-sub-offset', String(shift.manual))
+  return shiftVtt(vtt, shift.offsetMs, shift.scale)
 }
 
 app.get('/api/stream/:t/:f/osubs/best.vtt', guarded, async (req, reply) => {
@@ -691,7 +701,7 @@ async function externalSubs(t: number, f: number, base: string) {
     if (!fi.rel.is_pack) return true
     const tag = parseEpisodeTag(x.name.split('/').pop()!) ?? parseEpisodeTag(x.name)
     return !!mine && !!tag && tag.season === mine.season && mine.episode >= tag.episode && mine.episode <= tag.episodeEnd
-  }).map((x) => { const g = guessSubLang(x.name); return { n: `x${x.index}`, lang: g.lang, label: g.label, forced: g.forced, default: false, url: `${base}/xsubs/${x.index}.vtt` } })
+  }).map((x) => { const g = guessSubLang(x.name); return { n: `x${x.index}`, lang: g.lang, label: g.label, forced: g.forced, default: false, url: `${base}/xsubs/${x.index}.vtt`, sync: `file:${x.name}` } })
 }
 
 app.get('/api/stream/:t/:f/xsubs/:file', guarded, async (req, reply) => {
@@ -721,8 +731,21 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
   return syncedVtt(reply, +t, +f, `embedded:${m[1]}`, vtt, complete && p.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null)
 })
 
-// ---- downloads to a device ----------------------------------------------------
-/** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
+/**
+ * The nudge in the player: the person watching says the subtitles are early or late and by how much. Kept apart from the
+ * measurement (see subsync.ts) so measuring the same subtitle again cannot throw the correction away, and takes effect on the
+ * next VTT the player asks for. Zero is the reset: the row goes, and the measurement speaks for itself again. Only an offset
+ * is accepted -- drift is a property of the cut and the measurement's business, not something a browser may set.
+ */
+app.post('/api/sub/offset', guarded, async (req, reply) => {
+  const ask = offsetAsk(req.body)
+  if (typeof ask === 'string') return reply.code(400).send({ error: ask })
+  setManualOffset(ask.t, ask.f, ask.key, ask.offsetMs)
+  const shift = shiftFor(ask.t, ask.f, ask.key)
+  return { offsetMs: shift.manual, applied: shift.offsetMs, measured: shift.measured }
+})
+
+// ---- downloads to a device ----------------------------------------------------/** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
 const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
 /** How long a cast waits for it instead. Longer: the TV cannot be given a longer timeline later, the phone can. */
 const CAST_WAIT_MS = Number(process.env.CAST_WAIT_MS ?? 60_000)

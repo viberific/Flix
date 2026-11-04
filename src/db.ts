@@ -134,11 +134,22 @@ db.exec(`CREATE TABLE IF NOT EXISTS credits_marker (
 )`)
 
 // How far a subtitle sits from the speech in the audio, measured once per subtitle (see subsync.ts). `subtitle_key` names which
-// one it was (embedded:<index>, file:<name>, online:<lang>); a row is never measured again, so the numbers are kept raw and
-// whether to trust them is decided when they are read.
+// one it was (embedded:<index>, file:<name>, online:<lang>); the numbers are kept raw and whether to trust them is decided
+// when they are read. `fit_version` is which fitter measured it, so a row left by an older one can be measured again without
+// re-decoding a subtitle that a current fitter is already sure about (see FIT_VERSION in subsync.ts).
 db.exec(`CREATE TABLE IF NOT EXISTS sub_sync (
   torrent_id INTEGER NOT NULL, file_index INTEGER NOT NULL, subtitle_key TEXT NOT NULL,
   offset_ms INTEGER NOT NULL, scale REAL NOT NULL, confidence REAL NOT NULL, cues INTEGER NOT NULL, measured_at INTEGER NOT NULL,
+  PRIMARY KEY (torrent_id, file_index, subtitle_key)
+)`)
+try { db.exec('ALTER TABLE sub_sync ADD COLUMN fit_version INTEGER NOT NULL DEFAULT 1') } catch { /* already present */ }
+
+// A nudge somebody gave the subtitles themselves with the + and − in the player (see subsync.ts). It sits beside the
+// measurement rather than inside it, so measuring a subtitle again never throws away a correction a person made by eye. The
+// row only exists while the offset is not zero: no row means "whatever the measurement says".
+db.exec(`CREATE TABLE IF NOT EXISTS sub_offset (
+  torrent_id INTEGER NOT NULL, file_index INTEGER NOT NULL, subtitle_key TEXT NOT NULL,
+  offset_ms INTEGER NOT NULL, set_at INTEGER NOT NULL,
   PRIMARY KEY (torrent_id, file_index, subtitle_key)
 )`)
 

@@ -1293,7 +1293,9 @@ function playView(seriesId, season, label) {
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Quality" aria-haspopup="true" hidden></button></div>
-              <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-pressed="false" hidden>CC</button></div>
+              <button class="p-btn sub" id="psubm" aria-label="Subtitles a quarter of a second earlier" hidden>−</button>
+              <div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-pressed="false" hidden>CC</button><b class="p-subv" id="psubv" hidden aria-live="polite"></b></div>
+              <button class="p-btn sub" id="psubp" aria-label="Subtitles a quarter of a second later" hidden>+</button>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
         </div>
       <div class="p-wait" id="wait"><div class="mark" aria-hidden="true"><i class="aura"></i><i class="ripple"></i><i class="ripple r2"></i><span class="mark-lift">${I.logo.replace(/fxl-/g, 'fxp-')}<i class="sweep"></i><svg class="tracer" viewBox="0 0 112 112"><rect x="1" y="1" width="110" height="110" rx="26" ry="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="18 82"/></svg></span></div><div class="p-under"><div id="msg" role="status"></div><div class="p-now" id="pnow" hidden><div class="p-bar" id="pbar"><i id="pfill"></i></div><div class="p-eta"><span id="peta"></span><button class="p-more" id="pmore" type="button" aria-expanded="false" hidden>Details</button></div><div class="p-stats" id="pstats" hidden></div></div><button class="btn" id="cnc" hidden>Cancel</button></div></div></div>`
@@ -1308,6 +1310,9 @@ function playView(seriesId, season, label) {
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, syncT = null, v = null
+    // The nudge on the subtitles: the number this play has been given (0 means the measurement speaks for itself), the timer
+    // that takes a zero readout away again, and the two flags that keep a held button to one request at a time.
+    let subOff = 0, offT = null, offBusy = false, offAgain = false
     let meta = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
@@ -2066,7 +2071,7 @@ function playView(seriesId, season, label) {
       if (!alive) return
       if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
-      wireSubs(); wireSubMenu(); wireAudio(); wireQuality(); wireExtras()
+      wireSubs(); wireSubMenu(); wireNudge(); wireAudio(); wireQuality(); wireExtras()
     }
 
     function attach(startAt) {
@@ -2482,6 +2487,9 @@ function playView(seriesId, season, label) {
       }
       const btn = $('#pcc')
       if (btn) { btn.hidden = !engSub(); btn.classList.toggle('on', subPick != null); btn.setAttribute('aria-pressed', String(subPick != null)) }
+      // The nudge needs somewhere to put its number: a subtitle with no key (a file beside the video before it has arrived) is
+      // not offered the control at all, rather than offering buttons that cannot remember anything.
+      for (const id of ['#psubm', '#psubp']) { const b = $(id); if (b) b.hidden = !engSub()?.sync || !engSub() }
     }
     function setSubs(n) {
       subPick = n
@@ -2495,6 +2503,10 @@ function playView(seriesId, season, label) {
       // On unless the viewer has turned CC off on this device. A new key: the old one could hold an "off" left over from
       // the subtitle list, which kept CC off with nobody having asked for that.
       subPick = eng && store.get('cc', true) ? eng.n : null
+      // Whatever this subtitle was last nudged by is on the episode already (see /info), so the readout is right on the first
+      // frame rather than after a round trip, and a nudge made in another window is not lost by opening this one.
+      subOff = eng?.offset || 0
+      paintOff()
       if (eng) { mountTrack(eng); watchSync(eng) }
       // Whatever adds a track of its own, or turns one on, is put back to the one choice. Idempotent, so it cannot loop.
       v.textTracks.onaddtrack = applySubs
@@ -2635,6 +2647,65 @@ function playView(seriesId, season, label) {
       // 'canplay' as well as 'playing': a wait that ends in a picture that is ready but not yet moving is over.
       for (const ev of ['playing', 'canplay']) v.addEventListener(ev, ended)
       v.addEventListener('emptied', () => { since = 0; clearTimeout(longT) })
+    }
+
+    /* Subtitles that are nearly right: − and + either side of CC move every line a quarter of a second earlier or later, and
+       the server keeps that number per subtitle where it beats the automatic measurement (see subsync.ts). Held down they
+       repeat the way a keyboard does -- a moment, then a steady walk -- because the usual miss is a second or two and eight
+       presses is a lot of pressing. Walking back to 0 is the reset: the number goes, the measurement speaks for itself again
+       and the readout disappears with it. (nudgeSub, not nudge: that one is the seek.) */
+    const offText = () => `Subtitles ${subOff > 0 ? '+' : '−'}${(Math.abs(subOff) / 1000).toFixed(2).replace(/\.?0+$/, '')}s`
+    function paintOff() {
+      const el = $('#psubv')
+      if (!el) return
+      el.hidden = !subOff
+      if (subOff) el.textContent = offText()
+    }
+    /* The track once more, from the same URL the server now shifts by the new offset. A text track carries no clock of its
+       own, so a remount shows the change at once and leaves the picture where it is: nothing here seeks. */
+    function remountSub(s) { if (!s || !alive) return; mountTrack(s); applySubs() }
+    async function pushOff(s) {
+      if (offBusy) { offAgain = true; return } // a held button: one request in the air, the last number wins
+      offBusy = true
+      try { await api('/api/sub/offset', { torrentId: play.torrentId, fileIndex: play.fileIndex, key: s.sync, offsetMs: subOff }) }
+      catch { /* the number stays on screen and the next press sends it again; nothing about playing depends on it */ }
+      offBusy = false
+      if (offAgain) { offAgain = false; return pushOff(s) }
+      if (alive) remountSub(s)
+    }
+    function nudgeSub(delta) {
+      const s = engSub()
+      if (!s?.sync) return
+      const next = Math.min(30000, Math.max(-30000, subOff + delta))
+      if (next === subOff) return
+      subOff = next
+      paintOff()
+      clearTimeout(offT)
+      offT = setTimeout(paintOff, 2600) // after a run of presses a zero readout goes away; a real offset stays while it shows
+      void pushOff(s)
+    }
+    /* A phone holds them with a finger and a remote presses Enter on them, so both routes end in nudgeSub(): pointer presses
+       repeat while held, and a click with no pointer behind it (e.detail 0: Enter, OK, the space bar) is one step. They are
+       ordinary .p-btn stops in the bar, so the arrow keys already walk past them and html.tv styles them like the rest. */
+    function wireNudge() {
+      for (const [id, delta] of [['#psubm', -250], ['#psubp', 250]]) {
+        const b = $(id)
+        if (!b) continue
+        let hold = null, rep = null
+        const stop = () => { clearTimeout(hold); clearInterval(rep); hold = rep = null }
+        b.onpointerdown = (e) => {
+          e.preventDefault(); e.stopPropagation()
+          nudgeSub(delta); wake()
+          document.addEventListener('pointerup', stop, { once: true })
+          document.addEventListener('pointercancel', stop, { once: true })
+          hold = setTimeout(() => { rep = setInterval(() => nudgeSub(delta), 130) }, 420)
+        }
+        b.onpointerup = stop
+        b.onpointerleave = stop
+        b.onpointercancel = stop
+        b.onclick = (e) => { e.stopPropagation(); if (e.detail === 0) { nudgeSub(delta); wake() } }
+      }
+      paintOff()
     }
 
     /* captions: CC is a switch, not a list. On means the English subtitles, off means none. */
