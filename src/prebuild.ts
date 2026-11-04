@@ -4,7 +4,7 @@ import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { diag } from './diag.ts'
 import { fileInfo } from './streaming.ts'
-import { audioDirect, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, probe } from './transcode.ts'
+import { audioDirect, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, probe, type ProbeOptions } from './transcode.ts'
 import { engineFiles } from './wanted.ts'
 
 /**
@@ -57,8 +57,8 @@ export async function prebuildCandidates(): Promise<Candidate[]> {
 }
 
 /** Whether a player would need a playlist for this file at all, and whether the copy is the cheap kind (picture untouched). */
-export async function needsCopy(torrentId: number, fileIndex: number, complete = true) {
-  const p = await probe(torrentId, fileIndex, { complete })
+export async function needsCopy(torrentId: number, fileIndex: number, opts: ProbeOptions = { complete: true }) {
+  const p = await probe(torrentId, fileIndex, opts)
   if (directPlay(p) && audioDirect(p)) return { wanted: false, copy: false, p } // plays as it is: nothing to build
   // The picture can be copied for H.264/HEVC in TS. Anything else would be a full encode: left to the play, not built ahead.
   return { wanted: true, copy: copyPictureFor(p), p }
@@ -70,18 +70,22 @@ export async function needsCopy(torrentId: number, fileIndex: number, complete =
  */
 export async function prebuildOne(torrentId: number, fileIndex: number, opts: { source?: string } = {}): Promise<string | null> {
   try {
-    const { wanted, copy } = await needsCopy(torrentId, fileIndex)
+    const fi = await fileInfo(torrentId, fileIndex).catch(() => null)
+    // The path is built the one way it is built everywhere, and handed on so a file that is already whole is read from the
+    // disk instead of being streamed back to us through /raw.
+    const source = opts.source ?? (fi ? join(fi.layout.savePath, fi.file.name) : undefined)
+    const local = { complete: true, source, savePath: fi?.layout.savePath }
+    const { wanted, copy } = await needsCopy(torrentId, fileIndex, local)
     if (!wanted) { setMarker(torrentId, fileIndex); return null }
     if (!copy) { diag('prebuild', 'left for the play: this picture would have to be re-encoded', { torrentId, fileIndex }); return null }
-    const fi = await fileInfo(torrentId, fileIndex).catch(() => null)
     const size = fi?.file.size ?? 0
     // Room first: the copy comes to about the size of the file, and the oldest copies nobody is watching are evicted to
     // make it, so the cap holds before it is reached rather than after the disk is full.
     const cap = Math.round(config.hls.cacheMaxGb * 1e9)
     evictHls(Math.max(0, cap - size))
     const started = Date.now()
-    const dir = await ensureHls(torrentId, fileIndex, await probe(torrentId, fileIndex, { complete: true }), 0, false,
-      { complete: true, source: opts.source ?? (fi ? join(fi.layout.savePath, fi.file.name) : undefined), lowPriority: true })
+    const dir = await ensureHls(torrentId, fileIndex, await probe(torrentId, fileIndex, local), 0, false,
+      { complete: true, source, lowPriority: true })
     keepHls(torrentId, fileIndex, config.hls.keepHours * 3600_000)
     setMarker(torrentId, fileIndex)
     const bytes = hlsCacheBytes().find((x) => join(config.dataDir, 'hls', x.dir) === dir)?.bytes ?? 0

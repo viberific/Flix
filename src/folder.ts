@@ -11,7 +11,8 @@ import { catalogChanged } from './seasons.ts'
  * only what it put there, leaving the folder clean. It never deletes a file it did not download or adopt.
  */
 
-const inside = (dir: string, root = config.downloadDir) => { const r = relative(root, dir); return !!r && !r.startsWith('..') && !r.startsWith(sep) && r !== '' }
+/** True when `dir` really sits under `root` -- and never when it is `root` itself or a `..` away from it. */
+export const inside = (dir: string, root = config.downloadDir) => { const r = relative(root, dir); return !!r && !r.startsWith('..') && !r.startsWith(sep) && r !== '' }
 
 /** True when a folder (and everything under it) holds no files at all. */
 function hasNoFiles(dir: string): boolean {

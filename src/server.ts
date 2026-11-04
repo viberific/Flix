@@ -523,7 +523,8 @@ async function warmNextEpisode(userId: number, seriesId: number, season: number 
   if (!(await autoFetch(userId, next, 'up next, warming the first piece'))) return
   const r = await startPlayback(userId, next.torrentId, undefined, { episodeLabel: next.isPack && next.episode === null ? undefined : next.label, auto: true })
   const fi = await fileInfo(r.torrentId, r.fileIndex).catch(() => null)
-  const p = await probe(r.torrentId, r.fileIndex, { complete: (fi?.file.progress ?? 0) >= 1 })
+  const complete = (fi?.file.progress ?? 0) >= 1
+  const p = await probe(r.torrentId, r.fileIndex, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, savePath: fi?.layout.savePath })
   // The same choice /info makes, in the same order. Bytes that can be served as they are need nothing done to them.
   if (p.direct) return
   // A finished file that will play as a playlist: read where its keyframes are now (a read of the file, no decoding), so
@@ -595,7 +596,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const fi = await fileInfo(+t, +f)
   const complete = (fi?.file.progress ?? 0) >= 1
   const source = fi ? join(fi.layout.savePath, fi.file.name) : undefined
-  const p = await probe(+t, +f, { complete })
+  const p = await probe(+t, +f, { complete, source, savePath: fi?.layout.savePath })
   // The smaller sizes worth offering (only ones below the picture's own), and the one the player asked for ("q"): a phone on
   // a slow connection, by its own choice or because its Auto setting saw the picture keep stalling. A size is a conversion,
   // so it skips the direct play and the repack below.
@@ -703,7 +704,7 @@ app.get('/api/stream/:t/:f/osubs/best.vtt', guarded, async (req, reply) => {
   const vtt = q ? await bestOnlineSubVtt(q).catch(() => null) : null
   if (vtt == null) return reply.code(404).send({ error: 'subtitle unavailable' })
   const fi = await fileInfo(+t, +f)
-  const p = fi && fi.file.progress >= 1 ? await probe(+t, +f, { complete: true }) : null
+  const p = fi && fi.file.progress >= 1 ? await probe(+t, +f, { complete: true, source: join(fi.layout.savePath, fi.file.name), savePath: fi.layout.savePath }) : null
   const whole = fi && p?.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null
   return reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', '1').send(syncedVtt(reply, +t, +f, 'online:eng', vtt, whole))
 })
@@ -730,7 +731,7 @@ app.get('/api/stream/:t/:f/xsubs/:file', guarded, async (req, reply) => {
   reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', ready ? '1' : '0')
   if (!ready) return 'WEBVTT\n\n'
   const vtt = await fileSubtitleVtt(join(fi.layout.savePath, sub.name))
-  const p = fi.file.progress >= 1 ? await probe(+t, +f, { complete: true }) : null
+  const p = fi.file.progress >= 1 ? await probe(+t, +f, { complete: true, source: join(fi.layout.savePath, fi.file.name), savePath: fi.layout.savePath }) : null
   return syncedVtt(reply, +t, +f, `file:${sub.name}`, vtt, p?.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null)
 })
 
@@ -739,8 +740,8 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
   const { t, f, file } = req.params as any
   const m = /^(\d{1,2})\.vtt$/.exec(file)
   if (!m) return reply.code(404).send({ error: 'no such subtitle' })
-  const p = await probe(+t, +f)
   const fi = await fileInfo(+t, +f)
+  const p = await probe(+t, +f, fi ? { complete: fi.file.progress >= 1, source: join(fi.layout.savePath, fi.file.name), savePath: fi.layout.savePath } : {})
   if (!fi || !p.subs.some((s) => s.n === +m[1])) return reply.code(404).send({ error: 'no such subtitle' })
   const { vtt, complete } = await subtitleVtt(+t, +f, +m[1], fi.file.progress, p.duration ?? 0)
   reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0')
@@ -826,7 +827,8 @@ app.get('/api/stream/:t/:f/offline', guarded, async (req) => {
   const fi = await fileInfo(+t, +f)
   if (!fi) throw notFound('That video is not downloading')
   if (fi.file.progress < 1) return { state: 'waiting', progress: fi.file.progress }
-  const r = await offlineCopy(+t, +f, await probe(+t, +f), join(fi.layout.savePath, fi.file.name))
+  const source = join(fi.layout.savePath, fi.file.name)
+  const r = await offlineCopy(+t, +f, await probe(+t, +f, { complete: true, source, savePath: fi.layout.savePath }), source)
   return r.state === 'ready' ? { state: 'ready', size: r.size } : r
 })
 
@@ -834,7 +836,8 @@ const offlineFileHandler = async (req: any, reply: any) => {
   const { t, f } = req.params as any
   const fi = await fileInfo(+t, +f)
   if (!fi || fi.file.progress < 1) return reply.code(409).send({ error: 'Not ready yet' })
-  const r = await offlineCopy(+t, +f, await probe(+t, +f), join(fi.layout.savePath, fi.file.name))
+  const source = join(fi.layout.savePath, fi.file.name)
+  const r = await offlineCopy(+t, +f, await probe(+t, +f, { complete: true, source, savePath: fi.layout.savePath }), source)
   if (r.state !== 'ready') return reply.code(409).send({ error: 'Not ready yet' })
   let start = 0, end = r.size - 1
   const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '')
@@ -910,7 +913,7 @@ async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
   if (file === 'index.m3u8' || !touchHls(+t, +f, a, false, encode, maxH)) {
     const fi = await fileInfo(+t, +f)
     const complete = (fi?.file.progress ?? 0) >= 1
-    const p = await probe(+t, +f, { complete })
+    const p = await probe(+t, +f, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, savePath: fi?.layout.savePath })
     try { await ensureHls(+t, +f, p, a, false, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, encode, maxHeight: maxH }) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
   }
   const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'

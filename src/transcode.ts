@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { config } from './config.ts'
 import { hitch, diag } from './diag.ts'
+import { inside } from './folder.ts'
 import { videoEncode, notePace, demoteHardware, type EncodeTarget } from './encode.ts'
 
 const execFileP = promisify(execFile)
@@ -115,8 +116,41 @@ const HDR_TRC = new Set(['smpte2084', 'arib-std-b67'])
  */
 const probeMs = () => Number(process.env.PROBE_TIMEOUT_MS ?? 300_000)
 
-/** ffprobe the file through our own range endpoint, then decide: serve raw bytes or remux/transcode to HLS. */
-export async function probe(torrentId: number, fileIndex: number, opts: { complete?: boolean } = {}): Promise<Probe> {
+/** What a caller may tell the probe about the file it is asking about. */
+export interface ProbeOptions {
+  /** The download is whole: the answer is kept, and the file itself can be read from the disk. */
+  complete?: boolean
+  /** The file on the disk, built the one way it is built everywhere: join(layout.savePath, file.name). */
+  source?: string
+  /** The folder the torrent was saved in: `source` is only opened when it really sits inside it. */
+  savePath?: string
+}
+
+/**
+ * What ffprobe is handed for this file: the path on the disk when the download is whole, a URL that streams it back
+ * through this server when it is not.
+ *
+ * A finished file is read straight off the disk. Through /raw, ffprobe walks it from byte 0 to EOF by asking this server
+ * for it over HTTP, and on a completed 614 MB episode that is 614 MB read, sent and read again -- 43 seconds of it --
+ * before a single frame is on screen; it happened on the first play after every restart, because what probes remember
+ * lives in memory and a restart forgets it. A file still arriving has no such choice and must go through /raw: only the
+ * pieces that have arrived are on the disk, and the route is what waits for the next one instead of reading a hole.
+ *
+ * Two things are demanded before the disk is touched, and both fail towards /raw: the caller must have said the file is
+ * whole, and the path must really sit inside the folder the torrent was saved in. A path that has wandered out of it is
+ * not this app's file, whatever a caller passes, so it is never opened -- and with no save folder declared there is
+ * nothing to prove the path is inside, so the file is streamed like any other.
+ */
+export function probeSource(torrentId: number, fileIndex: number, opts: ProbeOptions = {}): string {
+  const { complete, source, savePath } = opts
+  if (!complete || !source || !savePath) return rawUrl(torrentId, fileIndex)
+  if (inside(source, savePath) && existsSync(source)) return source
+  hitch('probe', 'a finished file was offered from outside its save folder, streaming it instead', { torrentId, fileIndex })
+  return rawUrl(torrentId, fileIndex)
+}
+
+/** ffprobe the file -- from the disk when it is whole, through our own range endpoint when it is not -- then decide: serve raw bytes or remux/transcode to HLS. */
+export async function probe(torrentId: number, fileIndex: number, opts: ProbeOptions = {}): Promise<Probe> {
   const key = `${torrentId}:${fileIndex}`
   const hit = probes.get(key)
   // A probe of a file that has finished downloading is the whole truth about it and is kept. One taken while it was still
@@ -124,8 +158,9 @@ export async function probe(torrentId: number, fileIndex: number, opts: { comple
   // report no height (or no audio stream) and that answer was kept for ever before, which is what made a playable 4K file
   // announce itself as needing converting.
   if (hit && (hit.complete || !opts.complete)) return hit.p
-  const raw = rawUrl(torrentId, fileIndex)
-  const ask = (ms: number) => execFileP('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', raw], { timeout: ms, maxBuffer: 8 << 20 })
+  // The disk when the file is whole, /raw when it is not (see probeSource above): this is the one read that walks it.
+  const input = probeSource(torrentId, fileIndex, opts)
+  const ask = (ms: number) => execFileP('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', input], { timeout: ms, maxBuffer: 8 << 20 })
   const failed = (e: any, ms: number) => new Error(`ffprobe failed (code=${e.code} signal=${e.signal} killed=${e.killed} budgetMs=${ms}): ${String(e.stderr || e.message).replace(config.internalKey, '***').trim().slice(0, 500)}`)
   // A probe that ran out of time is asked once more with room to finish, and only then does the play see an error.
   const { stdout } = await ask(probeMs()).catch((e) => {

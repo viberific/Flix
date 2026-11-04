@@ -44,7 +44,7 @@ export async function planExtras() {
       const fi = await fileInfo(t, f).catch(() => null)
       if (!fi || fi.file.progress < 1) continue // still arriving: next pass
       const source = join(fi.layout.savePath, fi.file.name)
-      const p = await probe(t, f, { complete: true }).catch(() => null) // one probe answers every job
+      const p = await probe(t, f, { complete: true, source, savePath: fi.layout.savePath }).catch(() => null) // one probe answers every job
       if (!p?.duration) { tried.set(key, (tried.get(key) ?? 0) + 1); continue }
       // Read before anything decodes: a playlist cut on these is what makes a copied picture seekable at once.
       if (!p.direct) await keyframes(t, f, source)
