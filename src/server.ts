@@ -563,7 +563,11 @@ app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
     const audio = Number(m[1] ?? m[2] ?? m[4] ?? 0)
     const maxH = Number(m[3] ?? 0)
     const encode = !!(m[2] || m[3])
-    if (dropHls(+t, +f, audio, false, encode, maxH)) return { ok: true, dropped: true }
+    // Only a CONVERTED cut is dropped at once: it is the one that costs the box a whole CPU core and its reread of the
+    // file, and it is the one that holds the slot while the size being asked for is built. A copied picture is cheap and
+    // is the fallback a viewer steps back up to, so it keeps the ordinary grace -- dropping it made that step back a
+    // rebuild, and a rebuild takes longer than hls.js will retry for (seen on the box, 2026-11-04 15:16:26).
+    if (encode && dropHls(+t, +f, audio, false, true, maxH)) return { ok: true, dropped: true }
   }
   releaseHls(+t, +f)
   return { ok: true }
