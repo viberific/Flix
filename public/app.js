@@ -2297,6 +2297,15 @@ function playView(seriesId, season, label) {
        * and -- when a swap has just taken that clock to zero -- the last position it showed.
        */
       const wantAt = () => resumeOwed || (v && v.currentTime > 1 ? Math.max(v.currentTime, held) : heldPos())
+      /**
+       * Where this source is being opened, decided once for the whole attach. Declared HERE, outside the branch that plays a
+       * playlist, because the guard below (a rebuilt source that came back behind where it aimed is put forward again) reads
+       * it too: it was `const openAt` inside the playlist branch and read outside it, and that is a ReferenceError -- not a
+       * wrong position -- so EVERY attach that aimed past five seconds threw "openAt is not defined": every quality change,
+       * every recovery, every retry after a stall. That is what "stop the video and start it again to get it to work" was,
+       * from 0.3.89 until here: the in-place repair could never run, and only a fresh open ever worked.
+       */
+      const openAt = wantAt()
       if (viaHls) {
         // startPosition: open straight at the resume point instead of loading the first piece and jumping -- but only while
         // that point is still owed. It does not expire inside hls.js: StreamController.onMediaAttached calls
@@ -2306,7 +2315,6 @@ function playView(seriesId, season, label) {
         // it; swapMedia() below hands any re-attach the live clock.
         // No CEA-608 captions from inside the picture: they arrived as a second, unlabelled captions track of their own,
         // which is how the CC list ended up with two entries ticked at once.
-        const openAt = wantAt()
         hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true, ...(openAt > 5 ? { startPosition: openAt } : {}) })
         hls.loadSource(url); hls.attachMedia(v)
         let mediaFixes = 0
