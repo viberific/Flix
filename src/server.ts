@@ -22,7 +22,7 @@ import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs
 import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { startPrebuild } from './prebuild.ts'
-import { copyPictureFor, ensureHls, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
+import { copyPictureFor, ensureHls, hlsBuild, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
@@ -548,7 +548,10 @@ app.get('/api/stream/:t/:f/status', guarded, async (req) => {
   if (!('error' in s)) void enableNextFile(+t, +f).catch(() => {})
   // The same poll says something is playing, which is what slows the downloads down (pace.ts). Fire and forget as well.
   void setWatching(true, `${t}:${f}`).catch(() => {})
-  return s
+  // A cold play is handed pieces as ffmpeg cuts them, and the player gives up on a slow one long before the box has stopped
+  // working (2026-11-05 13:44:46: Try again two seconds after a recovery). How far the pieces have got says whether waiting
+  // is worth it: the player reads this before spending its last retry.
+  return 'error' in s ? s : { ...s, hls: hlsBuild(+t, +f) }
 })
 
 /**

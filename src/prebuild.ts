@@ -39,13 +39,16 @@ export interface Candidate { torrentId: number; fileIndex: number; size: number;
  * ones somebody picked have arrived), and not the kind of file that plays as it is -- a file that needs no playlist needs
  * no copy, and one whose picture has to be re-encoded is left to the play rather than tying the box up for an hour.
  */
-export async function prebuildCandidates(): Promise<Candidate[]> {
-  const rows = db.prepare(`SELECT d.torrent_id AS torrentId, r.info_hash AS infoHash, r.is_pack AS isPack, r.group_name AS group
+export async function prebuildCandidates(filesOf: typeof engineFiles = engineFiles): Promise<Candidate[]> {
+  // No alias is named `group`: GROUP is a keyword in SQLite, and `r.group_name AS group` is a syntax error at prepare time,
+  // not a bad row -- which threw this whole query every tick for seven versions and copied nothing ahead (0.3.89-0.3.96).
+  // test/prebuild-candidates.test.ts runs this statement against real rows so a keyword can never silence it again.
+  const rows = db.prepare(`SELECT d.torrent_id AS torrentId, r.info_hash AS infoHash, r.is_pack AS isPack
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id
-    WHERE d.state = 'active' ORDER BY d.added_at DESC`).all() as { torrentId: number; infoHash: string; isPack: number; group: string }[]
+    WHERE d.state = 'active' ORDER BY d.added_at DESC`).all() as { torrentId: number; infoHash: string; isPack: number }[]
   const out: Candidate[] = []
   for (const r of rows) {
-    const files = await engineFiles(r.infoHash).catch(() => [])
+    const files = await filesOf(r.infoHash).catch(() => [])
     for (const f of files) {
       if (f.progress < 1) continue
       if (r.isPack && !(f.priority > 0)) continue // a pack's other episodes have not been fetched at all

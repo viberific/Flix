@@ -1308,6 +1308,11 @@ function playView(seriesId, season, label) {
     // After the rest of this view's declarations (fill, wake) exist, so paint() can read them.
     Promise.resolve().then(() => { wirePlayer(); loadMeta() })
     let alive = true, hls = null, timer = null, haveT = null, idleT = null, cdT = null, subT = null, syncT = null, v = null
+    // How far the box has got cutting this file's pieces, when it is still doing so: read by the status loop, spent by
+    // coldGrace in attach. null: nothing is being made for this file.
+    let buildNow = null
+    // The number of the last /info ask: an older answer than that one is thrown away rather than filling `info` in (see loadInfo).
+    let infoSeq = 0
     // The nudge on the subtitles: the number this play has been given (0 means the measurement speaks for itself), the timer
     // that takes a zero readout away again, and the two flags that keep a held button to one request at a time.
     let subOff = 0, offT = null, offBusy = false, offAgain = false
@@ -1919,7 +1924,7 @@ function playView(seriesId, season, label) {
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
-      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearInterval(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearTimeout(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
       carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
@@ -1955,7 +1960,7 @@ function playView(seriesId, season, label) {
       // The old source's intro hold must not fire on the new one: it took the wait screen down while the new file was still
       // being fetched, and left `holding` set for a picture that had never been held.
       clearTimeout(holdT); holding = false
-      clearInterval(timer); clearTimeout(subT); clearInterval(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
+      clearInterval(timer); clearTimeout(subT); clearTimeout(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
       // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
       // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
       // moment could bring up "Up next" in the middle of the new copy, which is cut differently.
@@ -2053,10 +2058,15 @@ function playView(seriesId, season, label) {
     }
 
     async function loadInfo(a, startAt) {
+      // Answers can come back out of order: a step-down, then a second one before the first had landed, and the older
+      // answer -- the size just left -- replaced the newer one. That is a picture flapping 1080 <-> 720 for one episode
+      // (2026-11-04, four quality recoveries on torrent 2273108), so only the last ask is allowed to fill `info` in.
+      const seq = ++infoSeq
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
       const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
-      info = await api(`${base}/info${q ? '?' + q : ''}`)
-      if (!alive) return
+      const got = await api(`${base}/info${q ? '?' + q : ''}`)
+      if (seq !== infoSeq || !alive) return
+      info = got
       // A saved audio-language choice (on this device) wins over the file's default track.
       if (!a) {
         const want = store.get('audio', null)
@@ -2194,10 +2204,20 @@ function playView(seriesId, season, label) {
           const st = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/status`).catch(() => null)
           if (!alive || !st || st.error) return
           haveFrac = Math.max(haveFrac, Math.min(1, Number(st.fileProgress) || 0))
+          // Whether the box is still cutting this file's pieces, and how far it has got: what tells a cold start from a box
+          // that has stopped, when the player has run out of its own patience (see coldGrace in attach).
+          buildNow = st.hls && st.hls.made < st.hls.of ? { made: st.hls.made, of: st.hls.of, at: Date.now() } : null
           syncBar()
-          if (haveFrac >= 1) { clearInterval(haveT); haveT = null }
+          // Nothing left to ask: the file is all here and no piece of it is still being made.
+          if (haveFrac >= 1 && !buildNow) { clearTimeout(haveT); haveT = null }
         }
-        haveT = setInterval(haveStatus, 4000); haveStatus()
+        // The wait screen's numbers are worth 4 seconds until the picture starts; an episode being cut as it plays is worth a
+        // look every 20 while it lasts, and the loop ends the moment there is nothing left to learn.
+        const haveLoop = async () => {
+          await haveStatus()
+          if (alive && haveT) haveT = setTimeout(() => void haveLoop(), started ? 20_000 : 4000)
+        }
+        haveT = setTimeout(() => void haveLoop(), 0)
         // What the player itself felt: a stall, a seek, a picture that dropped to a lower resolution. The server only sees its
         // side of a gap, and the two timestamps together say which end was slow.
         watchStalls(v, () => play)
@@ -2326,10 +2346,17 @@ function playView(seriesId, season, label) {
         const swapMedia = () => { hls.config.startPosition = wantAt() || -1; hls.recoverMediaError() }
         hls.on(Hls.Events.ERROR, (_, d) => {
           if (!d.fatal) return
+          // Every fatal error is written down before anything is done about it. The second one used to reach the viewer as the
+          // generic sentence with NOTHING in the log -- 2026-11-05 13:44:46 played three seconds after a recovery and died with
+          // only that sentence to show for it, so the next occurrence could not be explained.
+          noteHlsProblem(d)
           // A dropped request or a decoder hiccup is not the end of the episode: hls.js can pick up from both, which is
           // what it is asked to do (twice) before anything is said to the viewer.
           if (d.type === Hls.ErrorTypes.NETWORK_ERROR && mediaFixes < 2) { mediaFixes++; hls.startLoad(liveOrNothing()); return }
           if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaFixes < 2) { mediaFixes++; swapMedia(); return }
+          // The box was still cutting this file's pieces a moment ago. A cold start feeds the player as it goes and hls.js runs
+          // out of patience long before ffmpeg is done, so the retry budget is spent on a build that was going to arrive.
+          if (coldGrace(d.type === Hls.ErrorTypes.MEDIA_ERROR ? swapMedia : () => hls.startLoad(liveOrNothing()))) return
           hls?.destroy(); hls = null
           // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(resumeTarget()) } else fail('Something went wrong playing this. Go back and try again.')
@@ -2413,6 +2440,48 @@ function playView(seriesId, season, label) {
     const heldPos = () => {
       const at = resumePoint({ clock: v && v.currentTime, held, saved: savedPos })
       return at > 1 ? at : 0
+    }
+    /**
+     * A fatal error from hls.js, in the log with hls.js's own words.
+     *
+     * The FIRST such error already reached the log through noteRecover('error'). The second did not: the player went straight
+     * to fail(), which posts the generic sentence to /api/report and nothing else, so 2026-11-05 13:44:46 showed the viewer
+     * "Something went wrong playing this" two seconds after a recovery with no record anywhere of what actually failed --
+     * type, details, error code, readyState, clock. This is that record.
+     */
+    const noteHlsProblem = (d) => {
+      const err = d?.error ?? {}
+      api('/api/diag/client', {
+        kind: 'error', at: Math.round((v?.currentTime || 0) * 10) / 10, height: v?.videoHeight || null,
+        readyState: v?.readyState ?? null, paused: !!v?.paused, attempts: recoveries,
+        // why and code are cut short by the server: the type and details are what name the failure, the code is what the box
+        // said, and the message carries the URL's tail (which segment, which playlist) and hls.js's own sentence.
+        why: String(d?.details ?? d?.type ?? 'unknown'), code: `${d?.type ?? ''}${err.code ? '/' + err.code : ''}`,
+        message: [err.message, d?.frag ? `seg ${d.frag.sn ?? '?'}` : '', d?.url ? String(d.url).split('/').slice(-2).join('/') : ''].filter(Boolean).join(' | '),
+        torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null,
+      }).catch(() => {})
+    }
+    /**
+     * One more go for error that arrived while the box was still cutting the episode.
+     *
+     * A cold play is handed its pieces as ffmpeg makes them, and hls.js spends its patience on a build that was going to
+     * arrive anyway: on 2026-11-05 13:44:46 the pieces were still coming (made 51 of 173) when the player gave up three
+     * seconds into the picture. The claim is CHECKED against the server, never assumed: with nothing being made for this file,
+     * or a report staler than twelve seconds, the answer is no and the Try again screen comes up as before. Bounded twice over
+     * -- four extra goes, and never more than ninety seconds of them -- so a box whose encoder has died still ends there.
+     */
+    let coldTries = 0, coldFrom = 0
+    const coldGrace = (resume) => {
+      if (coldTries >= 4 || castingOnly) return false
+      const t = Date.now()
+      if (!coldFrom) coldFrom = t
+      if (t - coldFrom > 90_000) return false
+      const b = buildNow
+      if (!b || !b.of || b.made >= b.of || t - b.at > 12_000) return false
+      coldTries++
+      noteRecover('cold', heldPos(), v?.currentTime || 0)
+      try { resume() } catch { return false }
+      return true
     }
     /** A rebuild that put the picture back somewhere else, recorded: restarts used to leave no trace in the log at all. */
     let recoveries = 0
@@ -2670,8 +2739,12 @@ function playView(seriesId, season, label) {
     }
     /** Load the size qAsk() names at the spot the viewer is at. Stalls right after the switch are the new stream starting. */
     let qQuietUntil = 0
+    // A switch has been asked for and has not landed yet. Without it, the three short waits that come with a cold play could
+    // ask for the same step down again while the first was still on its way, and the second answer is what put the size back.
+    let qSwitching = false
     async function switchQuality() {
       qQuietUntil = Date.now() + 15_000
+      qSwitching = true
       // Never the clock alone: a step-down happens because the picture stalled, and a stalled element can read 0 while the
       // show is half an hour in. The held position is what the viewer was actually watching.
       const at = heldPos()
@@ -2680,7 +2753,7 @@ function playView(seriesId, season, label) {
       // for was started over the box's conversion cap and starved for the rest of the episode (2026-11-04 14:53:55).
       const left = String(info?.url || '')
       if (left && play) fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: left }) }).catch(() => {})
-      try { await loadInfo(info.audioIndex ?? 0, at) } catch (err) { fail(err.message) }
+      try { await loadInfo(info.audioIndex ?? 0, at) } catch (err) { fail(err.message) } finally { qSwitching = false }
     }
     /**
      * Auto: the picture ran dry three times in a minute and a half, or once for ten seconds, while nobody was seeking. That
@@ -2695,7 +2768,7 @@ function playView(seriesId, season, label) {
       let stalls = [], longT = null, since = 0
       const stepDown = () => {
         clearTimeout(longT); stalls = []
-        if (qSetting() !== 'auto' || castingOnly || !alive) return
+        if (qSetting() !== 'auto' || castingOnly || !alive || qSwitching) return
         const next = (info.qualities || []).find((h) => h < (info.quality || Infinity))
         if (!next) return
         autoQuality = next

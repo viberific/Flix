@@ -500,6 +500,23 @@ export function hlsSummary() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * How far the pieces of this file have got, so the player can tell a box that is still cutting an episode from one that has
+ * stopped: a cold play is served the pieces as they are made, and hls.js runs out of patience long before a 1080p copy is
+ * finished. `made` of `of` pieces, taken from the job furthest along for this file. null: nothing is being made for it.
+ */
+export function hlsBuild(torrentId: number, fileIndex: number): { made: number; of: number } | null {
+  let best: { made: number; of: number } | null = null
+  for (const [key, j] of jobs) {
+    if (!j.vod) continue
+    const [t, f] = key.split(':')
+    if (Number(t) !== torrentId || Number(f) !== fileIndex) continue
+    const made = j.vod.done.size, of = j.vod.count
+    if (!best || made > best.made) best = { made, of }
+  }
+  return best
+}
+
 // ---- keyframes: where a copied picture can be cut ---------------------------------------------------------------
 const kfRoot = () => join(config.dataDir, 'keyframes')
 const kfBusy = new Map<string, Promise<number[] | null>>()
