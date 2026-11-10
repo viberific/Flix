@@ -221,7 +221,11 @@ interface Vod {
   rebuild?: () => Promise<void>
   retried?: boolean
 }
-interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number; low?: boolean }
+interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number; low?: boolean
+  /** A player has asked this job for a piece: it is being watched, not merely prepared. */
+  played?: boolean
+  /** The opening minutes were cut ahead of the play (buildHead), and how many times ffmpeg was started for that. */
+  head?: boolean; headTries?: number }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
 
@@ -231,8 +235,12 @@ const hlsRoot = () => join(config.dataDir, 'hls')
  * -threads 1 before -i (see ensureHls), and the whole process is niced if this box has nice.
  */
 const NICE = existsSync('/bin/nice') || existsSync('/usr/bin/nice')
+/** The idle disk class as well, where the box has ionice: a copy cut while an episode plays reads the drive the player reads. */
+const IONICE = ['/usr/bin/ionice', '/bin/ionice'].find((p) => existsSync(p))
 const spawnFf = (args: string[], low?: boolean) => (low && NICE
-  ? spawn('nice', ['-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'inherit'] })
+  ? (IONICE
+    ? spawn(IONICE, ['-c3', 'nice', '-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'inherit'] })
+    : spawn('nice', ['-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'inherit'] }))
   : spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] }))
 
 /**
@@ -421,12 +429,13 @@ function scanDone(j: Job) {
 
 function vodNext(v: Vod, r: Run) { let n = r.from; while (v.done.has(n)) n++; return n }
 
-function startRun(j: Job, n: number) {
+/** `limit` ends the run before that piece even when nothing is there yet: a head cut ahead of the play stops at its last piece. */
+function startRun(j: Job, n: number, limit = Infinity) {
   const v = j.vod!
   v.run?.proc.kill('SIGKILL')
   scanDone(j)
   let stopAt = n + 1
-  while (stopAt < v.count && !v.done.has(stopAt)) stopAt++ // stop where the next piece already exists instead of encoding it again
+  while (stopAt < v.count && stopAt < limit && !v.done.has(stopAt)) stopAt++ // stop where the next piece already exists instead of encoding it again
   const started = Date.now()
   const proc = spawnFf(v.start(n, stopAt >= v.count ? Infinity : stopAt), !!j.low)
   const run: Run = { proc, from: n, stopAt: stopAt >= v.count ? Infinity : stopAt, exited: false }
@@ -446,7 +455,7 @@ function startRun(j: Job, n: number) {
  */
 export async function vodSegment(torrentId: number, fileIndex: number, file: string, signal: AbortSignal, audio = 0, hdr = false, encode = false, maxH = 0): Promise<string | null | undefined> {
   const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode, maxH))
-  if (j) j.touched = Date.now() // a player is on this job: the cap and the prebuild both read this
+  if (j) { j.touched = Date.now(); j.played = true; j.low = false } // a player is on this job: the cap and the prebuild both read this, and its pieces are no longer background work
   const v = j?.vod
   if (!j || !v) return undefined
   const m = /^seg(\d{5})\.ts$/.exec(file)
@@ -787,9 +796,69 @@ export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = 
   // the prebuild checks before it starts reading the same disk. It was only ever set when the job was created, so a job
   // playing for half an hour looked idle to both.
   j.touched = Date.now()
+  j.played = true
   clearTimeout(j.idle)
   j.idle = setTimeout(() => stopJob(key), 10 * 60_000).unref()
   return true
+}
+
+/**
+ * Cut the opening of a copied episode ahead of the play: the first `seconds` of it and no more, at the lowest priority,
+ * while the episode before it is still on screen.
+ *
+ * This is the middle ground between making nothing ahead (the first pieces are cut while the viewer watches a spinner)
+ * and making the whole episode (700 MB and a full read of the file for every download). The opening is all a play needs
+ * waiting for it: once the player is on the job it asks for pieces ahead of where it is, and ffmpeg cuts those several
+ * times faster than they are watched. So the cost is a few minutes of one episode -- about 100 MB at 1080p -- and only
+ * one episode holds a head at a time: the head of an episode nobody went on to is dropped when the next one is cut, or
+ * after `keepMs`.
+ *
+ * Needs the job ensureHls made, with a copy plan (a whole file whose picture is copied). A job a player is already on is
+ * left alone: its pieces are being made where the viewer is. 'ready' when the opening is all there, 'building' while
+ * ffmpeg is on it, 'none' when there is nothing for this to do.
+ */
+export function buildHead(torrentId: number, fileIndex: number, seconds: number, keepMs: number): 'ready' | 'building' | 'none' {
+  const key = jobKey(torrentId, fileIndex)
+  const j = jobs.get(key)
+  const v = j?.vod
+  if (!j || !v || !v.copy || j.played) return 'none'
+  for (const [k, o] of [...jobs]) if (k !== key && o.head && !o.played) stopJob(k) // one head at a time
+  j.head = true
+  clearTimeout(j.idle)
+  j.idle = setTimeout(() => stopJob(key), keepMs).unref()
+  let want = 0
+  while (want < v.count && v.bounds[want] - v.bounds[0] < seconds) want++
+  try { scanDone(j) } catch { return 'none' }
+  let n = 0
+  while (n < want && v.done.has(n)) n++
+  if (n >= want) return 'ready'
+  if (v.run && !v.run.exited) return 'building'
+  // A file ffmpeg cannot cut is not started again on every ask.
+  if ((j.headTries ?? 0) >= 3) return 'none'
+  j.headTries = (j.headTries ?? 0) + 1
+  j.low = true
+  startRun(j, n, want)
+  return 'building'
+}
+
+/** Stop cutting ahead, now: the episode on screen is short of something. What was already cut stays. */
+export function stopHeadRuns(): number {
+  let n = 0
+  for (const j of jobs.values()) {
+    if (!j.head || j.played || !j.vod?.run || j.vod.run.exited) continue
+    j.vod.run.proc.kill('SIGKILL')
+    j.headTries = Math.max(0, (j.headTries ?? 1) - 1) // stopped on purpose, which is not a failure to count
+    n++
+  }
+  return n
+}
+
+/** How many pieces of this file's copied cut are on disk (for the log and the tests), or null when there is no such job. */
+export function piecesMade(torrentId: number, fileIndex: number): number[] | null {
+  const j = jobs.get(jobKey(torrentId, fileIndex))
+  if (!j?.vod) return null
+  try { scanDone(j) } catch { /* folder gone */ }
+  return [...j.vod.done].sort((a, b) => a - b)
 }
 
 // ---- subtitle files that sit beside the video in the torrent ------------------------------------------
