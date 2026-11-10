@@ -143,16 +143,31 @@ export async function crawlNetworksOnce(): Promise<boolean> {
 }
 
 /** TMDB's trending shows this week (top ~60), refreshed twice a day. Needs the TMDB key; without it there is simply no "Trending" row. */
+let trendingBusy = false
+let trendingFailedAt = 0
+/** How long a failed refresh waits before the next try. The crawler ticks every two seconds, and without this a TMDB that
+ *  was down (or a key it refused) was asked three times every two seconds for as long as it lasted. */
+const TRENDING_RETRY_MS = 10 * 60_000
 export async function refreshTrending(): Promise<number> {
   const { apiKey, apiUrl } = config.tmdb
   if (!apiKey) return 0
+  // One at a time: a slow answer used to be overtaken by the next tick's request, and the one after that.
+  if (trendingBusy || Date.now() - trendingFailedAt < TRENDING_RETRY_MS) return 0
   const have = db.prepare('SELECT MAX(fetched_at) AS t FROM trending_tv').get() as any
   if (have?.t && have.t > now() - 12 * 3600) return 0
+  trendingBusy = true
   const ids: number[] = []
-  for (let page = 1; page <= 3; page++) {
-    const r = await getJson(`${apiUrl}/trending/tv/week?page=${page}&api_key=${encodeURIComponent(apiKey)}`)
-    for (const x of r.results ?? []) ids.push(Number(x.id))
-  }
+  try {
+    for (let page = 1; page <= 3; page++) {
+      const r = await getJson(`${apiUrl}/trending/tv/week?page=${page}&api_key=${encodeURIComponent(apiKey)}`)
+      for (const x of r.results ?? []) ids.push(Number(x.id))
+    }
+  } catch (e) {
+    trendingFailedAt = Date.now()
+    throw e
+  } finally { trendingBusy = false }
+  // Nothing came back: keep the row we have rather than wiping it, and ask again later instead of every tick.
+  if (!ids.length) { trendingFailedAt = Date.now(); return 0 }
   db.exec('BEGIN')
   try {
     db.exec('DELETE FROM trending_tv')

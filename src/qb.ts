@@ -27,6 +27,7 @@ async function login() {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', referer: config.qb.url },
     body: new URLSearchParams({ username: config.qb.user, password: config.qb.pass }),
+    signal: AbortSignal.timeout(20_000), // like every other call: an engine that accepts the connection and says nothing must not hang the request
   })
   const text = await res.text()
   if (!res.ok || /fail/i.test(text)) throw new Error('qBittorrent login failed (check QB_USER / QB_PASS)')

@@ -55,8 +55,13 @@ export async function autoFetch(userId: number, ep: Pick<Episode, 'torrentId' | 
       const no = autoBlocked(userId, episodeBytes(rel, ep))
       if (no) { console.log(`[auto] not fetching ${rel.group_name} (${why}): ${no}`); return false }
     }
+    // Claimed before the await so a second ask in the same moment does not start it twice, and given back if it fails:
+    // a fetch that did not start used to be reported as "already on its way" for the next ten minutes.
     recent.set(key, Date.now())
-    await startPlayback(userId, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label, auto: true })
+    if (recent.size > 2000) recent.delete(recent.keys().next().value!)
+    try {
+      await startPlayback(userId, ep.torrentId, undefined, { episodeLabel: ep.isPack && ep.episode === null ? undefined : ep.label, auto: true })
+    } catch (e) { recent.delete(key); throw e }
     console.log(`[auto] fetching ${rel.group_name} (${why})`)
     return true
   } catch (e: any) {

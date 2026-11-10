@@ -6,6 +6,7 @@ import { diag } from './diag.ts'
 import { fileInfo } from './streaming.ts'
 import { audioDirect, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, probe, type ProbeOptions } from './transcode.ts'
 import { engineFiles } from './wanted.ts'
+import { isVideo } from './btn/parse.ts'
 
 /**
  * The copy made ahead of time.
@@ -32,6 +33,21 @@ const getMarker = (torrentId: number, fileIndex: number) =>
 const setMarker = (torrentId: number, fileIndex: number) =>
   db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(markerKey(torrentId, fileIndex), String(now()))
 
+/**
+ * Files that were tried and could not be built ahead, and when. Only one copy is started per tick and it is always the
+ * head of the list, so a file that never gets a marker -- one ffprobe cannot read, one whose picture would have to be
+ * re-encoded -- was picked again every minute for ever, and nothing queued behind it was ever built. Such a file now
+ * stands aside for a while (in memory: a restart is a fair moment to look again).
+ */
+const skipped = new Map<string, number>()
+const SKIP_MS = 6 * 3600_000
+const skipKey = (torrentId: number, fileIndex: number) => `${torrentId}:${fileIndex}`
+function setAside(torrentId: number, fileIndex: number) {
+  skipped.set(skipKey(torrentId, fileIndex), Date.now())
+  if (skipped.size > 2000) skipped.delete(skipped.keys().next().value!)
+}
+const isSetAside = (torrentId: number, fileIndex: number) => (skipped.get(skipKey(torrentId, fileIndex)) ?? 0) > Date.now() - SKIP_MS
+
 export interface Candidate { torrentId: number; fileIndex: number; size: number; name: string }
 
 /**
@@ -51,6 +67,8 @@ export async function prebuildCandidates(filesOf: typeof engineFiles = engineFil
     const files = await filesOf(r.infoHash).catch(() => [])
     for (const f of files) {
       if (f.progress < 1) continue
+      if (!isVideo(f.name)) continue // the .nfo, the subtitles and the sample beside an episode are not episodes
+      if (isSetAside(r.torrentId, f.index)) continue // tried, and could not be built: not the head of the queue again
       if (r.isPack && !(f.priority > 0)) continue // a pack's other episodes have not been fetched at all
       if (getMarker(r.torrentId, f.index) > now() - config.hls.keepHours * 3600) continue // asked for already
       out.push({ torrentId: r.torrentId, fileIndex: f.index, size: f.size, name: f.name })
@@ -80,7 +98,7 @@ export async function prebuildOne(torrentId: number, fileIndex: number, opts: { 
     const local = { complete: true, source, savePath: fi?.layout.savePath }
     const { wanted, copy } = await needsCopy(torrentId, fileIndex, local)
     if (!wanted) { setMarker(torrentId, fileIndex); return null }
-    if (!copy) { diag('prebuild', 'left for the play: this picture would have to be re-encoded', { torrentId, fileIndex }); return null }
+    if (!copy) { setAside(torrentId, fileIndex); diag('prebuild', 'left for the play: this picture would have to be re-encoded', { torrentId, fileIndex }); return null }
     const size = fi?.file.size ?? 0
     // Room first: the copy comes to about the size of the file, and the oldest copies nobody is watching are evicted to
     // make it, so the cap holds before it is reached rather than after the disk is full.
@@ -95,6 +113,7 @@ export async function prebuildOne(torrentId: number, fileIndex: number, opts: { 
     diag('prebuild', 'copied an episode ahead of the play', { torrentId, fileIndex, dir: dir.split('/').pop(), mb: Math.round(bytes / 1e6), ms: Date.now() - started })
     return dir
   } catch (e: any) {
+    setAside(torrentId, fileIndex)
     diag('prebuild', 'could not copy an episode ahead of the play', { torrentId, fileIndex, why: String(e?.message ?? e).slice(0, 160) })
     return null
   }

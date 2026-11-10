@@ -2,6 +2,7 @@ import { db, now } from './db.ts'
 import { config } from './config.ts'
 import { qb, type QbTorrent } from './qb.ts'
 import { stopJobsFor } from './transcode.ts'
+import { stopOfflineFor } from './offline.ts'
 import { syncFolder, tidyAfterRemoval } from './folder.ts'
 import { recordStorage } from './storage.ts'
 import { diskInfo } from './health.ts'
@@ -204,6 +205,7 @@ export async function removeDownload(torrentId: number, hash: string, reason: st
   if (t.downloaded > 0 && !seedStatus(t).met)
     throw new Error(`BTN seeding requirement (${config.seed.minHours}h or ${config.seed.minRatio}:1) not met yet; refusing to remove`)
   stopJobsFor(torrentId)
+  stopOfflineFor(torrentId) // the one-file copy being made from it reads the file that is about to go
   await qb.remove(hash, true)
   tidyAfterRemoval(t) // the engine deletes the files; sweep up the empty folders it leaves in Downloads
   db.prepare(`UPDATE downloads SET state='removed', removed_at=?, remove_reason=? WHERE torrent_id=?`).run(now(), reason, torrentId)

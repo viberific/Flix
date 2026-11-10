@@ -132,7 +132,7 @@ app.patch('/api/me', { preHandler: requireUser }, async (req, reply) => {
 })
 
 app.post('/api/login', async (req, reply) => {
-  const { name, password } = req.body as any
+  const { name, password } = (req.body ?? {}) as any
   const token = login(String(name ?? ''), String(password ?? ''))
   if (!token) return reply.code(401).send({ error: 'Wrong username or password' })
   setSessionCookie(reply, token)
@@ -164,8 +164,9 @@ app.post('/api/logout', async (req, reply) => { logout(req); setSessionCookie(re
 app.post('/api/signup', async (req, reply) => {
   // Public signup exists only to create the very first account (the admin). Everyone else is added by an admin.
   if (userCount() > 0) return reply.code(403).send({ error: 'Accounts are created by the admin. Ask them to add you.' })
-  const { name, password } = req.body as any
-  createUser(String(name ?? ''), String(password ?? ''), true)
+  const b = (req.body ?? {}) as any
+  const name = String(b.name ?? ''), password = String(b.password ?? '')
+  createUser(name, password, true)
   const token = login(name, password)!
   setSessionCookie(reply, token)
   return { ok: true }
@@ -313,7 +314,7 @@ app.get('/api/home', auth, async (req) => {
   // and a torrent with a crowd on it is the one that uploads. Only a show somebody could actually start (a seeder, or one the
   // viewer has not begun or finished) qualifies, and BTN's count is ignored once it is a week old. These shows are held
   // back from every other row so none is drawn twice.
-  const peers = new Map((db.prepare(`SELECT series_id AS id, MAX(leechers) AS n FROM releases WHERE leechers > 0 AND COALESCE(seeders, 0) > 0 AND fetched_at > ? GROUP BY series_id`).all(now() - 7 * 86400) as { id: number; n: number }[]).map((r) => [r.id, r.n]))
+  const peers = new Map((db.prepare(`SELECT series_id AS id, MAX(leechers) AS n FROM releases WHERE leechers > 0 AND COALESCE(seeders, 0) > 0 AND fetched_at > ? AND dead_at IS NULL GROUP BY series_id`).all(now() - 7 * 86400) as { id: number; n: number }[]).map((r) => [r.id, r.n]))
   // (Only for a viewer who has a Queue to put them in; see queueOf in app.js.)
   const hasQueue = resume.size > 0 || myList.length > 0 || ready.length > 0
   const grab = !hasQueue ? [] : all.filter((r) => peers.has(r.id) && !taken.has(r.id) && !started.has(r.id) && !finished.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer))
@@ -765,7 +766,8 @@ app.post('/api/sub/offset', guarded, async (req, reply) => {
   return { offsetMs: shift.manual, applied: shift.offsetMs, measured: shift.measured }
 })
 
-// ---- downloads to a device ----------------------------------------------------/** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
+// ---- downloads to a device ----------------------------------------------------
+/** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
 const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
 /** How long a cast waits for it instead. Longer: the TV cannot be given a longer timeline later, the phone can. */
 const CAST_WAIT_MS = Number(process.env.CAST_WAIT_MS ?? 60_000)
@@ -962,30 +964,42 @@ async function lineUpNext(userId: number, torrentId: number, fileIndex: number) 
   const ep = episodeOfFile(userId, torrentId, fileIndex)
   if (ep) await autoNext(userId, ep.seriesId, ep.season, ep.label, 'next episode, current one is past 60%')
 }
+/** Which file a watch-state report is about. Anything that is not a whole number matches no row rather than failing the bind. */
+const fileRef = (b: any) => {
+  const torrentId = Number(b?.torrentId), fileIndex = Number(b?.fileIndex)
+  return { torrentId: Number.isInteger(torrentId) ? torrentId : -1, fileIndex: Number.isInteger(fileIndex) ? fileIndex : -1 }
+}
+/** A position or a length as the player sent it: a finite number of seconds, never negative; anything else is 0. */
+const seconds = (v: unknown) => { const n = typeof v === 'number' ? v : Number(v ?? NaN); return Number.isFinite(n) && n > 0 ? n : 0 }
 app.post('/api/progress', auth, async (req) => {
-  const { torrentId, fileIndex, position, duration, ended } = req.body as any
+  const b = (req.body ?? {}) as any
+  const { torrentId, fileIndex } = fileRef(b), ended = !!b.ended
+  // A player that does not know the length yet reports NaN, which JSON turns into null: stored as it came, that broke the
+  // NOT NULL column and the whole report was lost -- the position, and "ended" with it. An unknown number is 0.
+  const position = seconds(b.position), duration = seconds(b.duration)
   if (!ended) void setWatching(true, `${torrentId}:${fileIndex}`).catch(() => {}) // a position report is a pulse of playback too
   const frac = duration > 0 ? position / duration : 0
   // "Watched" means played past the threshold (92% by default: the credits are rarely sat through), or to the end -- the player says
   // so when the video ends, and the last few seconds count as the end (the reported length and the playing position rarely
   // agree to the frame). A threshold of 1 keeps the strict reading.
   const done = !!ended || (config.watchedThreshold >= 1 ? duration > 0 && duration - position <= 3 : frac >= config.watchedThreshold)
-  db.prepare(`UPDATE interests SET position=?, duration=?, updated_at=?, watched_at = CASE WHEN ? THEN COALESCE(watched_at, ?) ELSE watched_at END
-    WHERE user_id=? AND torrent_id=? AND file_index=?`).run(position, duration, now(), done ? 1 : 0, now(), req.user!.id, torrentId, fileIndex)
+  // A length that is not known this time leaves the one already kept alone.
+  db.prepare(`UPDATE interests SET position=?, duration = CASE WHEN ? > 0 THEN ? ELSE duration END, updated_at=?, watched_at = CASE WHEN ? THEN COALESCE(watched_at, ?) ELSE watched_at END
+    WHERE user_id=? AND torrent_id=? AND file_index=?`).run(position, duration, duration, now(), done ? 1 : 0, now(), req.user!.id, torrentId, fileIndex)
   // The player asks for the next episode itself once it is 60% through, but a client that does not (a TV app, a reloaded
   // tab) must still get it: line it up from here as well. Repeats are dropped inside autoFetch for ten minutes.
   if (!done && frac >= NEXT_EPISODE_AT) void lineUpNext(req.user!.id, torrentId, fileIndex).catch(() => {})
   return { watched: done }
 })
 app.post('/api/watched', auth, async (req) => {
-  const { torrentId, fileIndex, watched } = req.body as any
+  const { torrentId, fileIndex } = fileRef(req.body), watched = !!(req.body as any)?.watched
   db.prepare(`UPDATE interests SET watched_at=?, updated_at=? WHERE user_id=? AND torrent_id=? AND file_index=?`)
     .run(watched ? now() : null, now(), req.user!.id, torrentId, fileIndex)
   return { ok: true }
 })
 /** "I don't need this any more" - stop holding the file for me without marking it watched. */
 app.post('/api/release', auth, async (req) => {
-  const { torrentId, fileIndex } = req.body as any
+  const { torrentId, fileIndex } = fileRef(req.body)
   db.prepare(`UPDATE interests SET released_at=?, updated_at=? WHERE user_id=? AND torrent_id=? AND file_index=?`)
     .run(now(), now(), req.user!.id, torrentId, fileIndex)
   return { ok: true }
@@ -1125,12 +1139,14 @@ app.patch('/api/admin/users/:id', admin, async (req) => {
   if (b.password !== undefined && String(b.password).length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
   if (!u.pass_hash && b.password === undefined && !isChild(nextAdmin, nextAllowed))
     throw Object.assign(new Error(`Set a password for ${u.name} first: admins and anyone allowed TV-MA need one`), { statusCode: 400 })
-  if ('allowedRatings' in b) db.prepare('UPDATE users SET allowed_ratings = ? WHERE id = ?').run((a => (a ? JSON.stringify(a) : null))(cleanAllowed(b.allowedRatings)), id)
-  if ('isAdmin' in b) {
-    if (!b.isAdmin && u.is_admin && adminCount() <= 1) throw Object.assign(new Error('There must always be at least one admin'), { statusCode: 400 })
-    db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(b.isAdmin ? 1 : 0, id)
-  }
-  if ('pin' in b) setPin(id, b.pin === null || b.pin === '' ? null : String(b.pin))
+  // Every refusal comes before the first write: a change that is turned down must not have half happened (the ratings
+  // used to be saved before "there must always be one admin" or a bad PIN refused the rest of the same request).
+  if ('isAdmin' in b && !b.isAdmin && u.is_admin && adminCount() <= 1) throw Object.assign(new Error('There must always be at least one admin'), { statusCode: 400 })
+  const pin = 'pin' in b ? (b.pin === null || b.pin === '' ? null : String(b.pin)) : undefined
+  if (typeof pin === 'string' && !/^\d{4,8}$/.test(pin)) throw Object.assign(new Error('A PIN is 4 to 8 digits'), { statusCode: 400 })
+  if ('allowedRatings' in b) db.prepare('UPDATE users SET allowed_ratings = ? WHERE id = ?').run(nextAllowed ? JSON.stringify(nextAllowed) : null, id)
+  if ('isAdmin' in b) db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(b.isAdmin ? 1 : 0, id)
+  if (pin !== undefined) setPin(id, pin)
   if (b.password !== undefined) {
     db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(String(b.password)), id)
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id) // sign them out everywhere
