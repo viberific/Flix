@@ -82,8 +82,10 @@ function netFacts(): Map<number, { lang: string | null; counts: Map<number, numb
 export function listable(): Map<number, Map<number, SeasonSource>> {
   if (cache?.v === version) return cache.map
   const by = new Map<number, SeasonRow[]>()
+  // The same rule as isAlive() in pick.ts: a release BTN no longer serves (dead_at) is not alive however many seeders its
+  // stale listing still shows, or a dead pack would keep a season on it and lock every episode that whole singles could play.
   for (const r of db.prepare(`SELECT series_id, season, episode, episode_end, is_pack,
-        (COALESCE(seeders, 0) > 0 OR EXISTS(SELECT 1 FROM downloads d WHERE d.torrent_id = releases.torrent_id AND d.state = 'active')) AS alive FROM releases
+        ((dead_at IS NULL AND COALESCE(seeders, 0) > 0) OR EXISTS(SELECT 1 FROM downloads d WHERE d.torrent_id = releases.torrent_id AND d.state = 'active')) AS alive FROM releases
       WHERE series_id IN (SELECT series_id FROM series_sync)`).all() as any[]) {
     const l = by.get(r.series_id) ?? by.set(r.series_id, []).get(r.series_id)!
     l.push({ ...r, alive: !!r.alive })

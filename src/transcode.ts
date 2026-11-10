@@ -197,7 +197,7 @@ export async function probe(torrentId: number, fileIndex: number, opts: ProbeOpt
     hdr: HDR_TRC.has(v?.color_transfer ?? ''), audio, subs, chapters,
     hdrKind: v?.color_transfer === 'arib-std-b67' ? 'hlg' : v?.color_transfer === 'smpte2084' ? 'pq' : undefined,
     fps, srcBitrate: v?.bit_rate ? Number(v.bit_rate) : undefined,
-    tenBit: /10|12/.test(String(v?.pix_fmt ?? '')),
+    tenBit: /p0?1[0246](le|be)?$/.test(String(v?.pix_fmt ?? '')), // yuv420p10le, p010le; not yuv410p or yuv411p
     pixFmt: v?.pix_fmt,
     startTime: Number.isFinite(Number(j.format?.start_time)) ? Number(j.format.start_time) : undefined,
   }

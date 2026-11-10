@@ -302,7 +302,7 @@ export async function bufferStatus(torrentId: number, fileIndex: number) {
   const headBytes = Math.min(file.size, 8 << 20)
   const base = layout.offsets.get(fileIndex)!
   const states = await pieces(rel.info_hash)
-  const a = Math.floor(base / layout.pieceSize), b = Math.floor((base + headBytes - 1) / layout.pieceSize)
+  const a = Math.floor(base / layout.pieceSize), b = Math.max(a, Math.floor((base + headBytes - 1) / layout.pieceSize)) // an empty file still spans one piece
   let have = 0
   for (let i = a; i <= b; i++) if (states[i] === 2) have++
   return {
