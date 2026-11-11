@@ -4,7 +4,7 @@ import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { diag } from './diag.ts'
 import { fileInfo } from './streaming.ts'
-import { audioDirect, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, probe, type ProbeOptions } from './transcode.ts'
+import { audioDirect, buildHead, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, probe, stopHeadRuns, type ProbeOptions } from './transcode.ts'
 import { engineFiles } from './wanted.ts'
 import { isVideo } from './btn/parse.ts'
 
@@ -110,12 +110,63 @@ export async function prebuildOne(torrentId: number, fileIndex: number, opts: { 
     keepHls(torrentId, fileIndex, config.hls.keepHours * 3600_000)
     setMarker(torrentId, fileIndex)
     const bytes = hlsCacheBytes().find((x) => join(config.dataDir, 'hls', x.dir) === dir)?.bytes ?? 0
-    diag('prebuild', 'copied an episode ahead of the play', { torrentId, fileIndex, dir: dir.split('/').pop(), mb: Math.round(bytes / 1e6), ms: Date.now() - started })
+    // What this pass makes is the plan (the keyframes read, the playlist laid out), not the pieces: those are cut for the
+    // next episode only, by prebuildHead, and otherwise where the viewer is.
+    diag('prebuild', 'planned an episode ahead of the play', { torrentId, fileIndex, dir: dir.split('/').pop(), mb: Math.round(bytes / 1e6), ms: Date.now() - started })
     return dir
   } catch (e: any) {
     setAside(torrentId, fileIndex)
     diag('prebuild', 'could not copy an episode ahead of the play', { torrentId, fileIndex, why: String(e?.message ?? e).slice(0, 160) })
     return null
+  }
+}
+
+/** How much of the next episode is cut before it is played: enough that pressing play (or the countdown ending) starts at once. */
+export const HEAD_SEC = 180
+/** How long an opening nobody went on to play is kept. Longer than the rest of the episode before it, and no longer. */
+const HEAD_KEEP_MS = 2 * 3600_000
+/** After the player on screen stalls, nothing is cut ahead for this long: the disk it reads is the disk the player reads. */
+const STALL_REST_MS = 5 * 60_000
+let stalledAt = 0
+const headAsked = new Map<string, number>()
+
+/** The player reported a stall: stop cutting ahead at once, and leave the box alone for a while. */
+export function noteStall() {
+  stalledAt = Date.now()
+  const stopped = stopHeadRuns()
+  if (stopped) diag('prebuild', 'stopped cutting the next episode: the one on screen stalled', { stopped })
+}
+
+/**
+ * The opening of the NEXT episode, cut while the current one plays (see buildHead in transcode.ts for why only the opening).
+ * Asked for from the same places that line the next episode up on disk -- 60% through, every progress report after that,
+ * and when "Up next" comes up -- so it is safe to call as often as that: one look a minute per file, one ffmpeg at most,
+ * and nothing at all for a file that is still arriving, plays as it is, or would have to be re-encoded. Never throws.
+ */
+export async function prebuildHead(torrentId: number, fileIndex: number): Promise<'ready' | 'building' | 'none'> {
+  try {
+    if (!config.hls.prebuild) return 'none'
+    if (Date.now() - stalledAt < STALL_REST_MS) return 'none'
+    const key = skipKey(torrentId, fileIndex)
+    if (Date.now() - (headAsked.get(key) ?? 0) < 60_000 || isSetAside(torrentId, fileIndex)) return 'none'
+    headAsked.set(key, Date.now())
+    if (headAsked.size > 500) headAsked.delete(headAsked.keys().next().value!)
+    if (Math.round(freemem() / 1048576) < config.hls.minFreeMb) return 'none'
+    const fi = await fileInfo(torrentId, fileIndex).catch(() => null)
+    if (!fi || fi.file.progress < 1) return 'none' // still arriving: a copied picture is only cut from a whole file
+    const source = join(fi.layout.savePath, fi.file.name)
+    const local = { complete: true, source, savePath: fi.layout.savePath }
+    const { wanted, copy, p } = await needsCopy(torrentId, fileIndex, local)
+    if (!wanted) return 'none'
+    if (!copy) { setAside(torrentId, fileIndex); return 'none' }
+    await ensureHls(torrentId, fileIndex, p, 0, false, { complete: true, source, lowPriority: true })
+    const state = buildHead(torrentId, fileIndex, HEAD_SEC, HEAD_KEEP_MS)
+    if (state === 'building') diag('prebuild', 'cutting the opening of the next episode ahead of the play', { torrentId, fileIndex, seconds: HEAD_SEC })
+    return state
+  } catch (e: any) {
+    setAside(torrentId, fileIndex)
+    diag('prebuild', 'could not cut the opening of the next episode', { torrentId, fileIndex, why: String(e?.message ?? e).slice(0, 160) })
+    return 'none'
   }
 }
 

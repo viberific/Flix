@@ -21,7 +21,7 @@ import { wantedBytes, withFileProgress } from './wanted.ts'
 import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
 import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
-import { startPrebuild } from './prebuild.ts'
+import { noteStall, prebuildHead, startPrebuild } from './prebuild.ts'
 import { copyPictureFor, ensureHls, hlsBuild, hlsLateness, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
@@ -470,11 +470,26 @@ app.post('/api/watch', auth, async (req) => {
   return { ...play, position, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
+/**
+ * The opening minutes of the episode after this one, cut now so that it starts at once (prebuildHead). Only for an episode
+ * already on the server: its file is found from the pack's list, or from the hold autoFetch wrote for this person.
+ */
+async function headOfNext(userId: number, seriesId: number, season: number | null, label: string) {
+  const eps = buildEpisodes(seriesId, userId)
+  const i = eps.findIndex((e) => e.season === season && e.label === label)
+  const next = i < 0 ? undefined : eps.slice(i + 1).find((e) => e.available)
+  if (!next || !next.onServer) return
+  const f = next.fileIndex ?? (db.prepare('SELECT file_index FROM interests WHERE user_id = ? AND torrent_id = ? ORDER BY updated_at DESC LIMIT 1').get(userId, next.torrentId) as { file_index: number } | undefined)?.file_index
+  if (f == null) return
+  await prebuildHead(next.torrentId, f)
+}
+
 /** Partway through an episode: line up the next one (see autodl.ts for the limits). Quiet by design: it never fails the player. */
 app.post('/api/prefetch', auth, async (req) => {
   const { seriesId, season, label } = req.body as any
   if (!canViewSeries(req.user, Number(seriesId))) return { ok: false }
-  void autoNext(req.user!.id, Number(seriesId), season ?? null, String(label ?? ''))
+  const uid = req.user!.id
+  void autoNext(uid, Number(seriesId), season ?? null, String(label ?? '')).then(() => headOfNext(uid, Number(seriesId), season ?? null, String(label ?? ''))).catch(() => {})
   return { ok: true }
 })
 
@@ -530,7 +545,10 @@ async function warmNextEpisode(userId: number, seriesId: number, season: number 
   if (p.direct) return
   // A finished file that will play as a playlist: read where its keyframes are now (a read of the file, no decoding), so
   // the playlist is whole and seekable the moment the countdown ends instead of after that read.
-  if (fi && fi.file.progress >= 1) await keyframes(r.torrentId, r.fileIndex, join(fi.layout.savePath, fi.file.name))
+  if (fi && fi.file.progress >= 1) {
+    await keyframes(r.torrentId, r.fileIndex, join(fi.layout.savePath, fi.file.name))
+    await prebuildHead(r.torrentId, r.fileIndex) // and its opening, if it was not cut at 60% already
+  }
 }
 
 app.post('/api/warm', auth, async (req) => {
@@ -970,7 +988,9 @@ for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/ap
 /** Which episode of a torrent this file is, so the one after it can be lined up (a pack names each file by its own SxxEyy). */
 async function lineUpNext(userId: number, torrentId: number, fileIndex: number) {
   const ep = episodeOfFile(userId, torrentId, fileIndex)
-  if (ep) await autoNext(userId, ep.seriesId, ep.season, ep.label, 'next episode, current one is past 60%')
+  if (!ep) return
+  await autoNext(userId, ep.seriesId, ep.season, ep.label, 'next episode, current one is past 60%')
+  await headOfNext(userId, ep.seriesId, ep.season, ep.label)
 }
 /** Which file a watch-state report is about. Anything that is not a whole number matches no row rather than failing the bind. */
 const fileRef = (b: any) => {
@@ -1067,6 +1087,8 @@ app.post('/api/diag/client', auth, async (req) => {
   const b = (req.body ?? {}) as any
   const kind = String(b.kind ?? '').slice(0, 20)
   if (!kind) return { ok: false }
+  // The picture on screen ran dry: whatever is being cut ahead for the next episode gives the disk back at once.
+  if (kind === 'stall' || kind === 'stalled') noteStall()
   const at = Number(b.at) || null
   diag('client', kind, {
     // File 0 is the first file of a torrent, not a missing one; and what a client sends is cut short before it is kept.

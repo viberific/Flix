@@ -44,7 +44,7 @@ const tc = await import('../src/transcode.ts')
 const { config } = await import('../src/config.ts')
 config.transcode.mode = 'auto'
 
-after(() => { raw.close(); tc.stopJobsFor(7); tc.stopJobsFor(9); tc.stopJobsFor(11) })
+after(() => { raw.close(); for (const id of [7, 9, 11, 12, 13]) tc.stopJobsFor(id) })
 
 const start = (f: string) => execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=start_time', '-of', 'csv=p=0', f]).toString().trim().split(/\s+/)[0]
 
@@ -133,4 +133,45 @@ test('a smaller cut for a slow connection fits its box, is its own job, and leav
   assert.ok(h <= 720 && h % 2 === 0, `height ${h}`)
   assert.equal(tc.qualityOf('480'), 480)
   assert.equal(tc.qualityOf('1080'), 0, 'only the listed sizes')
+})
+
+// The middle ground between cutting nothing ahead and cutting whole episodes: the opening of the NEXT episode, and only that.
+test('the opening of the next episode is cut ahead, and no further; the play carries on from it', { skip: !hasFfmpeg }, async () => {
+  const whole = { complete: true, source: copySrc, savePath: dir }
+  const until = async (id: number) => { for (let i = 0; i < 200; i++) { const s = tc.buildHead(id, 0, 12, 60_000); if (s !== 'building') return s; await new Promise((r) => setTimeout(r, 50)) } return 'building' }
+  assert.equal(tc.buildHead(13, 0, 12, 60_000), 'none', 'nothing to cut before the job exists')
+  await tc.ensureHls(13, 0, await tc.probe(13, 0, whole), 0, false, { complete: true, source: copySrc, lowPriority: true })
+  assert.equal(await until(13), 'ready')
+
+  const p = await tc.probe(12, 0, whole)
+  await tc.ensureHls(12, 0, p, 0, false, { complete: true, source: copySrc, lowPriority: true })
+  const list = tc.vodPlaylist(12, 0)!
+  const lens = [...list.matchAll(/#EXTINF:([\d.]+),/g)].map((m) => Number(m[1]))
+  const starts = lens.map((_, i) => lens.slice(0, i).reduce((a, b) => a + b, 0))
+  const want = starts.filter((t) => t < 12).length
+  assert.ok(want >= 2 && want < lens.length, `the opening is ${want} of ${lens.length} pieces`)
+  assert.deepEqual(tc.piecesMade(12, 0), [], 'the plan alone cuts nothing')
+  assert.equal(await until(12), 'ready')
+  assert.deepEqual(tc.piecesMade(12, 0), Array.from({ length: want }, (_, i) => i), 'exactly the opening, and not a piece more')
+  assert.equal(tc.vodPlaylist(13, 0), null, 'one episode holds a head at a time: the one nobody went on to is dropped')
+
+  // Pressing play: the opening is served from what is there, each piece where the playlist says it is.
+  const ac = new AbortController()
+  for (const k of [0, want - 1]) {
+    const t0 = Date.now()
+    const seg = await tc.vodSegment(12, 0, `seg${String(k).padStart(5, '0')}.ts`, ac.signal)
+    assert.ok(Date.now() - t0 < 200, `piece ${k} was already on disk`)
+    const vs = streams(seg!).find(([type]) => type === 'video')!
+    // The first piece of a run begins exactly where the playlist says; the ones after it in the same run are cut one
+    // keyframe interval on (copyPieceLen), so the last of the opening is only held to being inside its own span.
+    if (k === 0) assert.ok(Math.abs(Number(vs[2]) - starts[0]) < 0.06, `piece 0 starts at ${vs[2]}, the playlist says ${starts[0]}`)
+    else assert.ok(Number(vs[2]) >= starts[k] - 0.06 && Number(vs[2]) < starts[k] + lens[k], `piece ${k} starts at ${vs[2]}, inside its own span from ${starts[k]}`)
+  }
+  // ...and the piece after it is cut on request, as any piece is, and joins on.
+  const next = await tc.vodSegment(12, 0, `seg${String(want).padStart(5, '0')}.ts`, ac.signal)
+  const vn = streams(next!).find(([type]) => type === 'video')!
+  assert.ok(Math.abs(Number(vn[2]) - starts[want]) < 0.06, `piece ${want} starts at ${vn[2]}, the playlist says ${starts[want]}`)
+  // A job somebody is watching is no longer background work to be cut ahead or stopped.
+  assert.equal(tc.buildHead(12, 0, 12, 60_000), 'none')
+  assert.equal(tc.stopHeadRuns(), 0)
 })
