@@ -68,6 +68,33 @@ export interface HwCaps {
 /** One rung worth trying at startup, and what it proves when it works. */
 export interface ProbeStep extends HwCaps { args: string[] }
 
+/**
+ * The shape a hardware encode takes, as one thing rather than three loose booleans. 0.3.100 shipped with a probe that
+ * asked for low-power Quick Sync and a real encode that did not, so the probe proved one session and the encode opened
+ * another: "Current resolution is unsupported", "pixel format is unsupported", and a demotion to the CPU on every file.
+ * The shape is derived once, here, and both ends of the ladder read it.
+ */
+export interface HwShape {
+  lowPower: boolean
+  gpuScale: boolean
+  rated: boolean
+}
+
+/**
+ * What a real encode may use, from what its probe proved. Two rules, and the second is the same bug wearing a hat:
+ *
+ *  1. Quick Sync in low-power (VDEnc) mode only takes the flags it was probed with. A probe that passed with
+ *     -low_power 1 says nothing about a session opened without it.
+ *  2. A GPU resize needs a session that will take an uploaded, vpp_qsv-scaled frame. No low-power means no such
+ *     session on this ladder, so the resize goes back to the CPU rather than being asked of an encoder that refuses it.
+ *
+ * VAAPI is unaffected: it never has a low-power mode, and scale_vaapi is the upload path it was probed with.
+ */
+export function encodeShape(encoder: Exclude<Encoder, 'libx264'>, caps: Omit<HwCaps, 'encoder'>): HwShape {
+  if (encoder !== 'h264_qsv') return { lowPower: false, gpuScale: caps.gpuScale, rated: caps.rated }
+  return { lowPower: caps.lowPower, gpuScale: caps.gpuScale && caps.lowPower, rated: false }
+}
+
 /** A resize target in pixels, for the GPU to do. */
 export interface EncodeTarget { w: number; h: number }
 
@@ -86,20 +113,24 @@ export interface EncodeTarget { w: number; h: number }
  */
 export function probePlan(): ProbeStep[] {
   const src = (pre: string[] = []) => ['-hide_banner', '-loglevel', 'error', '-nostdin', ...pre, '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24', '-frames:v', '8']
-  const qsvRate = ['-b:v', '1000k', '-maxrate', '1000k', '-bufsize', '2000k']
-  const vaapiRate = ['-rc_mode', 'VBR', ...qsvRate]
-  const qsvScale = 'format=nv12,hwupload=extra_hw_frames=64,vpp_qsv=w=320:h=180'
-  const vaapiScale = 'format=nv12,hwupload,scale_vaapi=w=320:h=180'
-  const qsvDevice = ['-init_hw_device', 'qsv=qsv:hw', '-filter_hw_device', 'qsv']
-  const vaapiDevice = ['-vaapi_device', GPU_DEVICE]
   const out = ['-f', 'null', '-']
+  const q = 26
+  // Each rung is a SHAPE; its ffmpeg args come from hwEncodeParts, the same builder a real conversion uses. That is the
+  // whole point: a probe that is written out by hand can prove a session the encode never opens, which is what happened.
+  const rung = (encoder: Exclude<Encoder, 'libx264'>, caps: Omit<HwCaps, 'encoder'>): ProbeStep => {
+    // The rung REPORTS the shape its args were built from, not the one it wished for, so what pickEncoder stores can never
+    // be wider than what the probe proved.
+    const shape = encodeShape(encoder, caps)
+    const parts = hwEncodeParts(encoder, shape, { capped: false, rate: '1000k', buf: '2000k', quality: q, scale: { w: 320, h: 180 }, scaleExpr: 'scale=320:180', seg: 0 })
+    return { encoder, ...shape, args: [...src(parts.inputArgs), ...parts.filterArgs, ...parts.codecArgs, ...out] }
+  }
   return [
-    { encoder: 'h264_qsv', lowPower: true, gpuScale: true, rated: false, args: [...src(qsvDevice), '-vf', qsvScale, '-c:v', 'h264_qsv', '-low_power', '1', ...qsvRate, ...out] },
-    { encoder: 'h264_qsv', lowPower: true, gpuScale: false, rated: false, args: [...src(), '-vf', 'format=nv12', '-c:v', 'h264_qsv', '-low_power', '1', ...qsvRate, ...out] },
-    { encoder: 'h264_qsv', lowPower: false, gpuScale: false, rated: false, args: [...src(), '-c:v', 'h264_qsv', '-global_quality', '26', ...out] },
-    { encoder: 'h264_vaapi', lowPower: false, gpuScale: true, rated: true, args: [...src(vaapiDevice), '-vf', vaapiScale, '-c:v', 'h264_vaapi', ...vaapiRate, ...out] },
-    { encoder: 'h264_vaapi', lowPower: false, gpuScale: false, rated: true, args: [...src(vaapiDevice), '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', ...vaapiRate, ...out] },
-    { encoder: 'h264_vaapi', lowPower: false, gpuScale: false, rated: false, args: [...src(vaapiDevice), '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-qp', '26', ...out] },
+    rung('h264_qsv', { lowPower: true, gpuScale: true, rated: false }),
+    rung('h264_qsv', { lowPower: true, gpuScale: false, rated: false }),
+    rung('h264_qsv', { lowPower: false, gpuScale: false, rated: false }),
+    rung('h264_vaapi', { lowPower: false, gpuScale: true, rated: true }),
+    rung('h264_vaapi', { lowPower: false, gpuScale: false, rated: true }),
+    rung('h264_vaapi', { lowPower: false, gpuScale: false, rated: false }),
   ]
 }
 
@@ -195,13 +226,66 @@ export function hwFilters(kind: 'h264_qsv' | 'h264_vaapi', gpuScale: boolean, sc
 /** Whether a chain uploads frames, which needs the device named before the input for Quick Sync. */
 export const uploadsFrames = (chain: string[]) => chain.some((f) => f.startsWith('hwupload'))
 
+/** What one hardware encode needs to know, whichever end of the ladder is asking (the probe, or a real conversion). */
+export interface HwParams {
+  capped: boolean
+  rate: string
+  buf: string
+  quality: number
+  /** The resize as pixels, for the GPU to do. `null` leaves it to the software expression. */
+  scale: EncodeTarget | null
+  /** The same resize as an ffmpeg expression, for the CPU chain. */
+  scaleExpr: string | undefined
+  /** Software-only filters. Their presence forces the CPU chain: they want system memory, which hwupload has left behind. */
+  filters?: string[]
+  /** Seconds between keyframes; 0 leaves the flag off (a probe wants none). */
+  seg: number
+}
+
+/**
+ * ONE builder for a hardware encode's flags, used by the probe ladder and by every real conversion. The probe runs a
+ * real tiny encode of exactly what it builds here, so what passed is what the conversion gets. Before this existed the
+ * ladder and the conversion each had their own copy of the flags, and the copies disagreed.
+ */
+export function hwEncodeParts(kind: 'h264_qsv' | 'h264_vaapi', shape: HwShape, p: HwParams): { inputArgs: string[]; filterArgs: string[]; codecArgs: string[] } {
+  const chain = hwFilters(kind, shape.gpuScale, p.scale, p.scaleExpr, p.filters ?? [])
+  const keyframes = p.seg > 0 ? ['-force_key_frames', `expr:gte(t,n_forced*${p.seg})`] : []
+  const video = kind === 'h264_qsv'
+    ? qsvCodecArgs({ lowPower: shape.lowPower, capped: p.capped, rate: p.rate, buf: p.buf, quality: p.quality })
+    : vaapiCodecArgs({ rated: shape.rated, capped: p.capped, rate: p.rate, buf: p.buf, quality: p.quality })
+  return {
+    // Quick Sync names the device before the input, and only when something is uploaded. VAAPI always names it.
+    inputArgs: kind === 'h264_qsv'
+      ? (uploadsFrames(chain) ? ['-init_hw_device', 'qsv=qsv:hw', '-filter_hw_device', 'qsv'] : [])
+      : ['-vaapi_device', GPU_DEVICE],
+    filterArgs: ['-vf', chain.join(',')],
+    codecArgs: [...video, ...keyframes],
+  }
+}
+
+/**
+ * Only for a test: make the process believe the ladder chose this, so the args a REAL conversion builds can be held
+ * against the rung that chose it without an ffmpeg, a GPU or a file. Never called by the app.
+ */
+export function useCapsForTest(encoder: Encoder, c: HwCaps | null) {
+  chosen = encoder
+  caps = c
+}
+
 /**
  * Quick Sync's video flags. Low-power mode has no ICQ at all, so the bitrate is named instead of a quality level; that is
- * the difference between "parameters not supported by the QSV runtime" and a working encode.
+ * the difference between "parameters not supported by the QSV runtime" and a working encode. And low-power has to be ASKED
+ * FOR: the flags below are the ones the VDEnc session was probed with, and leaving -low_power off while keeping the
+ * low-power probe's GPU-scaled filter chain is what made 0.3.100 fail every real file with "Current resolution is
+ * unsupported" / "pixel format is unsupported".
  */
 export function qsvCodecArgs(o: { lowPower: boolean; capped: boolean; rate: string; buf: string; quality: number }): string[] {
   const rate = ['-b:v', o.rate, '-maxrate', o.rate, '-bufsize', o.buf]
-  return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-look_ahead', '0',
+  return ['-c:v', 'h264_qsv', ...(o.lowPower ? ['-low_power', '1'] : []), '-preset', 'veryfast', '-look_ahead', '0',
+    // The segment muxer can only cut on an IDR, and Quick Sync's -force_key_frames frames are not IDR unless this is set:
+    // without it a 20 s piece came out as TWO segments of 10.7 s and 9.3 s instead of five of 4 s, which is the whole
+    // point of the forced keyframes and of SEG = 4 in transcode.ts.
+    '-forced_idr', '1',
     ...(o.lowPower || o.capped ? rate : ['-global_quality', String(o.quality)]),
     '-profile:v', 'high', '-pix_fmt', 'nv12']
 }
@@ -234,20 +318,16 @@ export async function videoEncode(height: number | undefined, _fps: number | und
   const h = bucket(height)
   const encoder = await pickEncoder()
   const profile = profileName()
-  const keyframes = ['-force_key_frames', `expr:gte(t,n_forced*${seg})`]
   const rate = PROFILES[profile].rate[h], buf = PROFILES[profile].buf[h]
   const q = PROFILES[profile].crf[h] + 1
   if (encoder === 'h264_qsv' || encoder === 'h264_vaapi') {
-    const chain = hwFilters(encoder, caps?.gpuScale ?? false, opts.scale ?? null, opts.scaleExpr, opts.filters ?? [])
+    // The shape is what the probe chose, narrowed to what that session can actually be handed. A rung that proved a GPU
+    // resize without the low-power session it needs is not a rung at all, so the resize goes to the CPU and says so.
+    const shape = encodeShape(encoder, { lowPower: caps?.lowPower ?? false, gpuScale: caps?.gpuScale ?? false, rated: caps?.rated ?? false })
+    if (caps?.gpuScale && !shape.gpuScale) hitch('encode', 'the resize is on the CPU: the GPU resize needs the low-power session, which this encoder did not prove', { encoder, lowPower: shape.lowPower })
     return {
       encoder, profile,
-      inputArgs: encoder === 'h264_qsv'
-        ? (uploadsFrames(chain) ? ['-init_hw_device', 'qsv=qsv:hw', '-filter_hw_device', 'qsv'] : [])
-        : ['-vaapi_device', GPU_DEVICE],
-      filterArgs: ['-vf', chain.join(',')],
-      codecArgs: [...(encoder === 'h264_qsv'
-        ? qsvCodecArgs({ lowPower: caps?.lowPower ?? false, capped: !!opts.capped, rate, buf, quality: q })
-        : vaapiCodecArgs({ rated: caps?.rated ?? false, capped: !!opts.capped, rate, buf, quality: q })), ...keyframes],
+      ...hwEncodeParts(encoder, shape, { capped: !!opts.capped, rate, buf, quality: q, scale: opts.scale ?? null, scaleExpr: opts.scaleExpr, filters: opts.filters ?? [], seg }),
     }
   }
   const P = PROFILES[profile]
@@ -259,7 +339,7 @@ export async function videoEncode(height: number | undefined, _fps: number | und
     filterArgs: filters.length ? ['-vf', filters.join(',')] : [],
     codecArgs: ['-c:v', 'libx264', '-preset', P.x264, '-crf', String(P.crf[h]), '-maxrate', P.rate[h], '-bufsize', P.buf[h],
       '-profile:v', 'high', '-level', h === 1080 ? '4.1' : '4.0', '-pix_fmt', 'yuv420p', '-sc_threshold', '0',
-      '-threads', String(threads), ...keyframes],
+      '-threads', String(threads), ...(seg > 0 ? ['-force_key_frames', `expr:gte(t,n_forced*${seg})`] : [])],
   }
 }
 

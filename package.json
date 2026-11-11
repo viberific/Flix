@@ -1,6 +1,6 @@
 {
   "name": "flix",
-  "version": "0.3.100",
+  "version": "0.3.101",
   "private": true,
   "type": "module",
   "description": "Jellyfin-style media server that uses BroadcasTheNet as its only source and streams torrents on demand",
@@ -12,7 +12,7 @@
     "start": "node --env-file-if-exists=.env --import tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
-    "test:unit": "node --import tsx --test --test-concurrency=1 test/unit.test.ts test/btn.test.ts test/redirect.test.ts test/prune.test.ts test/probe-source.test.ts test/prebuild-candidates.test.ts test/audit.test.ts test/cap.test.ts test/cap-live.test.ts test/quality.test.ts"
+    "test:unit": "node --import tsx --test --test-concurrency=1 test/unit.test.ts test/btn.test.ts test/redirect.test.ts test/prune.test.ts test/probe-source.test.ts test/prebuild-candidates.test.ts test/audit.test.ts test/cap.test.ts test/cap-live.test.ts test/encode-shape.test.ts test/encode-live.test.ts test/quality.test.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.6",
