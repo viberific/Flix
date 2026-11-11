@@ -2756,9 +2756,11 @@ function playView(seriesId, season, label) {
       try { await loadInfo(info.audioIndex ?? 0, at) } catch (err) { fail(err.message) } finally { qSwitching = false }
     }
     /**
-     * Auto: the picture ran dry three times in a minute and a half, or once for ten seconds, while nobody was seeking. That
-     * is a connection slower than the file -- what the logs showed on a 10.8 Mbit/s episode over Tailscale -- so the next
-     * size down is asked for. Never stepped back up mid-episode: a size that flips back and forth stalls more than either.
+     * Auto: the picture ran dry three times in a minute and a half, or once for ten seconds, while nobody was seeking, AND
+     * the box was not the reason -- it had the pieces ready and the bytes were still late. That is a connection slower than
+     * the file -- what the logs showed on a 10.8 Mbit/s episode over Tailscale -- so the next size down is asked for. A
+     * stall while ffmpeg was still making the piece is the box being behind, which a smaller size does not fix and makes
+     * worse. Never stepped back up mid-episode: a size that flips back and forth stalls more than either.
      */
     function watchQuality(v) {
       // Only a wait a person would notice counts toward stepping the picture down. Sub-second gaps are what a copied
@@ -2766,6 +2768,21 @@ function playView(seriesId, season, label) {
       // a whole second encode on a box already short of memory, and made the stalls worse rather than better.
       const MIN_STALL_MS = 3000
       let stalls = [], longT = null, since = 0
+/* stall-begin */
+/**
+ * Was this stall the line's fault, or the box's? A stall is only evidence of a slow connection when the box HAD the piece
+ * ready and the bytes still took too long. On 2026-11-04 the picture ran dry for 1-3.5 s a segment on gigabit ethernet
+ * with the file already on the box's own disk: ffmpeg was behind, not the connection. Stepping down for that started a
+ * second encoder from a new offset on the same four cores and made every following segment later -- 960 -> 720 -> 640.
+ * `lateMs` is the server's own answer (how long it kept the player waiting); a quarter is generous, because a piece the
+ * box spent most of the stall making was the box's fault whatever the line did.
+ */
+function stallBlamesLine(stallMs, lateMs) {
+  const late = Number(lateMs)
+  if (!(late > 0)) return true // no answer, or the box was on time: keep the old rule
+  return late * 4 < Number(stallMs)
+}
+/* stall-end */
       const stepDown = () => {
         clearTimeout(longT); stalls = []
         if (qSetting() !== 'auto' || castingOnly || !alive || qSwitching) return
@@ -2777,11 +2794,32 @@ function playView(seriesId, season, label) {
       }
       // A wait is measured from the moment the picture ran dry to the moment it had data again; anything shorter than
       // MIN_STALL_MS is smoothed through, with no change of source.
-      const ended = () => {
+      // How late the box says it was in the last little while. Cheap, and only asked when a stall was bad enough to count,
+      // so a healthy play never pays for it; an answer that does not come is treated as "on time" -- the old behaviour.
+      const boxLateness = async (stallMs) => {
+        if (!play) return 0
+        try {
+          const r = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/late?within=${Math.min(60_000, Math.max(5_000, stallMs * 3))}`, null, undefined, 2500)
+          return Number(r?.lateMs) || 0
+        } catch { return 0 }
+      }
+      // A stall the box caused is not counted toward the three-in-ninety that steps the picture down, and does not step it
+      // down on its own either. It is noted once, so the box's lateness is in the log next to a stall rather than beside it.
+      let lateNoted = 0
+      const noteBoxLate = (d, lateMs) => {
+        if (Date.now() - lateNoted < 60_000) return
+        lateNoted = Date.now()
+        noteRecover(`box-late-${lateMs}`, heldPos(), v?.currentTime || 0)
+      }
+      const ended = async () => {
         const d = since ? Date.now() - since : 0
         since = 0
         clearTimeout(longT)
         if (d < MIN_STALL_MS) return
+        const lateMs = await boxLateness(d)
+        if (!stallBlamesLine(d, lateMs)) return noteBoxLate(d, lateMs)
+        // Bailed out of while that request was out: the size may have changed under it.
+        if (qSwitching || !alive || qSetting() !== 'auto') return
         const now = Date.now()
         stalls = stalls.filter((t) => now - t < 90_000).concat(now)
         if (stalls.length >= 3) stepDown()
@@ -2791,7 +2829,13 @@ function playView(seriesId, season, label) {
         if (!started || v.paused || Date.now() < qQuietUntil || qSetting() !== 'auto') return
         if (!since) since = Date.now()
         clearTimeout(longT)
-        longT = setTimeout(() => { if (v.readyState < 3 && !v.paused && Date.now() >= qQuietUntil) stepDown() }, 10_000)
+        longT = setTimeout(async () => {
+          if (!(v.readyState < 3 && !v.paused && Date.now() >= qQuietUntil)) return
+          // Ten seconds without a picture is either a line that cannot carry the file or a box that is not making it.
+          const lateMs = await boxLateness(10_000)
+          if (!stallBlamesLine(10_000, lateMs)) return noteBoxLate(10_000, lateMs)
+          if (v.readyState < 3 && !v.paused && Date.now() >= qQuietUntil) stepDown()
+        }, 10_000)
       })
       // 'canplay' as well as 'playing': a wait that ends in a picture that is ready but not yet moving is over.
       for (const ev of ['playing', 'canplay']) v.addEventListener(ev, ended)

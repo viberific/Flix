@@ -221,7 +221,13 @@ interface Vod {
   rebuild?: () => Promise<void>
   retried?: boolean
 }
-interface Job { proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number; low?: boolean }
+interface Job {
+  proc: ChildProcess | null; dir: string; idle: NodeJS.Timeout; torrentId: number; ready: Promise<void>; vod?: Vod; touched: number; low?: boolean
+  /** This job holds one of the box's encode slots. A copied picture does not: see planCap. */
+  enc?: boolean
+  /** The last time this job kept the player waiting, and how long for: what the player reads before it blames the line. */
+  late?: number; lateAt?: number
+}
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
 
@@ -273,30 +279,70 @@ export function scaleTarget(w: number | undefined, h: number | undefined, box: [
 
 /** A job touched this recently is being watched right now, and is never closed to make room for another. */
 const ACTIVE_MS = 90_000
+/** How long a rendition this playback has left keeps its slot before the one replacing it takes it. */
+const SUPERSEDE_MS = 5_000
+
+/** A job as the cap sees it: when it was last read, and whether it holds one of the box's encode slots. */
+export interface CapView { key: string; touched: number; enc: boolean }
+/** What starting one more job means for the ones already running. */
+export interface CapPlan { close: string[]; low: boolean; encoders: number; cap: number }
+const playbackOf = (key: string) => key.split(':').slice(0, 2).join(':')
 
 /**
- * Make room for one more encode. The cap exists because a second full-quality encode on four cores half the
- * speed of both, which the viewer sees as a hitch. Room is made only by closing a job nobody is watching —
- * untouched for ACTIVE_MS — so the cap can never take away the stream in front of someone. If every job is
- * live, the new one starts anyway: a second screen slows the first rather than stopping it.
+ * Whether one more job fits, and what has to go so that it does. Pure, so the accounting can be tested without ffmpeg.
+ *
+ * Three things were wrong with the loop this replaces (measured on the box 2026-11-04 at 00:16:24Z: cap 1, running 3,
+ * one playback, load 11.9-13.7, every segment 1-3.5 s late):
+ * - it counted `jobs.size`, which INCLUDES the job being started, so with cap 1 every single start was already "over the
+ *   cap" and the alarm fired fifteen times before anything had gone wrong;
+ * - it counted jobs rather than encodes, so a copied picture's remux -- a fraction of a core, and the fallback a viewer
+ *   steps back up to -- held the slot an encoder needed;
+ * - and when every job was live it only LOGGED and returned, so cap 1 ran three ffmpeg. Nothing enforced it.
+ *
+ * Only an encode holds a slot now. Room is made by closing a job nobody is watching (untouched for ACTIVE_MS: a live job
+ * is still never closed to make room for another screen), and then by closing the rendition THIS playback has left for
+ * the one being started: a player watches one size at a time, so after SUPERSEDE_MS that one is abandoned whatever the
+ * ninety-second grace would say. That is what stops one play running three encoders.
+ *
+ * If a slot is still not free, the new job is not refused -- a second screen is never turned away -- but it starts `low`:
+ * niced, so the stream someone is already watching keeps the cores.
  */
-function enforceJobCap() {
-  const cap = Math.max(1, config.transcode.maxJobs)
-  const now = Date.now()
-  while (jobs.size >= cap) {
-    let oldestKey: string | null = null
-    let oldest = Infinity
-    for (const [k, job] of jobs) {
-      if (now - job.touched < ACTIVE_MS) continue
-      if (job.touched < oldest) { oldest = job.touched; oldestKey = k }
+export function planCap(view: CapView[], cap: number, starting: string, startingEnc: boolean, now: number): CapPlan {
+  const max = Math.max(1, cap)
+  const holding = view.filter((v) => v.enc && v.key !== starting).sort((a, b) => a.touched - b.touched)
+  const close: string[] = []
+  let encoders = holding.length
+  if (startingEnc) {
+    const room = () => encoders + 1 <= max
+    for (const v of holding) {
+      if (room()) break
+      if (now - v.touched < ACTIVE_MS) continue
+      close.push(v.key); encoders--
     }
-    if (!oldestKey) {
-      hitch('encode', 'starting a conversion over the job cap: every running job is in use', { cap, running: jobs.size })
-      return
+    for (const v of holding) {
+      if (room()) break
+      if (close.includes(v.key)) continue
+      if (playbackOf(v.key) !== playbackOf(starting)) continue
+      if (now - v.touched < SUPERSEDE_MS) continue
+      close.push(v.key); encoders--
     }
-    hitch('encode', 'closed an idle conversion to stay within the job cap', { cap, closed: oldestKey, idleSec: Math.round((now - oldest) / 1000) })
-    stopJob(oldestKey)
   }
+  return { close, low: startingEnc && encoders + 1 > max, encoders: encoders + (startingEnc ? 1 : 0), cap: max }
+}
+
+/** Apply planCap to the jobs running now, and say whether the new one has to run below them. */
+function enforceJobCap(startKey: string, startingEnc: boolean): boolean {
+  const now = Date.now()
+  const plan = planCap([...jobs].map(([key, j]) => ({ key, touched: j.touched, enc: !!j.enc })), config.transcode.maxJobs, startKey, startingEnc, now)
+  for (const key of plan.close) {
+    const idleSec = Math.round((now - (jobs.get(key)?.touched ?? now)) / 1000)
+    hitch('encode', playbackOf(key) === playbackOf(startKey)
+      ? 'closed the rendition this play left, so one play holds one conversion'
+      : 'closed an idle conversion to stay within the job cap', { cap: plan.cap, closed: key, idleSec })
+    stopJob(key)
+  }
+  if (plan.low) hitch('encode', 'a second play is over the job cap: this conversion runs below the one already playing', { cap: plan.cap, encoders: plan.encoders })
+  return plan.low
 }
 
 function stopJob(key: string) {
@@ -462,7 +508,12 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
       // A segment the encoder was not ready with is a hitch on screen: the player had nothing to play for that wait. Recorded
       // with the job it came from, so a slow CPU (every segment late) looks nothing like one late seek.
       const waited = Date.now() - asked
-      if (waited > 600) hitch('hls', 'player waited for a segment', { torrent: torrentId, file: fileIndex, seg: n, waitedMs: waited, made: v.done.size, of: v.count })
+      if (waited > 600) {
+        // How late the box itself was. The player asks for this before it blames the line (see hlsLateness): on 2026-11-04
+        // the line was gigabit, the file local, and every step down the ladder started another encoder.
+        j.late = waited; j.lateAt = Date.now()
+        hitch('hls', 'player waited for a segment', { torrent: torrentId, file: fileIndex, seg: n, waitedMs: waited, made: v.done.size, of: v.count })
+      }
       return segPath(j, n)
     }
     const r = v.run
@@ -480,8 +531,7 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
   }
 }
 
-/** The complete playlist of a job made by ensureHls, or null when that job plays from disk as it is written. */
-export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0): string | null {
+/** The complete playlist of a job made by ensureHls, or null when that job plays from disk as it is written. */export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0): string | null {
   const v = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode, maxH))?.vod
   if (!v) return null
   const len = (n: number) => Math.max(0.001, v.bounds[n + 1] - v.bounds[n])
@@ -491,6 +541,28 @@ export function vodPlaylist(torrentId: number, fileIndex: number, audio = 0, hdr
   for (let n = 0; n < v.count; n++) lines.push(`#EXTINF:${len(n).toFixed(3)},`, `seg${String(n).padStart(5, '0')}.ts`)
   lines.push('#EXT-X-ENDLIST')
   return lines.join('\n') + '\n'
+}
+
+/**
+ * How late the box itself was in making this file's pieces: `lateMs` is the longest the player was kept waiting for a
+ * segment in the last `withinMs`, and `encoding` says whether a conversion was still running when it was asked.
+ *
+ * This is the difference between a slow connection and a box that is behind, and the player could not tell them apart: on
+ * 2026-11-04 it played 960p over gigabit ethernet from a fully downloaded file, stalled on segments the box had not made
+ * yet, read that as "a connection slower than the file" and stepped the picture down three times -- each rung starting a
+ * fresh encoder from a new offset and making the lateness worse. A stall the box caused is not evidence about the line.
+ */
+export function hlsLateness(torrentId: number, fileIndex: number, withinMs = 45_000) {
+  const now = Date.now()
+  const prefix = `${torrentId}:${fileIndex}:`
+  let lateMs = 0, agoMs: number | null = null, encoding = false
+  for (const [key, j] of jobs) {
+    if (!key.startsWith(prefix)) continue
+    if (j.enc && j.vod?.run && !j.vod.run.exited) encoding = true
+    if (!j.late || !j.lateAt || now - j.lateAt > withinMs) continue
+    if (j.late > lateMs) { lateMs = j.late; agoMs = now - j.lateAt }
+  }
+  return { lateMs, agoMs, encoding }
 }
 
 /** Every HLS job running now, and how far each has got: enough to tell a job that is encoding faster than it plays from one that is not. */
@@ -635,6 +707,13 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
   if (mine) {
     const job = j
     clearTimeout(job.idle)
+    // Does this one fit? Asked BEFORE any encoder flags are built, because the answer shapes them: a job that starts over
+    // the cap is niced, so the screen already playing keeps the cores (see planCap). A copied picture takes no slot.
+    job.enc = !hdr && (encodeAsked || !copyIntoTs(p))
+    job.low = !!opts.lowPriority || enforceJobCap(key, job.enc)
+    // Over the cap because the size this play left was still being read a moment ago: come back for it once it has really
+    // been abandoned, so one play cannot hold two encoders for the rest of the episode (see SUPERSEDE_MS).
+    if (job.low && job.enc) setTimeout(() => { if (jobs.has(key)) enforceJobCap(key, true) }, SUPERSEDE_MS + 500).unref()
     job.ready = (async () => {
     const tonemap = p.hdr && (await canToneMap())
     const copy = !hdr && !encodeAsked && copyIntoTs(p)
@@ -655,8 +734,8 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     // after it was late too. An unfinished file still comes through the range endpoint, exactly as before.
     const disk = opts.complete && opts.source && existsSync(opts.source) ? opts.source : null
     const input = disk
-      ? (opts.lowPriority ? ['-threads', '1', '-i', disk] : ['-i', disk])
-      : opts.lowPriority ? ['-threads', '1', '-i', rawUrl(torrentId, fileIndex)] : ['-i', rawUrl(torrentId, fileIndex)]
+      ? (job.low ? ['-threads', '1', '-i', disk] : ['-i', disk])
+      : job.low ? ['-threads', '1', '-i', rawUrl(torrentId, fileIndex)] : ['-i', rawUrl(torrentId, fileIndex)]
     const maps = ['-map', '0:v:0', '-map', `0:a:${audio}?`, '-sn']
     const audioOut = [...AUDIO_LEVEL, '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
     // Decided once per file: the profile does not change while it plays. The GPU when the container has one (see pickEncoder).
@@ -712,7 +791,6 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
         }
         : undefined
       Object.assign(j, { vod: { count, bounds, start, run: null, done: new Set(), rebuild } })
-      enforceJobCap()
     } else {
       const args = ['-hide_banner', '-loglevel', 'error', ...(enc?.inputArgs ?? []), ...input, ...maps,
         ...(hdr
@@ -727,9 +805,8 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
             '-hls_segment_filename', join(dir, 'seg%05d.m4s'), join(dir, 'index.m3u8')]
           : ['-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
             '-hls_flags', 'independent_segments', '-hls_segment_filename', join(dir, 'seg%05d.ts'), join(dir, 'index.m3u8')])]
-      const proc = spawnFf(args, !!opts.lowPriority)
+      const proc = spawnFf(args, !!j.low)
       j.proc = proc
-      if (!copy) enforceJobCap()
       proc.on('exit', () => { /* finished playlists stay on disk until idle timeout */ })
       // This branch has no complete playlist to hand back: the caller's job is done once the first piece and the playlist
       // are on disk, which is what the build itself waits for.
