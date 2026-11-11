@@ -1,6 +1,6 @@
 import { db, now } from './db.ts'
 import { config } from './config.ts'
-import { diskInfo, freeFloor } from './health.ts'
+import { diskInfo, prefetchBlocked } from './health.ts'
 import { qb } from './qb.ts'
 import { buildEpisodes, episodeOfFile, type Episode } from './episodes.ts'
 import { getRelease, startPlayback } from './streaming.ts'
@@ -11,7 +11,8 @@ import { getRelease, startPlayback } from './streaming.ts'
  * current one (or the current one has finished downloading) -- relevant for shows fetched as single episodes, since a
  * season pack is already coming whole. Always one whole episode file, never part of one.
  * A download has to seed 130 h (or 1:1) before it may be deleted, so this stays small: a few episodes per person, nothing below
- * 25% free disk, and one nobody opens lapses in a week. Something a person pressed play on is never held back by any of this.
+ * config.auto.pausePct free disk (10%) or that would not fit above the hard floor, and one nobody opens lapses in a week.
+ * Something a person pressed play on is never held back by any of this.
  */
 
 /** How far into an episode counts as "they are watching this": past this the next one is lined up on disk. */
@@ -31,9 +32,8 @@ function episodeBytes(rel: { torrent_id: number; size: number | null; is_pack: n
 /** Why an automatic download of this size may not start right now, or null when it may. */
 export function autoBlocked(userId: number, needBytes: number): string | null {
   if (!config.auto.enabled) return 'automatic downloads are off'
-  const d = diskInfo()
-  if (d && (d.free / d.total) * 100 < config.auto.pausePct) return 'storage is getting low'
-  if (d && d.free - needBytes < freeFloor(d)) return 'it would not leave enough free space'
+  const blocked = prefetchBlocked(diskInfo(), needBytes)
+  if (blocked) return blocked
   const mine = (db.prepare(`SELECT COUNT(*) AS n FROM interests WHERE user_id = ? AND auto = 1 AND watched_at IS NULL AND released_at IS NULL AND updated_at > ?`).get(userId, autoCutoff()) as any).n as number
   if (mine >= config.auto.perUser) return 'this person already has enough lined up'
   return null

@@ -1,6 +1,7 @@
 import { db } from './db.ts'
 import { qb } from './qb.ts'
 import { engineFiles } from './wanted.ts'
+import { diskInfo, prefetchBlocked } from './health.ts'
 
 /**
  * Getting the NEXT episode of a season pack started before the current one ends.
@@ -74,6 +75,9 @@ export async function enableNextFile(torrentId: number, fileIndex: number): Prom
   const dur = durationOf(torrentId, fileIndex)
   const need = coverBytes(cur.size, dur)
   if (cur.progress < 1 && cur.size * cur.progress < need) return
+  // The same pause the single-episode path obeys. This is the path that actually fills a disk: it runs for every pack
+  // being watched, so a box that is out of room must not have dozens of next-files queued by it.
+  if (prefetchBlocked(diskInfo(), nf.size)) return
   const key = `${torrentId}:${next.idx}`
   if (Date.now() - (recent.get(key) ?? 0) < 60_000) return
   recent.set(key, Date.now())

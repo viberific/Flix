@@ -26,6 +26,20 @@ function lanHost(): string | null {
 /** The least free space to leave: the larger of MIN_FREE_GB and MIN_FREE_PCT of the disk. */
 export function freeFloor(d: { total: number }): number { return Math.max(config.minFreeGb * 1e9, (config.minFreePct / 100) * d.total) }
 
+/**
+ * Why a file of `needBytes` may not be fetched ahead of time, or null when it may. Two rules, because a percentage alone
+ * is not enough on a small disk: 10% of a nearly-full volume can be less than a single episode, so the file also has to
+ * fit above the floor that refuses downloads outright. Shared by the prefetch paths and the notice below, so what the
+ * page says and what the code does cannot drift apart.
+ */
+export function prefetchBlocked(d: { free: number; total: number } | null, needBytes: number): string | null {
+  if (!d) return null
+  const pct = (d.free / d.total) * 100
+  if (pct < config.auto.pausePct) return `${pct.toFixed(1)}% of storage is free, and pre-downloading pauses below ${config.auto.pausePct}%`
+  if (needBytes > 0 && d.free - needBytes < freeFloor(d)) return `it would not fit: ${gb(needBytes)} needed, ${gb(d.free)} free`
+  return null
+}
+
 /** Refuse a download that would leave the disk nearly full; the message is written for the family, not for an admin. */
 export function assertSpace(needBytes: number) {
   const d = diskInfo()
@@ -84,7 +98,7 @@ export async function health(): Promise<Issue[]> {
   if (d) {
     const pct = Math.round((d.free / d.total) * 100)
     if (d.free < freeFloor(d)) out.push({ level: 'bad', title: 'Please remove some videos: storage is nearly full', detail: `Only ${gb(d.free)} (${pct}%) of ${gb(d.total)} is left, so new shows are refused and nothing is fetched ahead of time. “Free up space” on the Torrents page lists what can go, biggest first. ${config.pruneFreePct > 0 ? `Finished, fully seeded torrents are kept until free space drops below ${config.pruneFreePct}%, then the oldest go.` : 'Finished, fully seeded torrents are removed automatically.'}` })
-    else if (pct < config.warnFreePct) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} (${pct}%) left of ${gb(d.total)}. Shows are no longer fetched ahead of time below ${config.auto.pausePct}%; below ${config.minFreePct}% new ones are refused.${config.pruneFreePct > 0 ? ` Finished, fully seeded torrents are deleted once free space drops below ${config.pruneFreePct}%, oldest first, until ${config.pruneTargetPct}% is free.` : ''} “Free up space” on the Torrents page lists what can go.` })
+    else if (pct < config.warnFreePct) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} (${pct}%) left of ${gb(d.total)}.${pct < config.auto.pausePct ? ` The next episode is no longer fetched ahead of time below ${config.auto.pausePct}%` : ' The next episode is still fetched ahead of time'}; below ${config.minFreePct}% new ones are refused.${config.pruneFreePct > 0 ? ` Finished, fully seeded torrents are deleted once free space drops below ${config.pruneFreePct}%, oldest first, until ${config.pruneTargetPct}% is free.` : ''} “Free up space” on the Torrents page lists what can go.` })
     else if (config.auto.enabled && pct < config.auto.pausePct) out.push({ level: 'info', title: 'Pre-downloading is paused', detail: `${pct}% of storage is free; the next episode is not fetched ahead of time below ${config.auto.pausePct}%.` })
   }
   const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number

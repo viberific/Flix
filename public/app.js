@@ -780,11 +780,44 @@ async function homeView(q, local = false) {
     }
     else {
       for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
+      // Discover: the whole library, behind the few rows picked above. The filters are a fetch each rather than a page of
+      // their own, so a filtered view cannot be lost to a Back press and the router needs no new route for it.
+      html += `<h2 class="sec">Discover <span class="dim" style="font-weight:500;font-size:.7em" id="discount"></span></h2>
+        <div id="discf" style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">
+          <select id="discg" aria-label="Filter by genre"><option value="">Every genre</option></select>
+          <select id="discs" aria-label="Filter by service"><option value="">Every service</option></select>
+          <select id="discsort" aria-label="Order"><option value="trending">Trending first</option><option value="new">Newest first</option><option value="rating">Best rated</option></select>
+        </div><div class="grid" id="discgrid"></div>
+        <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div>`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
+      // Nothing here is a route: the pickers just refetch. Paging appends, so a person keeps their place.
+      const dg = $('#discg'), ds = $('#discs'), dsort = $('#discsort'), dgrid = $('#discgrid'), dmore = $('#discmore'), dcount = $('#discount')
+      if (dgrid) {
+        let dpage = 0
+        const loadDiscover = async (append) => {
+          const pr = new URLSearchParams({ sort: dsort.value, page: String(dpage) })
+          if (dg.value) pr.set('genre', dg.value)
+          if (ds.value) pr.set('service', ds.value)
+          const d = await fetch('/api/discover?' + pr).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+          if (!d) { dgrid.innerHTML = '<div class="empty">Could not read the library just now.</div>'; return }
+          const tiles = d.series.map(tile).join('')
+          if (append) dgrid.insertAdjacentHTML('beforeend', tiles)
+          else dgrid.innerHTML = tiles || '<div class="empty">Nothing matches those filters.</div>'
+          // The lists are filled once, from the unfiltered first answer, so choosing a genre cannot shrink the choices to itself.
+          const fill = (sel, list) => { if (sel.options.length <= 1) for (const v of list) sel.insertAdjacentHTML('beforeend', `<option value="${esc(v)}">${esc(v)}</option>`) }
+          fill(dg, d.genres); fill(ds, d.services)
+          dcount.textContent = d.total ? `${d.total} show${d.total === 1 ? '' : 's'}` : ''
+          dmore.hidden = (dpage + 1) * d.per >= d.total
+        }
+        const resetDiscover = () => { dpage = 0; loadDiscover(false) }
+        dg.onchange = ds.onchange = dsort.onchange = resetDiscover
+        dmore.onclick = () => { dpage++; loadDiscover(true) }
+        loadDiscover(false)
+      }
     if (queue) wireQueue(app, queue)
     wireLeavingPrompt()
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
@@ -3148,7 +3181,7 @@ function keepFocus(root, fn) {
 function downloadsPanel(data, root) {
   const req = data.requirements
   root.innerHTML = `<h2 class="stitle2">Torrents &amp; seeding</h2>
-    <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once everyone who started it has watched it to the end. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
+    <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once nobody is watching it and either someone has finished it or its “Leaving soon” window has run out. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
     <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
     <div id="trep"></div>
     <h2 class="sec">Downloads</h2><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
@@ -3160,18 +3193,25 @@ function downloadsPanel(data, root) {
     // Everything finished that could go, biggest first. Torrents still short of their seeding goal are listed but cannot be removed (BTN's rule).
     const fin = disk && state[0] !== 'ok' ? d.downloads.filter((x) => x.state === 'active' && !x.missing && x.left === 0).sort((a, b) => b.size - a.size) : []
     const ok = fin.filter((x) => x.seedMet), wait = fin.filter((x) => !x.seedMet)
+    // Met BTN's seeding goal but somebody else has not finished it. Nothing deletes these on its own -- a viewer who has
+    // not watched it may still want it -- but until now they appeared in no list at all, so the disk could fill with shows
+    // only the admin was done with and the page said nothing about it. Listed, so the choice is yours to make.
+    const heldForOthers = fin.filter((x) => x.seedMet && !x.deletable)
     const row = (x, action) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}${x.is_pack ? ' · whole season' : ''}</span><div class="dim sm">${action.note}</div></div><span class="size">${gb(x.size)}</span>${action.btn ?? '<span></span>'}</li>`
     const space = fin.length ? `<div class="sub-h">Free up space</div>
       <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${pct}% is free. Below ${d.minFreePct}% new shows are refused; below ${d.autoPausePct}% nothing is fetched ahead of time. ${ok.length ? `Removing everything under “Ready to remove” frees ${gb(ok.reduce((s, x) => s + x.size, 0))}.` : 'Nothing can be removed right now.'}</p>
-      ${ok.length ? `<div class="dim sm cap">Ready to remove</div><ul class="trows">${ok.map((x) => row(x, { note: x.waitingFor?.length ? `Seeding goal met · ${esc(x.waitingFor.join(', '))} hasn’t finished it` : 'Seeding goal met · everyone is done', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">${x.waitingFor?.length ? 'Remove anyway' : 'Remove'}</button>` })).join('')}</ul>` : ''}
+      ${ok.length ? `<div class="dim sm cap">Ready to remove</div><ul class="trows">${ok.map((x) => row(x, { note: x.waitingFor?.length ? `Seeding goal met · ${esc(x.waitingFor.join(', '))} hasn’t finished it` : x.windowPassed ? 'Seeding goal met · its “Leaving soon” window ran out, so nobody is going to open it' : 'Seeding goal met · nobody is watching it', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">${x.waitingFor?.length ? 'Remove anyway' : 'Remove'}</button>` })).join('')}</ul>` : ''}
       ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}` : ''
     $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
     // What is using the disk, biggest first, and who is keeping it, so it is clear what to ask about when space runs short.
     const big = d.downloads.filter((x) => x.state === 'active' && !x.missing).map((x) => ({ ...x, held: x.size * (x.progress ?? 0) })).sort((a, b) => b.held - a.held).slice(0, 5)
     const using = big.length ? `<div class="sub-h">Using the most space</div><ul class="trows">${big.map((x) => `<li class="trow"><div><b>${esc(x.series)}</b> <span class="dim">${shortName(x)}${x.is_pack ? ' · season pack' : ''}</span><div class="dim sm">${x.deletable ? 'Done: goes on the next sweep' : x.holders?.length ? 'Kept for ' + esc(x.holders.map((h) => h.name).join(', ')) : esc((x.reasons || [])[0] || '')}${x.leaving_at ? ' · leaving soon' : ''}</div></div><span class="size">${gb(x.held)}</span><span></span></li>`).join('')}</ul>` : ''
     const fc = chartData?.fullInDays
+    const heldSpace = heldForOthers.length ? `<div class="sub-h">Finished by you, not yet by everyone</div>
+      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">BTN's seeding goal is met on these, so BTN is satisfied. Nothing here is deleted on its own, because someone in the house has not finished it. Removing one frees the space now, and it has to be downloaded again if they do watch it.</p>
+      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove anyway</button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
-    $('#tinfo').innerHTML = `${forecast}${space}${using}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
+    $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
   }
   let chartData = null, lastHealth = data.health
@@ -3194,7 +3234,7 @@ function downloadsPanel(data, root) {
     const held = (x.holders || []).length ? `<div class="sm"><span class="dim">Held by</span> ${x.holders.map((h) => `<b>${esc(h.name)}</b> <span class="dim">(${when(h)})</span>`).join(', ')}</div>` : x.deletable ? '' : '<div class="dim sm">Held by nobody.</div>'
     const leaving = x.leaving_at && !x.deletable ? `<div class="dim sm">Leaving soon: removed in ${dur(Math.max(0, x.leaving_at - Date.now() / 1000))} unless someone presses play.</div>` : ''
     const asked = x.remove_when_seeded ? `<div class="dim sm">Goes as soon as the seeding goal is met${x.waitingFor?.length ? ` and ${esc(x.waitingFor.join(', '))} finishes` : ''}.</div>` : ''
-    const why = (x.deletable ? '<div class="dim sm">Done: will be removed on the next sweep.</div>' : '') + held + leaving + asked + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
+    const why = (x.deletable ? (x.windowPassed ? '<div class="dim sm">Done: its “Leaving soon” window ran out before anyone opened it, so it will be removed on the next sweep.</div>' : '<div class="dim sm">Done: will be removed on the next sweep.</div>') : '') + held + leaving + asked + (!x.deletable && rs.length ? `<div class="dim sm">Kept: ${esc(rs.join(' · '))}</div>` : '')
     return `<div class="tcard"><div class="thead"><div><b>${esc(x.series)}</b><div class="dim sm">${sub}</div></div>${badge}</div>${body}${why}
       <div class="tfoot"><span class="dim sm">Added ${ago(x.added_at)} · ${gb(x.size * (x.progress ?? 0))} on disk</span><span>${x.missing || x.deletable ? '' : `<button class="btn sm-btn" data-ws="${x.torrent_id}" aria-pressed="${!!x.remove_when_seeded}">${x.remove_when_seeded ? '✓ Remove when seeded' : 'Remove when seeded'}</button> `}<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button></span></div></div>`
   }
@@ -4040,6 +4080,13 @@ if ('serviceWorker' in navigator) {
     if (!$('.player')) location.reload()
   })
   navigator.serviceWorker.register('/sw.js').catch(() => {})
+}
+// Opened straight into a page -- a resumed PWA, a TV's last-used shortcut, a shared link -- the browser's history holds
+// nothing of Flix's behind that entry, so Back left the app instead of going to the page before it. Put the home page
+// behind it, so Back behaves as it does when the app is entered at home and everything after that is ordinary browsing.
+// The entries use the router's own numbering, so the deep page is a normal entry that Back and Forward walk like any other.
+if (location.hash && location.hash !== '#/' && location.hash !== '#') {
+  try { history.replaceState({ flix: 0 }, '', '#/'); history.pushState({ flix: 1 }, '', location.hash) } catch { /* no history API: Back does whatever the browser does */ }
 }
 route()
 

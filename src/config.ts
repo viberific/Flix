@@ -91,8 +91,13 @@ export const config = {
   /** Downloads Flix starts on its own, ahead of anyone pressing play. They are conservative because a download must seed 130 h / 1:1 before it can be deleted. */
   auto: {
     enabled: env.AUTO_DOWNLOADS !== 'false',
-    /** No automatic downloads below this share of free disk. */
-    pausePct: num('AUTO_PAUSE_FREE_PCT', 25),
+    /**
+     * No automatic downloads below this share of free disk. Was 25%, which held the next episode back while the box
+     * still had a quarter of its disk spare. 10% is where a prune pass stops (pruneTargetPct), so prefetching now runs
+     * all the way down to the point the pruner calls "full" instead of stopping a long way above it. Below that the two
+     * would fight over the same last few per cent.
+     */
+    pausePct: num('AUTO_PAUSE_FREE_PCT', 10),
     perUser: num('AUTO_PER_USER', 3),
     /** An automatic download nobody opens is let go after this many days. */
     expireDays: num('AUTO_EXPIRE_DAYS', 7),

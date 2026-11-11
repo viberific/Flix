@@ -35,6 +35,7 @@ import { unplayableSeries } from './candidates.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
+import { finishedShows } from './finished.ts'
 import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
@@ -211,6 +212,41 @@ app.get('/api/series', auth, async (req) => {
   return { series: rows }
 })
 
+/**
+ * The Discover area: the whole library, filtered and paged, instead of the handful of rows the home screen picked.
+ *
+ * Everything is a plain query parameter so a filtered view is an address of its own. The filtering and sorting happen in
+ * this process rather than in SQL because the library is a few hundred shows and a show's genres are a JSON list that the
+ * rest of the app already parses one way (genresOf); writing a second interpretation in SQL is how the two views would
+ * start disagreeing about what counts as a comedy.
+ */
+app.get('/api/discover', auth, async (req) => {
+  const q = req.query as Record<string, string | undefined>
+  const sort = q.sort === 'new' || q.sort === 'rating' ? q.sort : 'trending'
+  const page = Math.max(0, Math.min(40, Math.trunc(Number(q.page ?? 0)) || 0))
+  const per = 60
+  const f = ratingClause(req.user)
+  const rows = (db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(genres) AS genres FROM releases ${META_JOIN}releases.series_id
+      WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC LIMIT 3000`).all(...f.params) as any[])
+    .map((r) => ({ ...r, genres: genresOf(r) }))
+  const net = netInfo()
+  // A show watched all the way through does not come back here either: this is the same rule the home rows follow.
+  const finished = finishedShows(req.user!.id)
+  const term = String(q.q ?? '').trim().toLowerCase()
+  // Trending first when there is trending data; popularity is the fallback, then newest. A show with neither still appears,
+  // at the end, rather than being dropped from a page that claims to show the library.
+  const heat = (id: number) => { const n = net.get(id); return n?.trending != null ? 1e6 - n.trending : (n?.popularity ?? 0) }
+  let list = rows.filter((r) => !finished.has(r.id) && (!term || String(r.name).toLowerCase().includes(term)))
+  if (q.genre) list = list.filter((r) => r.genres.some((g: string) => g.toLowerCase() === String(q.genre).toLowerCase()))
+  if (q.service) list = list.filter((r) => (net.get(r.id)?.streamer ?? '') === q.service)
+  list.sort(sort === 'new' ? (a, b) => b.latest - a.latest
+    : sort === 'rating' ? (a, b) => (Number.parseFloat(b.rating) || 0) - (Number.parseFloat(a.rating) || 0) || b.latest - a.latest
+    : (a, b) => heat(b.id) - heat(a.id) || b.latest - a.latest)
+  const genres = [...new Set(rows.flatMap((r) => r.genres.map((g: string) => String(g).trim())))].filter(Boolean).sort((a, b) => a.localeCompare(b))
+  const services = [...new Set(rows.map((r) => net.get(r.id)?.streamer).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b))
+  return { total: list.length, page, per, sort, genre: q.genre ?? null, service: q.service ?? null, genres, services, series: list.slice(page * per, page * per + per) }
+})
+
 app.get('/api/series/:id', auth, async (req) => {
   const id = Number((req.params as any).id)
   if (!canViewSeries(req.user, id)) throw notFound()
@@ -305,11 +341,9 @@ app.get('/api/home', auth, async (req) => {
   // Shows already being watched stay out of the discovery rows: they are in Continue Watching.
   const started = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NULL AND i.position > 30').all(uid) as any[]).map((r) => r.id as number))
   // A show watched all the way through is not recommended again (it stays in My List and search, and shows what is new in it there).
-  const finished = new Set<number>()
-  for (const r of db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ? AND i.watched_at IS NOT NULL').all(uid) as { id: number }[]) {
-    const eps = buildEpisodes(r.id, uid)
-    if (eps.length && eps.every((e) => e.watched)) finished.add(r.id)
-  }
+  // finishedShows also counts a show whose download has since been deleted, which is what keeps a cleaned-up show from
+  // reappearing under Recommended.
+  const finished = finishedShows(uid)
   // The Queue's suggestions lead with what the most peers are downloading right now: seeding it is how the ratio is earned,
   // and a torrent with a crowd on it is the one that uploads. Only a show somebody could actually start (a seeder, or one the
   // viewer has not begun or finished) qualifies, and BTN's count is ignored once it is a week old. These shows are held
@@ -1049,7 +1083,7 @@ app.get('/api/admin/downloads', admin, async () => {
     const w = await wantedBytes(d.torrent_id).catch(() => null)
     out.push({ ...d, progress: w ? w.progress : t.progress, size: w ? w.wanted : t.total_size, held: w ? w.held : t.size * t.progress, total: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
       engineState: t.state, eta: t.eta ?? null, left: w ? w.left : t.amount_left,
-      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id) })
+      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id), windowPassed: k.windowPassed, notWatched: k.notWatched })
   }
   return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
 })

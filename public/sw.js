@@ -1,6 +1,6 @@
 // App-shell cache only. API responses and video streams are never cached (auth + huge, partially-downloaded files).
 // The one exception is 'flix-downloads': episodes the person chose to save on this device, answered under /_offline/ (see downloads.js).
-const CACHE = 'flix-shell-v64'
+const CACHE = 'flix-shell-v65'
 // Every module /app.js imports is here: one left out (playclock.js was) is not in the cache until a later online visit
 // happens to fetch it, and without it the app does not start at all when the server cannot be reached.
 const SHELL = ['/', '/app.js', '/downloads.js', '/playclock.js', '/style.css', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/manifest.webmanifest', '/vendor/hls.min.js']

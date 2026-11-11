@@ -570,7 +570,7 @@ test('downloads folder: removal leaves no empty folders behind, and never touche
   } finally { config.downloadDir = old }
 })
 
-test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads stop earlier and respect their limits', async () => {
+test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads stop at 10% free and respect their limits', async () => {
   const { freeFloor, assertSpace } = await import('../src/health.ts')
   const { autoBlocked } = await import('../src/autodl.ts')
   const { db } = await import('../src/db.ts')
@@ -578,11 +578,16 @@ test('low storage: the larger of 10 GB and 10% is kept free; automatic downloads
   assert.equal(freeFloor({ total: 5e10 }), 1e10)  // on a small disk the 10 GB floor applies
   const keep = { ...config.auto }, pct = config.minFreePct, gbMin = config.minFreeGb
   config.minFreePct = 0; config.minFreeGb = 0; config.auto.pausePct = 0
+  // The floor the person asked about: it used to hold the next episode back at 25% free, which is nowhere near full.
+  if (process.env.AUTO_PAUSE_FREE_PCT === undefined) assert.equal(keep.pausePct, 10, 'prefetch pauses at 10% free, not 25%')
   try {
     const u = createUser('autoann', 'password123', false).id
     assert.equal(autoBlocked(u, 1e6), null)
     config.auto.enabled = false; assert.match(autoBlocked(u, 1)!, /off/); config.auto.enabled = true
-    config.auto.pausePct = 101; assert.match(autoBlocked(u, 1)!, /low/); config.auto.pausePct = 0
+    config.auto.pausePct = 101; assert.match(autoBlocked(u, 1)!, /pauses below 101%/); config.auto.pausePct = 0
+    // The byte rule, which a percentage cannot express: with the pause off and no floor, a file larger than the entire
+    // free space is still refused. On a small disk 10% free can be less than one episode, and this is what catches it.
+    assert.match(autoBlocked(u, 1e15)!, /would not fit/)
     const ins = db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, auto) VALUES (?,?,?,?,?,1)`)
     db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (8001, 80, 'A', 'A - S01E01', 'x1', 0, 30000000)`).run()
     db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at) VALUES (8001, 'x1', 'active', 0)`).run()
@@ -641,7 +646,7 @@ test('storage graph: a year of daily points that rise and fall as downloads come
   const day = 86400, at = Math.floor(Date.UTC(2026, 5, 15, 12) / 1000)
   const rel = db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, info_hash, fetched_at, size) VALUES (?,?,?,?,?,0,?)`)
   const dl = db.prepare(`INSERT INTO downloads (torrent_id, info_hash, state, added_at, removed_at) VALUES (?,?,?,?,?)`)
-  rel.run(9501, 95, 'G', 'G - S01E01', 'g1', 10e9); dl.run(9501, 'g1', 'removed', at - 200 * day, at - 100 * day)   // 10 GB for 100 days, then cleared
+  rel.run(987002, 95, 'G', 'G - S01E01', 'g1', 10e9); dl.run(987002, 'g1', 'removed', at - 200 * day, at - 100 * day)   // 10 GB for 100 days, then cleared
   rel.run(9502, 96, 'H', 'H - S01E01', 'g2', 4e9); dl.run(9502, 'g2', 'active', at - 50 * day, null)               // 4 GB since, still there
   const h = storageHistory(at)
   assert.equal(h.points.length, 365); assert.equal(h.since, null)
@@ -759,6 +764,36 @@ test('leaving soon also covers single episodes; a pack counts as done only once 
   assert.ok(unwatchedEligible(9201).includes('lv2_a'), 'one episode of two watched: not done with the pack')
   db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?, 9201, 1, ?, ?, ?)`).run(a, now(), now(), now())
   assert.ok(!unwatchedEligible(9201).includes('lv2_a'), 'both watched: done')
+})
+
+test('a show watched through and then deleted stays finished, so it is not recommended again', async () => {
+  const { finishedShows } = await import('../src/finished.ts')
+  const { db, now } = await import('../src/db.ts')
+  // The suite's database is a real file and is not rebuilt between runs, so rows left by an earlier run collide with the
+  // UNIQUE keys here. Clearing them first is what makes this test runnable twice.
+  for (const id of [987001, 987002]) {
+    db.prepare('DELETE FROM interests WHERE torrent_id = ?').run(id)
+    db.prepare('DELETE FROM downloads WHERE torrent_id = ?').run(id)
+    db.prepare('DELETE FROM releases WHERE torrent_id = ?').run(id)
+  }
+  const u = createUser('fin_gone', 'password123', false).id
+  // Watched to the end, then cleaned up: the download row is what the sweeper leaves behind (state 'removed'). The episode
+  // list is built from what is on disk, so it reports nothing at all for this show -- the old test could not see it, which is
+  // why the show came back under Recommended the moment its files went.
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (?,?,?,?,0,?,?)`).run(987001, 987001, 'Gone Show', 'S01E01', 'g1', now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at, state, removed_at) VALUES (?,?,?, 'removed', ?)`).run(987001, 'g1', now() - 1e6, now())
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,?,0,?,?,?)`).run(u, 987001, now(), now(), now())
+  assert.ok(finishedShows(u).has(987001), 'watched then deleted: still finished')
+
+  // On disk and half watched: not finished, so still worth recommending.
+  db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, is_pack, info_hash, fetched_at) VALUES (?,?,?,?,0,?,?)`).run(987002, 987002, 'Half Show', 'S01E01', 'h1', now())
+  db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at, state) VALUES (?,?,?, 'active')`).run(987002, 'h1', now())
+  db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, position) VALUES (?,?,0,?,?,?)`).run(u, 987002, now(), now(), 600)
+  assert.ok(!finishedShows(u).has(987002), 'half watched: still recommendable')
+
+  // One person finishing a show says nothing about what anyone else has seen.
+  const other = createUser('fin_other', 'password123', false).id
+  assert.ok(!finishedShows(other).has(987001), 'finished by one person, not by another')
 })
 
 test('the leaving-soon prompt: "Keep it" stops the clock, "Let it go" counts as done for a whole pack', async () => {

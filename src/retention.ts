@@ -155,18 +155,24 @@ export function holdersOf(torrentId: number): Holder[] {
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; reasons: string[]; pending: string[]; seed: SeedStatus } {
+export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; reasons: string[]; pending: string[]; seed: SeedStatus; windowPassed: boolean; notWatched: string[] } {
   const pending = pendingViewers(torrentId)
   const seed = seedStatus(t)
+  // "Leaving soon" running out is a decision -- nobody opened it while the family was told it would go -- and it is NOT
+  // the same thing as "everyone watched it". The two used to be reported as one, which made the Torrents page announce
+  // that a show had been watched by everyone when in fact nobody had. Both facts are reported, so the page can say which.
+  const leavingAt = (db.prepare('SELECT leaving_at FROM downloads WHERE torrent_id = ?').get(torrentId) as { leaving_at: number | null } | undefined)?.leaving_at
+  const windowPassed = leavingAt != null && leavingAt <= now()
+  const notWatched = untouchedEligible(torrentId)
   // A torrent put in the Downloads folder by hand is not Flix's to delete until somebody has actually watched it
   // (this holds even if the engine reports nothing downloaded: it may simply have been checked, not fetched, here).
   const origin = (db.prepare('SELECT origin FROM downloads WHERE torrent_id = ?').get(torrentId) as any)?.origin
   if (origin === 'adopted' && !db.prepare('SELECT 1 FROM interests WHERE torrent_id = ?').get(torrentId))
-    return { deletable: false, reasons: ['added to the Downloads folder outside Flix; kept until someone has watched it'], pending, seed }
+    return { deletable: false, reasons: ['added to the Downloads folder outside Flix; kept until someone has watched it'], pending, seed, windowPassed, notWatched }
   // A torrent that never got a single byte (no seeders, or the viewer was moved to another source) owes BTN nothing and is
   // not worth keeping; without this a dead torrent would sit in the engine forever, "still downloading". Every one of these
   // has to hold for that to be true: a torrent that fetched even a byte, or holds a partial file, is kept and seeded.
-  if (t.downloaded === 0 && t.progress === 0 && t.amount_left >= t.size && !pending.length) return { deletable: true, reasons: [], pending, seed }
+  if (t.downloaded === 0 && t.progress === 0 && t.amount_left >= t.size && !pending.length) return { deletable: true, reasons: [], pending, seed, windowPassed, notWatched }
   const reasons: string[] = []
   if (t.amount_left > 0) reasons.push('still downloading')
   if (pending.length) reasons.push(`waiting for: ${pending.join(', ')}`)
@@ -174,8 +180,7 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
   // The admin asked for it to go once seeded: only someone partway through (or with it lined up) still keeps it.
   const unwatched = asked ? [] : unwatchedEligible(torrentId).filter((n) => !pending.includes(n))
   if (unwatched.length) {
-    const leavingAt = (db.prepare('SELECT leaving_at FROM downloads WHERE torrent_id = ?').get(torrentId) as { leaving_at: number | null } | undefined)?.leaving_at
-    const leaving = leavingAt != null ? `; leaving in ${Math.max(0, Math.ceil((leavingAt - now()) / 86400))} day(s) unless they keep it` : ''
+    const leaving = leavingAt != null && !windowPassed ? `; leaving in ${Math.max(0, Math.ceil((leavingAt - now()) / 86400))} day(s) unless they keep it` : ''
     reasons.push(`not yet watched by everyone who can: ${unwatched.join(', ')}${leaving}`)
   }
   if (!seed.met) {
@@ -184,7 +189,7 @@ export function whyKept(t: QbTorrent, torrentId: number): { deletable: boolean; 
     if (!seed.hoursMet) need.push(`seed time ${seed.hours.toFixed(1)}h/${config.seed.minHours}h`)
     reasons.push(`BTN seeding requirement not met: need ${config.seed.minHours}h or ${config.seed.minRatio}:1 (${need.join(', ')})`)
   }
-  return { deletable: reasons.length === 0, reasons, pending, seed }
+  return { deletable: reasons.length === 0, reasons, pending, seed, windowPassed, notWatched }
 }
 
 export async function removeDownload(torrentId: number, hash: string, reason: string) {
