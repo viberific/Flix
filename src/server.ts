@@ -22,7 +22,7 @@ import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs
 import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { noteStall, prebuildHead, startPrebuild } from './prebuild.ts'
-import { copyPictureFor, ensureHls, hlsBuild, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
+import { copyPictureFor, ensureHls, hlsBuild, hlsLateness, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
@@ -594,6 +594,14 @@ app.post('/api/stream/:t/:f/stop', guarded, async (req) => {
   }
   releaseHls(+t, +f)
   return { ok: true }
+})
+
+// The box's own lateness, which the player asks for before it blames the line: a stall while a segment was still being
+// made says nothing about the connection, and stepping the picture down for it starts another encoder on the same cores.
+app.get('/api/stream/:t/:f/late', guarded, async (req) => {
+  const { t, f } = req.params as any
+  const within = Number((req.query as any).within)
+  return hlsLateness(+t, +f, Number.isFinite(within) && within > 0 ? Math.min(120_000, Math.max(5_000, within)) : 45_000)
 })
 
 const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInteger(n) && n >= 0 && n < 32 ? n : 0 }
