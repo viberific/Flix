@@ -537,7 +537,7 @@ function authView(needsSetup) {
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div>${s.leechers ? `<div class="ts">${s.leechers} leeching</div>` : ''}</a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div>${s.score || s.leechers ? `<div class="ts">${[s.score ? `<span class="star" title="IMDb rating">★ ${s.score.toFixed(1)}</span>` : '', s.leechers ? `${s.leechers} leeching` : ''].filter(Boolean).join(' · ')}</div>` : ''}</a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
@@ -782,7 +782,7 @@ async function homeView(q, local = false) {
         <div id="discf" style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">
           <select id="discg" aria-label="Filter by genre"><option value="">Every genre</option></select>
           <select id="discs" aria-label="Filter by service"><option value="">Every service</option></select>
-          <select id="discsort" aria-label="Order"><option value="trending">Trending first</option><option value="new">Newest first</option><option value="rating">Best rated</option></select>
+          <select id="discsort" aria-label="Order"><option value="trending">Trending first</option><option value="new">Newest first</option><option value="rating">Best rated (IMDb)</option></select>
         </div><div class="grid" id="discgrid"></div>
         <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div>`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`

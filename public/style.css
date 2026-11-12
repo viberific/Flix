@@ -114,6 +114,7 @@ img.fade.in { opacity: 1; }
 .tile .tt { transition: color .25s; }
 .tile .tt { margin-top: 10px; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .ts { color: var(--dim); font-size: 13px; }
+.tile .star { color: #f5c518; font-weight: 600; }
 .prog { position: absolute; left: 10px; right: 10px; bottom: 10px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.28); overflow: hidden; z-index: 2; }
 .prog b, .ep .bar b { transform-origin: left; animation: grow .9s var(--ease-out) .35s both; }
 .prog b { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 2px; }
