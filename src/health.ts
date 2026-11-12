@@ -97,8 +97,9 @@ export async function health(): Promise<Issue[]> {
   const d = diskInfo()
   if (d) {
     const pct = Math.round((d.free / d.total) * 100)
-    if (d.free < freeFloor(d)) out.push({ level: 'bad', title: 'Please remove some videos: storage is nearly full', detail: `Only ${gb(d.free)} (${pct}%) of ${gb(d.total)} is left, so new shows are refused and nothing is fetched ahead of time. “Free up space” on the Torrents page lists what can go, biggest first. ${config.pruneFreePct > 0 ? `Finished, fully seeded torrents are kept until free space drops below ${config.pruneFreePct}%, then the oldest go.` : 'Finished, fully seeded torrents are removed automatically.'}` })
-    else if (pct < config.warnFreePct) out.push({ level: 'warn', title: 'Storage is getting low', detail: `${gb(d.free)} (${pct}%) left of ${gb(d.total)}.${pct < config.auto.pausePct ? ` The next episode is no longer fetched ahead of time below ${config.auto.pausePct}%` : ' The next episode is still fetched ahead of time'}; below ${config.minFreePct}% new ones are refused.${config.pruneFreePct > 0 ? ` Finished, fully seeded torrents are deleted once free space drops below ${config.pruneFreePct}%, oldest first, until ${config.pruneTargetPct}% is free.` : ''} “Free up space” on the Torrents page lists what can go.` })
+    // Only a real emergency gets a warning (WARN_FREE_PCT, 5% by default), and it stays short.
+    if ((d.free / d.total) * 100 < config.warnFreePct) out.push({ level: 'bad', title: 'Storage almost full', detail: `${gb(d.free)} (${pct}%) left. Free up space on the Torrents page.`, link: '#/settings/torrents' })
+    else if (d.free < freeFloor(d)) out.push({ level: 'info', title: 'New shows paused', detail: `${pct}% of storage is free; new shows wait until it is above ${config.minFreePct}%.` })
     else if (config.auto.enabled && pct < config.auto.pausePct) out.push({ level: 'info', title: 'Pre-downloading is paused', detail: `${pct}% of storage is free; the next episode is not fetched ahead of time below ${config.auto.pausePct}%.` })
   }
   const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number

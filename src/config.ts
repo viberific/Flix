@@ -78,7 +78,7 @@ export const config = {
   /** ...and when less than this share of the disk is free (the larger of the two limits applies). */
   minFreePct: num('MIN_FREE_PCT', 10),
   /** Warn the admin below this share free. */
-  warnFreePct: num('WARN_FREE_PCT', 20),
+  warnFreePct: num('WARN_FREE_PCT', 5),
   /**
    * When to delete for space, as a share of the download volume's disk. 0 (the default) means off: a finished, fully
    * seeded download nobody needs is removed the moment it is deletable, as Flix has always done. Above 0, nothing is
