@@ -193,7 +193,7 @@ const btnSearched = new Map<string, number>()
 app.get('/api/series', auth, async (req) => {
   const { q, local } = req.query as { q?: string; local?: string }
   const f = ratingClause(req.user)
-  const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
+  const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
   // `local` answers from what Flix already knows, instantly; the page follows up without it to bring in BTN's results.
   // A term searched on BTN in the last few minutes is not asked again.
@@ -226,7 +226,7 @@ app.get('/api/discover', auth, async (req) => {
   const page = Math.max(0, Math.min(40, Math.trunc(Number(q.page ?? 0)) || 0))
   const per = 60
   const f = ratingClause(req.user)
-  const rows = (db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(genres) AS genres FROM releases ${META_JOIN}releases.series_id
+  const rows = (db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score, MAX(genres) AS genres FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC LIMIT 3000`).all(...f.params) as any[])
     .map((r) => ({ ...r, genres: genresOf(r) }))
   const net = netInfo()
@@ -240,7 +240,7 @@ app.get('/api/discover', auth, async (req) => {
   if (q.genre) list = list.filter((r) => r.genres.some((g: string) => g.toLowerCase() === String(q.genre).toLowerCase()))
   if (q.service) list = list.filter((r) => (net.get(r.id)?.streamer ?? '') === q.service)
   list.sort(sort === 'new' ? (a, b) => b.latest - a.latest
-    : sort === 'rating' ? (a, b) => (Number.parseFloat(b.rating) || 0) - (Number.parseFloat(a.rating) || 0) || b.latest - a.latest
+    : sort === 'rating' ? (a, b) => (b.score ?? 0) - (a.score ?? 0) || b.latest - a.latest
     : (a, b) => heat(b.id) - heat(a.id) || b.latest - a.latest)
   const genres = [...new Set(rows.flatMap((r) => r.genres.map((g: string) => String(g).trim())))].filter(Boolean).sort((a, b) => a.localeCompare(b))
   const services = [...new Set(rows.map((r) => net.get(r.id)?.streamer).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b))
@@ -316,7 +316,7 @@ const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
   const net = netInfo()
-  const all = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating FROM releases ${META_JOIN}releases.series_id
+  const all = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 1500)
   all.forEach((r) => { r.genres = genresOf(r) })
   all.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))

@@ -537,7 +537,7 @@ function authView(needsSetup) {
 }
 
 /* ---------- home ---------- */
-const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div>${s.leechers ? `<div class="ts">${s.leechers} leeching</div>` : ''}</a>`
+const tile = (s, i) => `<a class="tile rise" style="--i:${Math.min(i, 12)}" href="#/series/${s.id}">${art(s.poster, s.name)}${s.hasNew ? '<span class="new-badge upd">New episode</span>' : s.isNew ? '<span class="new-badge">New</span>' : ''}<div class="tt">${esc(s.name)}</div>${s.score || s.leechers ? `<div class="ts">${[s.score ? `<span class="star" title="IMDb rating">★ ${s.score.toFixed(1)}</span>` : '', s.leechers ? `${s.leechers} leeching` : ''].filter(Boolean).join(' · ')}</div>` : ''}</a>`
 const contTile = (c, i) => `<button class="tile rise" style="--i:${Math.min(i, 12)}" data-s="${c.seriesId}" data-season="${c.season ?? ''}" data-label="${esc(c.label)}">
   <div style="position:relative">${art(c.poster, c.series)}${c.next ? '' : `<div class="prog"><b style="width:${pct(c.position, c.duration)}%"></b></div>`}</div><div class="tt">${esc(c.series)}</div><div class="ts">${c.next ? 'Up next · ' : ''}${esc(c.label)}</div></button>`
 
@@ -585,18 +585,14 @@ function queueOf(cont, home) {
   return { resume: cont, ready: [...ready], list: [...list], sugg: pool.slice(0, QUEUE_SUGGESTIONS), pool: pool.slice(QUEUE_SUGGESTIONS), title, used }
 }
 function queueHtml(st) {
-  // Two rails: what can be played now (resume, then shows with something downloaded), and under it the list and the picks.
-  // The top rail's group names never move, so they are drawn here; the lower rail's are placed by wireQueue.
-  const now = [
-    ...st.resume.map((c, i) => qcard(i ? contTile(c, i) : wideTile(c, i), c.seriesId)),
-    ...st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id)),
-  ].map((h, i) => !i ? h.replace('class="qcard', `data-g="${st.resume.length ? 'Continue' : 'Ready to Watch'}" class="qcard gl`)
-    : i === st.resume.length ? h.replace('class="qcard', 'data-g="Ready to Watch" class="qcard gl gs') : h)
-  const next = [
-    ...st.list.map((s, i) => qcard(tile(s, i), s.id, 'list')),
-    ...st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')),
-  ]
-  return `<h2 class="sec queue-h">Queue</h2>${now.length ? rowShell(now.join(''), 'qtop') : ''}${rowShell(next.join(''), 'q')}`
+  // Grids, like Discover: a group's name, then its cards. Resume and Ready to Watch (what can be played now) come first; Your list
+  // and the suggestions are the groups wireQueue keeps moving cards between. The resume card for the latest show spans two columns.
+  const group = (name, cards, k = '', hide = false) => `<section class="qsec"${k ? ` data-k="${k}"` : ''}${hide ? ' hidden' : ''}><h3 class="qg">${name}</h3><div class="grid qgrid"${k ? ` data-k="${k}"` : ''}>${cards.join('')}</div></section>`
+  const resume = st.resume.map((c, i) => qcard(i ? contTile(c, i) : wideTile(c, i), c.seriesId))
+  const ready = st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id))
+  return `<h2 class="sec queue-h">Queue</h2>${resume.length ? group('Continue', resume) : ''}${ready.length ? group('Ready to Watch', ready) : ''}`
+    + group('Your list', st.list.map((s, i) => qcard(tile(s, i), s.id, 'list')), 'list')
+    + group(st.title, st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')), 'sugg', !st.sugg.length)
 }
 function wireRows(root) {
   const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
@@ -618,27 +614,24 @@ function wireRows(root) {
  * moves for a change that did not happen. Cards are moved, never redrawn, so the highlight a remote has on one is kept.
  */
 function wireQueue(root, st) {
-  const sc = root.querySelector('.row-scroll.q')
-  if (!sc) return
-  const els = new Map([...sc.querySelectorAll('.qcard[data-id]')].map((e) => [Number(e.dataset.id), e]))
+  const boxes = { list: root.querySelector('.qgrid[data-k="list"]'), sugg: root.querySelector('.qgrid[data-k="sugg"]') }
+  if (!boxes.list || !boxes.sugg) return
+  const els = new Map([...root.querySelectorAll('.qgrid .qcard[data-id]')].map((e) => [Number(e.dataset.id), e]))
   const byId = new Map([...st.list, ...st.sugg, ...st.pool].map((s) => [s.id, s]))
   const empty = document.createElement('div')
   empty.className = 'qcard empty'
   empty.innerHTML = '<span><b>Your list is empty</b>Tap + on a suggestion to add it here</span>'
   const label = (el, id, on) => { el.classList.toggle('list', on); el.classList.toggle('sugg', !on); el.querySelector('.qact')?.setAttribute('aria-label', `${on ? 'Remove' : 'Add'} ${byId.get(id)?.name ?? 'this show'} ${on ? 'from' : 'to'} My List`) }
+  const fill = (box, cards) => {
+    cards.forEach((el, i) => { if (box.children[i] !== el) box.insertBefore(el, box.children[i] ?? null) })
+    while (box.children.length > cards.length) box.lastElementChild.remove() // the empty-list note, once there is a list
+  }
   const place = () => {
-    const seq = []
-    const add = (head, cards) => cards.forEach((el, i) => seq.push([el, i ? '' : head]))
-    add('Your list', st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
-    add(st.title, st.sugg.map((s) => els.get(s.id)))
     st.list.forEach((s) => label(els.get(s.id), s.id, true))
     st.sugg.forEach((s) => label(els.get(s.id), s.id, false))
-    seq.forEach(([el, head], i) => {
-      if (sc.children[i] !== el) sc.insertBefore(el, sc.children[i] ?? null)
-      el.classList.toggle('gl', !!head); el.classList.toggle('gs', !!head && i > 0)
-      if (head) el.dataset.g = head; else delete el.dataset.g
-    })
-    while (sc.children.length > seq.length) sc.lastElementChild.remove() // the empty-list note, once there is a list
+    fill(boxes.list, st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
+    fill(boxes.sugg, st.sugg.map((s) => els.get(s.id)))
+    boxes.sugg.closest('.qsec').hidden = !st.sugg.length
   }
   const flip = (mutate) => {
     const before = new Map()
@@ -766,7 +759,10 @@ async function homeView(q, local = false) {
     // Resume and Ready to Watch are one rail, My List and the picks the one under it (see queueOf); without a Queue the picks keep their own row.
     const queue = q ? null : queueOf(items, home)
     if (queue) html += queueHtml(queue)
-    if (!q && leaving.items.some((l) => !lpIds.has(l.torrentId))) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leaving.items.filter((l) => !lpIds.has(l.torrentId)), leavingTile)}`
+    // Whatever the Queue holds (or could fill in with) is drawn nowhere else on the screen: not in Leaving soon, not in Discover.
+    const inQueue = new Set(queue ? [...queue.resume.map((c) => c.seriesId), ...queue.ready.map((s) => s.id), ...queue.list.map((s) => s.id), ...queue.sugg.map((s) => s.id), ...queue.pool.map((s) => s.id)] : [])
+    const leavingRow = leaving.items.filter((l) => !lpIds.has(l.torrentId) && !inQueue.has(l.seriesId))
+    if (!q && leavingRow.length) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leavingRow, leavingTile)}`
     if (!q && !queue && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`
     if (!q && home.because && queue?.used !== 'because') html += `<h2 class="sec">Because you ${home.because.liked ? 'liked' : 'watched'} ${esc(home.because.name)}</h2>${rowOf(home.because.series, tile)}`
     if (q) {
@@ -786,7 +782,7 @@ async function homeView(q, local = false) {
         <div id="discf" style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">
           <select id="discg" aria-label="Filter by genre"><option value="">Every genre</option></select>
           <select id="discs" aria-label="Filter by service"><option value="">Every service</option></select>
-          <select id="discsort" aria-label="Order"><option value="trending">Trending first</option><option value="new">Newest first</option><option value="rating">Best rated</option></select>
+          <select id="discsort" aria-label="Order"><option value="trending">Trending first</option><option value="new">Newest first</option><option value="rating">Best rated (IMDb)</option></select>
         </div><div class="grid" id="discgrid"></div>
         <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div>`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
@@ -804,7 +800,7 @@ async function homeView(q, local = false) {
           if (ds.value) pr.set('service', ds.value)
           const d = await fetch('/api/discover?' + pr).then((r) => (r.ok ? r.json() : null)).catch(() => null)
           if (!d) { dgrid.innerHTML = '<div class="empty">Could not read the library just now.</div>'; return }
-          const tiles = d.series.map(tile).join('')
+          const tiles = d.series.filter((x) => !inQueue.has(x.id)).map(tile).join('')
           if (append) dgrid.insertAdjacentHTML('beforeend', tiles)
           else dgrid.innerHTML = tiles || '<div class="empty">Nothing matches those filters.</div>'
           // The lists are filled once, from the unfiltered first answer, so choosing a genre cannot shrink the choices to itself.

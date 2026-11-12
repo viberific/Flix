@@ -114,6 +114,7 @@ img.fade.in { opacity: 1; }
 .tile .tt { transition: color .25s; }
 .tile .tt { margin-top: 10px; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .ts { color: var(--dim); font-size: 13px; }
+.tile .star { color: #f5c518; font-weight: 600; }
 .prog { position: absolute; left: 10px; right: 10px; bottom: 10px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.28); overflow: hidden; z-index: 2; }
 .prog b, .ep .bar b { transform-origin: left; animation: grow .9s var(--ease-out) .35s both; }
 .prog b { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 2px; }
@@ -132,17 +133,15 @@ img.fade.in { opacity: 1; }
 /* ---------- the Queue: resume and Ready to Watch in one rail, My List and suggestions in the one under it ---------- */
 /* Each group's name sits above its first card (data-g, set in wireQueue); a hairline sets the groups apart. */
 .queue-h { margin-bottom: 0; }
-.row-scroll.q, .row-scroll.qtop { padding-top: 36px; }
-.qcard { --tw: 168px; flex: none; position: relative; scroll-snap-align: start; }
-.qcard > .tile { width: var(--tw); }
-.qcard > .tile.wide { width: calc(var(--tw) * 2.4); }
-.qcard.gl::before { content: attr(data-g); position: absolute; left: 0; bottom: calc(100% + 12px); white-space: nowrap; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
-.qcard.gs { margin-left: 18px; }
-.qcard.gs::after { content: ""; position: absolute; left: -19px; top: 0; bottom: 8px; width: 1px; background: var(--line); }
-.qcard.empty { width: var(--tw); aspect-ratio: 2 / 3; border: 1.5px dashed rgba(255,255,255,.18); border-radius: var(--radius); display: grid; place-items: center; text-align: center; padding: 14px; color: var(--dim); font-size: 13px; }
+.qsec[hidden] { display: none; }
+.qg { margin: 18px 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.qcard { position: relative; min-width: 0; }
+.qcard:has(> .tile.wide) { grid-column: span 2; }
+.qcard > .tile { width: auto; }
+.qcard.empty { aspect-ratio: 2 / 3; border: 1.5px dashed rgba(255,255,255,.18); border-radius: var(--radius); display: grid; place-items: center; text-align: center; padding: 14px; color: var(--dim); font-size: 13px; }
 .qcard.empty b { display: block; color: var(--fg); font-size: 14px; margin-bottom: 4px; }
 /* the wide resume card: same height as a poster */
-.tile.wide .poster { aspect-ratio: auto; height: calc(var(--tw, 168px) * 1.5); }
+.tile.wide .poster { aspect-ratio: 1.32; }
 .tile.wide .poster::after { content: ""; position: absolute; inset: 0; z-index: 1; background: linear-gradient(to top, rgba(0,0,0,.5), transparent 50%); pointer-events: none; }
 .wide-play { position: absolute; z-index: 2; left: 50%; top: 46%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; display: grid; place-items: center; color: #fff;
   background: rgba(10,12,16,.55); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.5); transition: transform .3s var(--spring), background .3s; }
@@ -150,8 +149,8 @@ img.fade.in { opacity: 1; }
 .wide-pill { position: absolute; z-index: 2; right: 10px; top: 10px; font-size: 12px; font-weight: 700; color: #fff; padding: 3px 9px; border-radius: 99px; background: rgba(10,12,16,.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 @media (hover: hover) { .tile.wide:hover .wide-play { transform: scale(1.12); background: color-mix(in srgb, var(--accent) 75%, #000); } }
 .tile.wide:focus-visible .wide-play, html.tv .tile.wide:focus .wide-play { transform: scale(1.12); background: color-mix(in srgb, var(--accent) 75%, #000); }
-/* + and check: beside the poster's bottom-right corner, over it */
-.qact { position: absolute; z-index: 3; left: calc(var(--tw) - 42px); top: calc(var(--tw) * 1.5 - 42px); width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff;
+/* + and check: over the poster's top-right corner */
+.qact { position: absolute; z-index: 3; right: 8px; top: 8px; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff;
   background: rgba(10,12,16,.62); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); transition: transform .3s var(--spring), background .25s, box-shadow .25s; }
 .qact svg { width: 16px; height: 16px; }
 .qact .ck { display: none; }
@@ -165,7 +164,6 @@ img.fade.in { opacity: 1; }
 .qcard.sugg .tt { color: var(--dim); }
 .qcard.sugg:hover .poster, .qcard.sugg:focus-within .poster { opacity: 1; filter: none; }
 .qcard.sugg:hover .tt, .qcard.sugg:focus-within .tt { color: var(--fg); }
-@media (max-width: 640px) { .qcard { --tw: 134px; } }
 
 /* ---------- home hero ---------- */
 .hero { position: relative; min-height: min(66vh, 620px); display: flex; align-items: flex-end; overflow: hidden; }
@@ -1079,9 +1077,6 @@ html.tv .qact, html.tv .wide-play { transition: transform .2s var(--ease); }
    padding: with 4px at the start and 8px on top, the first show in a row lost the ring's left side and top corner. The
    rail gets room for the whole ring on every side, and the same amount back as negative margin, so nothing moves. */
 html.tv .row-scroll { padding: 16px 24px 22px 16px; margin: -8px -16px 0; }
-/* The Queue's rails keep their 36px for the group names above the cards (Continue, Ready to Watch); the rule above outranks
-   theirs, so it is restated here with the same 8px given back to the margin. */
-html.tv .row-scroll.q, html.tv .row-scroll.qtop { padding-top: 44px; }
 /* The show page's season pills and cast scroll sideways the same way, and their first entry lost its ring on the left. */
 html.tv .pills { padding: 8px 8px 14px; margin: -2px -8px 0; }
 html.tv .cast { padding: 10px 10px 12px; margin: -10px -10px 0; }

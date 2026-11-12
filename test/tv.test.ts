@@ -201,11 +201,6 @@ test('only transform and opacity ease on a television after a remote press', () 
   assert.doesNotMatch(css, /@keyframes sweep \{[^}]*left:/, 'the loading shine moves by transform, not by left')
 })
 
-test('the Queue rails keep room for their group names on a television', () => {
-  // `html.tv .row-scroll` outranks `.row-scroll.q`, so the TV rule must restate the 36px plus the 8px its margin takes back.
-  assert.match(css, /html\.tv \.row-scroll\.q, html\.tv \.row-scroll\.qtop \{ padding-top: 44px; \}/)
-})
-
 test('on a television the logo never animates over the picture, and a moving clock clears the spinner', () => {
   // The bloom-and-dissolve exit played over the first second of the show, exactly when the TV's chip starts the decoder,
   // and stuttered there: on a TV the layer is settled (display: none) in the same step that reveals the picture.

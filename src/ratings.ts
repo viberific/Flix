@@ -51,7 +51,7 @@ export function canViewSeries(u: Viewer | null | undefined, seriesId: number): b
 }
 
 /** SQL fragment restricting a query that joins `series_meta` as (m_sid, m_rating). */
-export const META_JOIN = `LEFT JOIN (SELECT series_id AS m_sid, rating AS m_rating FROM series_meta) m ON m.m_sid = `
+export const META_JOIN = `LEFT JOIN (SELECT series_id AS m_sid, rating AS m_rating, imdb_score AS m_score FROM series_meta) m ON m.m_sid = `
 export function ratingClause(u: Viewer | null | undefined): { sql: string; params: string[] } {
   if (!u || u.is_admin || u.allowed === null) return { sql: '1=1', params: [] }
   if (!u.allowed.length) return { sql: '0', params: [] }
