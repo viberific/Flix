@@ -588,7 +588,7 @@ function queueHtml(st) {
   // Grids, like Discover: a group's name, then its cards. Resume and Ready to Watch (what can be played now) come first; Your list
   // and the suggestions are the groups wireQueue keeps moving cards between. The resume card for the latest show spans two columns.
   const group = (name, cards, k = '', hide = false) => `<section class="qsec"${k ? ` data-k="${k}"` : ''}${hide ? ' hidden' : ''}><h3 class="qg">${name}</h3><div class="grid qgrid"${k ? ` data-k="${k}"` : ''}>${cards.join('')}</div></section>`
-  const resume = st.resume.map((c, i) => qcard(i ? contTile(c, i) : wideTile(c, i), c.seriesId))
+  const resume = st.resume.map((c, i) => i ? qcard(contTile(c, i), c.seriesId) : qcard(wideTile(c, i), c.seriesId).replace('class="qcard"', 'class="qcard wide"'))
   const ready = st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id))
   return `<h2 class="sec queue-h">Queue</h2>${resume.length ? group('Continue', resume) : ''}${ready.length ? group('Ready to Watch', ready) : ''}`
     + group('Your list', st.list.map((s, i) => qcard(tile(s, i), s.id, 'list')), 'list')

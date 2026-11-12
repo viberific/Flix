@@ -119,7 +119,7 @@ img.fade.in { opacity: 1; }
 .prog b, .ep .bar b { transform-origin: left; animation: grow .9s var(--ease-out) .35s both; }
 .prog b { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 2px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 26px 18px; }
-.grid .tile { width: auto; }
+.grid .tile { width: 100%; min-width: 0; } /* 100%, not auto: a <button> tile shrinks to its text under auto */
 
 .rowwrap { position: relative; }
 .row-scroll { display: flex; gap: 18px; overflow-x: auto; scroll-snap-type: x proximity; padding: 8px 24px 22px 4px; margin: 0 -4px; scrollbar-width: none; scroll-behavior: smooth; }
@@ -136,8 +136,8 @@ img.fade.in { opacity: 1; }
 .qsec[hidden] { display: none; }
 .qg { margin: 18px 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
 .qcard { position: relative; min-width: 0; }
-.qcard:has(> .tile.wide) { grid-column: span 2; }
-.qcard > .tile { width: auto; }
+.qcard.wide { grid-column: span 2; }
+.qcard > .tile { width: 100%; }
 .qcard.empty { aspect-ratio: 2 / 3; border: 1.5px dashed rgba(255,255,255,.18); border-radius: var(--radius); display: grid; place-items: center; text-align: center; padding: 14px; color: var(--dim); font-size: 13px; }
 .qcard.empty b { display: block; color: var(--fg); font-size: 14px; margin-bottom: 4px; }
 /* the wide resume card: same height as a poster */
