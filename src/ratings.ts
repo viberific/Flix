@@ -94,16 +94,17 @@ async function lookupTmdb(tvdbId: number): Promise<Rating | null> {
 const imdbId = (v: unknown) => { const m = /^(?:tt)?(\d{5,10})$/i.exec(String(v ?? '').trim()); return m ? `tt${m[1]}` : null }
 
 const failedAt = new Map<number, number>()
+let omdbPausedUntil = 0
 const pending = new Set<number>()
 let active = 0
 const queue: number[] = []
 
 /** Fire-and-forget: fetch a rating for a show if we have none, or only an old one (an IMDb answer is kept a week, a fallback one a day). */
-export function queueRating(seriesId: number) {
+export function queueRating(seriesId: number, force = false) {
   if ((!config.omdb.apiKey && !config.tmdb.apiKey) || pending.has(seriesId)) return
   const have = db.prepare('SELECT source, fetched_at FROM series_meta WHERE series_id = ?').get(seriesId) as any
-  if (have && have.fetched_at > now() - (have.source === 'imdb' ? 7 : 1) * 86400) return
-  if ((failedAt.get(seriesId) ?? 0) > Date.now() - 6 * 3600_000) return
+  if (!force && have && have.fetched_at > now() - (have.source === 'imdb' ? 7 : 1) * 86400) return
+  if (!force && (failedAt.get(seriesId) ?? 0) > Date.now() - 6 * 3600_000) return
   pending.add(seriesId); queue.push(seriesId); pump()
 }
 function pump() {
@@ -116,8 +117,12 @@ function pump() {
         const imdb = ids.map((r) => imdbId(r.imdb_id)).find(Boolean) ?? null
         const tvdb = ids.map((r) => r.tvdb_id).find(Boolean) ?? null
         let rating: Rating | null = null, score: number | null = null, source = 'imdb', failed: Error | null = null
-        if (config.omdb.apiKey && imdb) {
-          try { ({ rating, score } = await lookupImdb(imdb)) } catch (e: any) { failed = e }
+        if (config.omdb.apiKey && imdb && Date.now() > omdbPausedUntil) {
+          try { ({ rating, score } = await lookupImdb(imdb)) } catch (e: any) {
+            failed = e
+            // A wrong key or the free plan's 1,000 a day: stop asking OMDb for a while instead of failing every show in the queue.
+            if (/^OMDb:/.test(e.message)) omdbPausedUntil = Date.now() + 3 * 3600_000
+          }
         }
         if (!rating && config.tmdb.apiKey && tvdb) {
           try { rating = await lookupTmdb(tvdb); source = 'tmdb' } catch (e: any) { failed ??= e }
@@ -129,4 +134,16 @@ function pump() {
       finally { active--; pending.delete(id); pump() }
     })()
   }
+}
+
+/**
+ * Look up every show that has no IMDb score yet (or no rating at all), whatever was fetched before. Called when an OMDb key
+ * is saved: without it, a show TMDB had already rated kept its answer and never got its IMDb score.
+ */
+export function refreshRatings() {
+  failedAt.clear(); omdbPausedUntil = 0
+  const ids = db.prepare(`SELECT DISTINCT series_id AS id FROM releases WHERE series_id IS NOT NULL
+    AND series_id NOT IN (SELECT series_id FROM series_meta WHERE imdb_score IS NOT NULL AND source = 'imdb')`).all() as { id: number }[]
+  for (const { id } of ids) queueRating(id, true)
+  return ids.length
 }

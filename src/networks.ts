@@ -185,11 +185,11 @@ export function startNetworkCrawler(everyMs = 2000) {
   return t
 }
 
-export interface NetRow { streamer: string | null; first_air: string | null; notable: boolean; popularity: number; trending: number | null }
+export interface NetRow { streamer: string | null; first_air: string | null; notable: boolean; popularity: number; trending: number | null; lang?: string | null }
 /** Everything the home screen needs about every show we have read: service, premiere, popularity, trending rank. */
 export function netInfo(): Map<number, NetRow> {
   const m = new Map<number, NetRow>()
-  for (const r of db.prepare(`SELECT n.series_id, n.streamer, n.first_air, n.notable, n.popularity, t.rank FROM series_net n LEFT JOIN trending_tv t ON t.tmdb_id = n.tmdb_id`).all() as any[])
-    m.set(r.series_id, { streamer: r.streamer, first_air: r.first_air, notable: !!r.notable, popularity: r.popularity ?? 0, trending: r.rank ?? null })
+  for (const r of db.prepare(`SELECT n.series_id, n.streamer, n.first_air, n.notable, n.popularity, n.lang, t.rank FROM series_net n LEFT JOIN trending_tv t ON t.tmdb_id = n.tmdb_id`).all() as any[])
+    m.set(r.series_id, { streamer: r.streamer, first_air: r.first_air, notable: !!r.notable, popularity: r.popularity ?? 0, trending: r.rank ?? null, lang: r.lang ?? null })
   return m
 }

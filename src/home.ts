@@ -1,5 +1,6 @@
 import { STREAMERS, primaryGenre, isHiddenService, type NetRow } from './networks.ts'
 import { tasteSort, type Taste } from './taste.ts'
+import { isAnime } from './seasons.ts'
 
 export interface HomeRow { id: number; name: string; poster: string | null; banner: string | null; genres: string[]; latest: number; rating?: string; [k: string]: unknown }
 export interface Section { title: string; series: HomeRow[] }
@@ -59,6 +60,9 @@ export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set
   }
 
   row('Trending shows', trending, [...eligible].sort(popular))
+  // Anime gets a row of its own near the top, from the whole library (most anime is on no service the home screen follows).
+  // Short is fine (down to SERVICE_MIN); its shows are then not repeated in the genre rows below.
+  row('Anime', pool.filter((r) => isAnime(r.genres, net.get(r.id)?.lang)).sort((a, b) => popular(a, b) || newest(a, b)), [], false, SERVICE_MIN)
   for (const s of STREAMERS) {
     const own = eligible.filter((r) => net.get(r.id)?.streamer === s).sort(newest)
     // Enough on this service for a full row: fill it as before, topping up from the same service's shows already shown above.
