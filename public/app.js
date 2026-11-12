@@ -1032,7 +1032,7 @@ async function seriesView(id) {
     
     app.innerHTML = `<section class="s-hero"><div class="bd" id="sbd"></div><div class="s-in pad">${art(series.poster, series.name)}
       <div class="s-meta"><h1 class="rise">${esc(series.name)}</h1>
-      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating">★ ${esc(series.score.toFixed(1))}</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
+      <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating"><span class="star">★ ${esc(series.score.toFixed(1))}</span> IMDb</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
@@ -3055,7 +3055,7 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'Ratings'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'OMDb'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
 const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
 
 /** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
@@ -3296,7 +3296,7 @@ function familyPanel(data, root) {
   const paintNow = () => {
     root.innerHTML = `<h2 class="stitle2">Family</h2>
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
-      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → Ratings (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
+      ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → OMDb (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
         <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}${u.hasPassword ? '' : ' · No password'}</div></div></div>
@@ -3419,7 +3419,7 @@ function settingsPanel(data, root) {
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
           <button class="btn primary">Save</button><button type="button" class="btn" id="bt" ${btn.configured ? '' : 'disabled'}>Test connection</button>${btn.source === 'settings' ? '<button type="button" class="btn" id="bc">Remove saved key</button>' : ''}</div>
         <div class="dim" id="bm" role="status"></div></form>
-      </div><div id="s-ratings" class="ssec"><h2 class="stitle2">Ratings from IMDb</h2>
+      </div><div id="s-ratings" class="ssec"><h2 class="stitle2">OMDb (IMDb ratings)</h2>
       <p class="dim" style="max-width:66ch">Every show's content rating (TV-Y to TV-MA) and IMDb score are looked up automatically, through OMDb, which serves IMDb's data. Get a free key at omdbapi.com (it must be activated from the email they send). Without it Flix falls back to TMDB for the rating, and shows are Unrated when neither knows.</p>
       <form id="of" class="person"><div class="dim">${om.configured ? `Key set (ends in <code>${esc(om.hint)}</code>)${om.source === 'environment' ? ', from the server environment' : ''}` : 'No key set yet'}</div>
         <div class="row-form"><input class="field" name="key" type="password" placeholder="Paste OMDb API key" autocomplete="off" spellcheck="false">

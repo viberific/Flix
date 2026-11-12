@@ -63,6 +63,22 @@ export const catalogVersion = () => version
 /** True when a show is in English: TMDB's original language, or TVmaze's. A show whose language nobody could tell is let through. */
 export const isEnglish = (lang: string | null | undefined) => !lang || /^(en|english)$/i.test(lang.trim())
 
+/**
+ * Anime: a show filed under Anime, or a Japanese animated one. It is let into the library whatever its language (it is
+ * usually Japanese with English subtitles or an English dub), and gets its own row on the home screen.
+ */
+export function isAnime(genres: string[], lang?: string | null): boolean {
+  const g = genres.map((x) => String(x).trim().toLowerCase())
+  return g.includes('anime') || (/^(ja|japanese)$/i.test((lang ?? '').trim()) && g.includes('animation'))
+}
+const genresBySeries = (): Map<number, string[]> => {
+  const m = new Map<number, string[]>()
+  for (const r of db.prepare('SELECT series_id, MAX(genres) AS genres FROM releases GROUP BY series_id').all() as any[]) {
+    try { m.set(r.series_id, (JSON.parse(r.genres ?? '[]') as unknown[]).map(String)) } catch { /* none */ }
+  }
+  return m
+}
+
 /** What the crawler learned per show: its language and how many episodes each season has. Absent = not read yet. */
 function netFacts(): Map<number, { lang: string | null; counts: Map<number, number> }> {
   const m = new Map<number, { lang: string | null; counts: Map<number, number> }>()
@@ -75,7 +91,7 @@ function netFacts(): Map<number, { lang: string | null; counts: Map<number, numb
 }
 
 /**
- * Every English-language show whose catalog we have fully read (a series_sync row), whose season 1 is complete, and that
+ * Every English-language show (or anime, see isAnime) whose catalog we have fully read (a series_sync row), whose season 1 is complete, and that
  * the network crawler has looked at (language and season lengths are needed to judge), with its visible seasons.
  * A show we have only seen a few recent uploads of is not listed yet: its season 1 simply may not have been fetched.
  */
@@ -91,10 +107,12 @@ export function listable(): Map<number, Map<number, SeasonSource>> {
     l.push({ ...r, alive: !!r.alive })
   }
   const facts = netFacts()
+  let genres: Map<number, string[]> | null = null // read only if a non-English show turns up
   const map = new Map<number, Map<number, SeasonSource>>()
   for (const [id, rows] of by) {
     const f = facts.get(id)
-    if (!f || !isEnglish(f.lang)) continue
+    if (!f) continue
+    if (!isEnglish(f.lang) && !isAnime((genres ??= genresBySeries()).get(id) ?? [], f.lang)) continue
     const s = visibleSeasons(rows, f.counts)
     if (s.has(1)) map.set(id, s)
   }

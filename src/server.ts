@@ -7,7 +7,7 @@ import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar, isChild, hasPassword } from './auth.ts'
-import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause } from './ratings.ts'
+import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause, refreshRatings } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
@@ -208,7 +208,7 @@ app.get('/api/series', auth, async (req) => {
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
   }
   const rows = query().filter(isListed).slice(0, 100)
-  rows.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
+  rows.filter((r) => r.rating === 'Unrated' || r.score == null).forEach((r) => queueRating(r.id))
   return { series: rows }
 })
 
@@ -256,6 +256,7 @@ app.get('/api/series/:id', auth, async (req) => {
   const sync = ensureSynced(id)
   if (!have || !synced) await sync
   if (!seasonsOf(id)) throw notFound('This show is not available yet')
+  queueRating(id) // no-op when its rating and score are recent; otherwise the next visit shows the IMDb score
   // Reading a season pack's .torrent can be slow; the page does not wait on it past a few seconds (it carries on in the background).
   await Promise.race([ensurePackFiles(id), new Promise((r) => setTimeout(r, 4000))])
   const info = db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(youtube_trailer) AS trailer FROM releases WHERE series_id = ? GROUP BY series_id`).get(id) as any
@@ -319,7 +320,7 @@ app.get('/api/home', auth, async (req) => {
   const all = (db.prepare(`SELECT ${seriesCols}, MAX(genres) AS genres, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score FROM releases ${META_JOIN}releases.series_id
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC`).all(...f.params) as any[]).filter(isListed).slice(0, 1500)
   all.forEach((r) => { r.genres = genresOf(r) })
-  all.filter((r) => r.rating === 'Unrated').forEach((r) => queueRating(r.id))
+  all.filter((r) => r.rating === 'Unrated' || r.score == null).forEach((r) => queueRating(r.id))
   const taste = tasteOf(req.user!.id, (id) => all.find((r) => r.id === id)?.genres ?? [])
   const fresh = now() - NEW_DAYS * 86400
   const clean = ({ genres, ...r }: any) => ({ ...r, isNew: r.latest > fresh })
@@ -1288,6 +1289,7 @@ app.put('/api/admin/settings/omdb', admin, async (req) => {
   const key = String((req.body as any)?.apiKey ?? '').trim()
   if (key.length > 200 || /\s/.test(key)) throw Object.assign(new Error('That does not look like an API key'), { statusCode: 400 })
   setOmdbApiKey(key)
+  if (key) refreshRatings() // fetch every missing IMDb score now, not when each show's old answer expires
   return { omdb: omdbKeyStatus() }
 })
 /** Ask OMDb about a well-known title, so the admin sees whether the key is accepted. */
