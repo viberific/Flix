@@ -731,6 +731,20 @@ html.tv * { cursor: none; }
 .trow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: center; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2, var(--surface)); font-size: 14px; }
 .panel .trow { background: transparent; } .trow .size { font-variant-numeric: tabular-nums; color: var(--dim); white-space: nowrap; }
 @media (max-width: 560px) { .trow { grid-template-columns: minmax(0, 1fr) auto; } .trow .size { grid-column: 2; grid-row: 1; } .trow .btn { grid-column: 1 / -1; justify-self: start; } .trow span:empty { display: none; } }
+/* Finished seeding, grouped by show and season (src/seeding-groups.ts): poster, name, the state line, the size, and the one
+   action. The row's body is a button when there is something underneath it and plain text when there is not, so a show
+   opens with the same press a television's remote already uses, and the Remove beside it is never part of that press. */
+.trow .tpost { display: block; width: 34px; height: 51px; border-radius: 6px; object-fit: cover; background: var(--surface-2, rgba(255,255,255,.06)); }
+.tgrp-body, .tgrp-main { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-width: 0; text-align: left; }
+.tgrp-main { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.tgrp-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 8px; }
+.tgrp-txt { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.chev { justify-self: end; color: var(--dim); font-size: 12px; transition: transform .18s var(--ease); }
+.tgrp .tacts { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.tnest { grid-column: 1 / -1; margin: 8px 0 2px 16px; }
+.trow.sub > .tgrp-main .tpost, .trow.eps .tpost { width: 22px; height: 33px; }
+@media (max-width: 560px) { .tnest { margin-left: 6px; } .tgrp .tacts { justify-content: flex-start; } .trow .tpost { width: 28px; height: 42px; } }
+@media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
 .chart { position: relative; } .chart svg { display: block; width: 100%; height: 220px; overflow: visible; touch-action: pan-y; }
 .chart .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; } .chart .ax { fill: var(--dim); font-size: 11px; }
 .chart .ln { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; } .chart .ln.est { stroke-dasharray: 5 4; opacity: .75; }

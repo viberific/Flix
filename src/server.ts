@@ -42,6 +42,7 @@ import { ensureNet, isBrowsableService, isHiddenService, netInfo, startNetworkCr
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
 import { holdersOf, keepFor, leavingSoonFor, letGoFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
+import { episodeLabel, groupDeletePlan, groupFinished, seedNote, type FinishedRow } from './seeding-groups.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -1080,7 +1081,11 @@ app.post('/api/release', auth, async (req) => {
 // ---- admin ------------------------------------------------------------------
 const admin = { preHandler: requireAdmin }
 app.get('/api/admin/downloads', admin, async () => {
-  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, d.origin, d.leaving_at, d.remove_when_seeded, r.series, r.group_name, r.resolution, r.is_pack
+  // series_id, season, episode and the poster are what the finished-seeding view groups by (see seeding-groups.ts): one row
+  // per show, its seasons under it, the torrents under those. They are sent, not worked out on the page, so the grouping and
+  // the rule about what may be deleted live in one place that the tests can reach.
+  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, d.state, d.added_at, d.removed_at, d.remove_reason, d.origin, d.leaving_at, d.remove_when_seeded,
+      r.series, r.series_id, r.season, r.episode, r.episode_end, r.label, r.group_name, r.resolution, r.is_pack, r.series_poster AS poster
     FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id ORDER BY d.added_at DESC LIMIT 200`).all() as any[]
   const out = []
   for (const d of rows) {
@@ -1093,9 +1098,10 @@ app.get('/api/admin/downloads', admin, async () => {
     const w = await wantedBytes(d.torrent_id).catch(() => null)
     out.push({ ...d, progress: w ? w.progress : t.progress, size: w ? w.wanted : t.total_size, held: w ? w.held : t.size * t.progress, total: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
       engineState: t.state, eta: t.eta ?? null, left: w ? w.left : t.amount_left,
-      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id), windowPassed: k.windowPassed, notWatched: k.notWatched })
+      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, seedNote: seedNote(k.seed), deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id), windowPassed: k.windowPassed, notWatched: k.notWatched })
   }
-  return { requirements: config.seed, downloads: out, disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
+  // The finished-seeding view itself: only torrents that hold the whole thing and have met BTN's seeding goal are in it.
+  return { requirements: config.seed, downloads: out, finished: groupFinished(out), disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
 })
 /** A viewer tapped "Something's wrong", or playback failed on its own. Quiet duplicates are dropped. */
 app.post('/api/report', auth, async (req) => {
@@ -1190,6 +1196,56 @@ app.delete('/api/admin/downloads/:id', admin, async (req) => {
     throw Object.assign(new Error(`Still being watched by ${watching.join(', ')}; refusing to remove until they finish or release it`), { statusCode: 409 })
   await removeDownload(id, d.info_hash, 'removed by admin')
   return { ok: true }
+})
+/**
+ * Remove a whole show, or one season of one, in a single action -- the point of grouping the finished-seeding view.
+ *
+ * Every rule the one-at-a-time removal follows is applied to every member before anything is touched, and the group is
+ * refused as a whole when any member fails, so a press meant for "all finished" can never take something still seeding:
+ * the engine must be readable for each one, each must hold the whole thing with BTN's seeding goal met, and nobody may be
+ * partway through any of them. The removal itself is removeDownload(), the same call the single delete makes, so torrents
+ * and files leave the same way and the state is recorded the same way. Refusals name what is still seeding.
+ */
+app.post('/api/admin/downloads/group-delete', admin, async (req) => {
+  const b = (req.body ?? {}) as any
+  const seriesId = Number(b.seriesId)
+  const season = b.season == null || b.season === '' ? null : Number(b.season)
+  if (!Number.isInteger(seriesId)) throw Object.assign(new Error('Which show? No show was given'), { statusCode: 400 })
+  if (season !== null && !Number.isInteger(season)) throw Object.assign(new Error('Which season? That season is not a number'), { statusCode: 400 })
+  const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, r.series, r.series_id, r.season, r.episode, r.episode_end, r.label, r.is_pack
+    FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id
+    WHERE d.state = 'active' AND r.series_id = ?${season == null ? '' : ' AND r.season = ?'}`).all(seriesId, ...(season == null ? [] : [season])) as any[]
+  if (!rows.length) throw Object.assign(new Error('Flix is not holding anything for this show any more'), { statusCode: 404 })
+  // Read every member from the engine first. Fail closed: a member Flix cannot see cannot be proved to have met the goal.
+  const live: FinishedRow[] = []
+  for (const r of rows) {
+    const t = await engine.info(r.info_hash).catch((e: any) => {
+      console.warn(`[admin] could not read engine state for ${r.info_hash} (${e?.message ?? e}); refusing group removal`)
+      return null
+    })
+    if (!t) throw Object.assign(new Error(`Could not read ${episodeLabel(r)} from the download engine, so its BTN seeding requirement cannot be confirmed; nothing was removed`), { statusCode: 409 })
+    const seed = seedStatus(t)
+    live.push({ torrent_id: r.torrent_id, series_id: r.series_id, series: r.series, season: r.season, episode: r.episode, episode_end: r.episode_end, is_pack: r.is_pack,
+      label: r.label, state: 'active', left: t.amount_left, size: t.size, seedMet: t.downloaded > 0 ? seed.met : true, ratio: seed.ratio, seedHours: seed.hours })
+  }
+  const plan = groupDeletePlan(live, { seriesId, season })
+  if (!plan.ok) throw Object.assign(new Error(plan.why), { statusCode: 409 })
+  // Still being watched: the same refusal the single delete gives, for every member, before any of them goes.
+  const watching = live.flatMap((r) => pendingViewers(r.torrent_id).map((n) => `${episodeLabel(r)} (${n})`))
+  if (watching.length)
+    throw Object.assign(new Error(`Still being watched: ${watching.join(', ')}; nothing was removed until they finish or release it`), { statusCode: 409 })
+  let removed = 0, freed = 0
+  const failed: string[] = []
+  const hash = new Map(rows.map((r) => [r.torrent_id, r.info_hash]))
+  for (const r of live) {
+    try {
+      await removeDownload(r.torrent_id, hash.get(r.torrent_id)!, season == null ? 'removed by admin, whole show' : `removed by admin, season ${season}`)
+      removed++
+      freed += r.size ?? 0
+    } catch (e: any) { failed.push(`${episodeLabel(r)}: ${e?.message ?? e}`) }
+  }
+  if (!removed) throw Object.assign(new Error(`Nothing was removed: ${failed.join('; ')}`), { statusCode: 409 })
+  return { removed, freed, failed }
 })
 const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number
