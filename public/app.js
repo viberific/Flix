@@ -648,7 +648,16 @@ function wireQueue(root, st) {
     fill(boxes.list, st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
     fill(boxes.sugg, st.sugg.map((s) => els.get(s.id)))
     boxes.sugg.closest('.qsec').hidden = !st.sugg.length
+    trim()
   }
+  // Suggestions fill whole rows: one left alone on a row of its own read as a mistake, so past the first row a part-filled
+  // last row is left out. They are only suggestions; adding one brings the next one up.
+  const trim = () => {
+    const cards = [...boxes.sugg.children], cols = getComputedStyle(boxes.sugg).gridTemplateColumns.split(' ').filter(Boolean).length || 1
+    const keep = cards.length > cols ? cards.length - (cards.length % cols) : cards.length
+    cards.forEach((el, i) => el.classList.toggle('qtrim', i >= keep))
+  }
+  if ('ResizeObserver' in window) new ResizeObserver(trim).observe(boxes.sugg)
   const flip = (mutate) => {
     const before = new Map()
     if (!rmq.matches) els.forEach((e, id) => before.set(id, e.getBoundingClientRect()))
@@ -718,8 +727,8 @@ function leavingPrompt(show) {
     <ul class="lp-list">${show.map((l) => `<li data-t="${l.torrentId}">
       <a class="lp-name" href="#/series/${l.seriesId}">${esc(l.series || l.label || 'This download')}${l.season ? ' · S' + l.season : ''}</a>
       <span class="lp-when">${lpDays(l)}</span>
-      <button class="btn lp-keep" data-t="${l.torrentId}">Keep it</button>
-      <button class="btn lp-go" data-t="${l.torrentId}">Let it go</button>
+      <span class="lp-acts"><button class="btn lp-keep" data-t="${l.torrentId}">Keep it</button>
+      <button class="btn lp-go" data-t="${l.torrentId}">Let it go</button></span>
     </li>`).join('')}</ul>
   </section>`
 }
@@ -1094,7 +1103,7 @@ async function seriesView(id) {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
-          <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · ')}</span>
+          <span class="es">${((rest) => (e.title ? `<span class="elab">${esc(e.label)}${rest ? ' · ' : ''}</span>` : '') + rest)([e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · '))}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
         <span class="eside">${e.available ? '' : `<span class="lock" aria-label="Not available yet" title="Not available yet">${I.lock}</span>`}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => {
@@ -2001,7 +2010,7 @@ function playView(seriesId, season, label) {
       clearInterval(timer); clearTimeout(subT); hls?.destroy(); hls = null
       $('.mark')?.remove(); restoreWait()
       const said = friendly(msg, haveFrac >= 1)
-      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
+      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg && !/^Something went wrong playing this\.( Go back and try again\.)?$/i.test(msg) ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
         <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><button class="btn" id="fback">Back</button></div>`
       $('#again').onclick = () => route()
       $('#fback').onclick = leavePlayer
@@ -3088,7 +3097,8 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'OMDb'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
+// In the order the sections sit on the page, so the tab row reads the same way the page scrolls.
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['btn', 'BTN'], ['ratings', 'OMDb'], ['tmdb', 'TMDB'], ['playback', 'Playback'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
 const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
 
 /** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
@@ -3119,9 +3129,17 @@ async function settingsView(section = 'torrents') {
     pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); jump(p.dataset.s, !rmq.matches) })
     // Highlight the section being read: the last one whose top has scrolled up under the pills.
     const onScroll = () => {
-      let cur = SETTINGS_PILLS[0][0]
-      for (const [id] of SETTINGS_PILLS) { const el = document.getElementById('s-' + id); if (el && el.getBoundingClientRect().top <= 150) cur = id }
-      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) cur = SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
+      // A section is the one being read once its top is within a short reach under the tab bar, measured from the bar itself
+      // (it is taller on a phone), so arriving on a section that settled a little lower still lights its own tab.
+      let cur = SETTINGS_PILLS[0][0], line = (app.querySelector('.snav')?.getBoundingClientRect().bottom ?? 120) + 110
+      let best = -Infinity
+      for (const [id] of SETTINGS_PILLS) { const t = document.getElementById('s-' + id)?.getBoundingClientRect().top; if (t != null && t <= line && t > best) { best = t; cur = id } }
+      // At the foot of the page the last sections can never scroll up to the bar: the one asked for (its tab, or the link
+      // that opened it) stays lit while it is on screen, else the last one.
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        const asked = location.hash.split('/')[2], at = document.getElementById('s-' + asked)?.getBoundingClientRect()
+        cur = at && at.top < innerHeight && at.bottom > 0 ? asked : SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
+      }
       pills.forEach((p) => { const on = p.dataset.s === cur; p.setAttribute('aria-selected', String(on)); if (on && p.scrollIntoView) { const box = p.parentElement; box.scrollTo({ left: p.offsetLeft - (box.clientWidth - p.offsetWidth) / 2, behavior: 'auto' }) } })
     }
     addEventListener('scroll', onScroll, { passive: true })
@@ -3284,12 +3302,12 @@ function downloadsPanel(data, root) {
         return `<li class="trow tgrp"><div class="tgrp-body">${tposter(x.series_id)}<span class="tgrp-txt"><b>${esc(x.series)}</b>
             <span class="dim sm"><span class="badge ${cls}">${state}</span> ${shortName(x)}${x.is_pack ? ' · season pack' : ''} · ${esc(left)}</span></span></div>
           <span class="size">${gb(x.held)}</span>
-          <span class="tacts">${finished ? `<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button>` : ''}</span></li>`
+          <span class="tacts">${finished ? `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)}">${trash}<span>Remove</span></button>` : ''}</span></li>`
       }).join('')}</ul>` : ''
     const fc = chartData?.fullInDays
     const heldSpace = heldForOthers.length ? `<div class="sub-h">Finished by you, not yet by everyone</div>
       <p class="dim sm" style="margin:0 0 8px;max-width:66ch">BTN's seeding goal is met on these, so BTN is satisfied. Nothing here is deleted on its own, because someone in the house has not finished it. Removing one frees the space now, and it has to be downloaded again if they do watch it.</p>
-      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove anyway</button>` })).join('')}</ul>` : ''
+      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)} anyway">${trash}<span>Remove anyway</span></button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
     $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
@@ -3515,7 +3533,8 @@ function playbackSection(tc) {
       <form id="tpf" class="person">
         <label class="dim"><input type="checkbox" id="thw"${tc.hardwareAllowed ? ' checked' : ''}> Use this box's GPU to convert, when it has one<span class="dim"> — Quick Sync on Intel. If it turns out not to work, Flix uses the CPU by itself and never refuses to play a file.</span></label>
         <label class="dim" for="tprofile">Quality</label>
-        <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
+        <select class="field" id="tprofile" name="profile" aria-describedby="tprofd">${rows.map(([v, l, d]) => `<option value="${v}" data-d="${esc(d)}"${tc.profile === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        <div class="dim sm" id="tprofd">${esc(((rows.find(([v]) => v === tc.profile) ?? rows[1])[2]).replace(/^./, (c) => c.toUpperCase()))}.</div>
         <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Only download copies that play as they are (H.264), so nothing has to be converted</label>
         <div class="row-form"><button type="button" class="btn" id="trest">Test the encoder again</button></div>
         <div class="dim" id="tm2" role="status"></div></form></div>`
@@ -3576,6 +3595,7 @@ function settingsPanel(data, root) {
     const pmsg = (t) => { const el = $('#tm2'); if (el) el.textContent = t }
     const ps = $('#tprofile')
     if (ps) ps.onchange = async () => {
+      const d = ps.selectedOptions[0]?.dataset.d; if (d) $('#tprofd').textContent = d[0].toUpperCase() + d.slice(1) + '.'
       pmsg('Saving…')
       try { tc = (await api('/api/admin/settings/transcode', { profile: ps.value }, 'PUT')).transcode; paint(); $('#tm2').textContent = 'Saved. Takes effect from the next thing you play.' } catch (err) { pmsg(err.message) }
     }

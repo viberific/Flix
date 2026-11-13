@@ -133,7 +133,7 @@ img.fade.in { opacity: 1; }
 /* ---------- the Queue: resume and Ready to Watch in one rail, My List and suggestions in the one under it ---------- */
 /* Each group's name sits above its first card (data-g, set in wireQueue); a hairline sets the groups apart. */
 .queue-h { margin-bottom: 0; }
-.qsec[hidden] { display: none; }
+.qsec[hidden], .qcard.qtrim { display: none; }
 .qg { margin: 18px 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
 .qcard { position: relative; min-width: 0; }
 .qcard.wide { grid-column: span 2; }
@@ -521,7 +521,9 @@ td { padding: 14px 8px; border-top: 1px solid var(--line); vertical-align: top; 
 /* long unbroken names (release names are dotted, no spaces) must wrap, not widen the page */
 .tcard *, .trow > *, .rep > *, .iss > *, .hbanner { min-width: 0; overflow-wrap: anywhere; }
 .thead { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; } .thead b { font-size: 16px; flex: 1 1 auto; min-width: 0; } .thead .badge { flex: 0 0 auto; }
-.tfoot { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
+.tfoot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 12px; margin-top: auto; }
+.tfoot > span:first-child { white-space: nowrap; }
+.tfoot > span:last-child { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .meters { display: grid; gap: 8px; } .meter.wide { width: auto; margin: 0; font-size: 13px; } .meter.wide .m { height: 7px; margin-top: 6px; } .meter.wide.met .m i { background: var(--ok); } .meter.wide:not(.met) .m i { background: var(--warn); }
 .hist { margin-top: 28px; } .hist summary { cursor: pointer; color: var(--dim); margin-bottom: 12px; }
 .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.info { color: var(--accent); } .badge.dim { color: var(--dim); }
@@ -700,6 +702,8 @@ html.tv * { cursor: none; }
   .ep { grid-template-columns: 96px minmax(0, 1fr) 46px; align-items: center; }
   .ep.dl-item { grid-template-columns: 96px minmax(0, 1fr) auto; }
   .ep .thumb .play { width: 34px; height: 34px; }
+  /* The season tab and the number before the title already say which episode it is: the code goes, so the length and the state fit one line. */
+  .ep .elab { display: none; }
   .ep .eo { -webkit-line-clamp: 2; font-size: 13px; }
   .ep .eside { flex-direction: column; justify-content: center; justify-self: end; width: 46px; gap: 6px; }
   .ep.dl-item .eside { flex-direction: row; width: auto; gap: 8px; }
@@ -733,7 +737,7 @@ html.tv * { cursor: none; }
 .trows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .trow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: center; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2, var(--surface)); font-size: 14px; }
 .panel .trow { background: transparent; } .trow .size { font-variant-numeric: tabular-nums; color: var(--dim); white-space: nowrap; }
-@media (max-width: 560px) { .trow { grid-template-columns: minmax(0, 1fr) auto; } .trow .size { grid-column: 2; grid-row: 1; } .trow .btn { grid-column: 1 / -1; justify-self: start; } .trow span:empty { display: none; } }
+@media (max-width: 560px) { .trow { grid-template-columns: minmax(0, 1fr) auto; } .trow .size { grid-column: 2; grid-row: 1; } .trow .btn, .trow > .rm-btn { grid-column: 1 / -1; justify-self: start; } .trow span:empty { display: none; } }
 /* Finished seeding, grouped by show and season (src/seeding-groups.ts): poster, name, the state line, the size, and the one
    action. The row's body is a button when there is something underneath it and plain text when there is not, so a show
    opens with the same press a television's remote already uses, and the Remove beside it is never part of that press. */
@@ -942,6 +946,7 @@ svg.inl { width: 1.1em; height: 1.1em; vertical-align: -.2em; }
 .lp-when { color: var(--dim); font-size: 12px; margin-right: auto; }
 .lp-list .btn { padding: 6px 12px; font-size: 13px; }
 .lp-list .btn.lp-keep { border-color: var(--accent); }
+.lp-acts { display: inline-flex; gap: 8px; flex: none; }
 .lp-done { color: var(--dim); }
 .lp-done .lp-name { font-weight: 500; color: var(--dim); }
 
@@ -1167,4 +1172,25 @@ html.tv .p-wait.gone .mark { animation-name: markOutTv; }
 
 /* Checkboxes and radios in the app's colour, not the browser's blue. */
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
-.who-av.has-art { background: none; box-shadow: none; padding: 0; } .who-av .avsvg { width: 100%; height: 100%; }
+.who-av.has-art { background: var(--surface-2); } .who-av .avsvg { width: 84%; height: 84%; }
+
+/* Captions never sit under the controls: while the bar is showing they move up above it, and drop back when it hides.
+   (Chromium and WebKit, which is every browser and TV shell Flix plays in; elsewhere they simply stay put.) */
+.player video::-webkit-media-text-track-container { transition: transform .25s var(--ease); }
+.player:not(.p-quiet):not(.idle) video::-webkit-media-text-track-container { transform: translateY(-84px); }
+/* A phone held upright: the video box is the picture's own shape in the middle of the screen, so captions sit just under the
+   picture rather than at the foot of the screen behind the controls. */
+@media (orientation: portrait) and (max-width: 640px) {
+  .player video { inset: 50% 0 auto; height: auto; aspect-ratio: 16 / 9; max-height: 100%; transform: translateY(-50%); }
+  .player:not(.p-quiet):not(.idle) video::-webkit-media-text-track-container { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .player video::-webkit-media-text-track-container { transition: none; } }
+
+/* On a phone the health strip is one line (the whole message is one tap away in Settings), so it does not eat a fifth of the screen on every page. */
+@media (max-width: 560px) { .hbanner .hbmain { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: normal; } }
+
+/* A phone's settings tabs run past the edge: the last one fades out so it reads as a row that scrolls, and the row ends with
+   room enough that the last tab is fully visible once scrolled to. */
+@media (max-width: 820px) { .snav .pills { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); padding-right: 36px; } }
+/* A rating someone may watch: clearly on, not a muddy tint. */
+.rpill[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: #fff; border-color: var(--accent); }
