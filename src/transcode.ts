@@ -290,6 +290,85 @@ const ACTIVE_MS = 90_000
 /** How long a rendition this playback has left keeps its slot before the one replacing it takes it. */
 const SUPERSEDE_MS = 5_000
 
+/**
+ * A play is a claim on the box, and everything else in here is background work.
+ *
+ * On a small box that is the whole difference between an episode that plays and one that keeps stopping. Measured
+ * 2026-11-12: four cores at load 9 with two gigabytes swapped, so a piece the player asked for cost 2.5 s to make
+ * instead of the 133 ms it costs on an idle box; meanwhile an ffmpeg for a different episode was still running and wrote
+ * 3,914,000,000 bytes while the episode on screen stalled at bufferedAhead 0 and the player's clock drifted back 17 s.
+ * The prebuild had correctly decided 82 times in three hours not to start anything new -- but nothing stopped what was
+ * already running, and nothing told the prebuild that a play had begun after it started.
+ *
+ * So: `beginPlayback` records which file is on screen, stops the background work that is running for anything else (what
+ * was already cut stays on disk), and from then on `backgroundRunAllowed` refuses to start more until the player has been
+ * quiet for PLAY_HOLD_MS. Every request the player makes pushes that clock on (see touchHls), so the hold lasts exactly
+ * as long as somebody is watching and lapses by itself when nobody is.
+ */
+const PLAY_HOLD_MS = 120_000
+let playedAt = 0
+/** Files that have been on screen lately, so the cache guard cannot take one away: `${torrentId}-${fileIndex}`. */
+const watched = new Map<string, number>()
+/** How many of those folders the guard protects at once: what is on screen, and the two before it. */
+const WATCH_KEEP = 3
+
+/** A player asked for this file: the box is in use, and its folder is not the cache guard's to remove. */
+export function notePlaying(torrentId: number, fileIndex?: number) {
+  playedAt = Date.now()
+  if (fileIndex === undefined) return
+  watched.set(`${torrentId}-${fileIndex}`, playedAt)
+  if (watched.size > 500) watched.delete(watched.keys().next().value!)
+}
+
+/** Whether somebody is watching right now: a play, and a request from the player within the last two minutes. */
+export const playingNow = (now = Date.now()) => playedAt > 0 && now - playedAt < PLAY_HOLD_MS
+
+/** The cache folders of what was on screen lately, most recent first and at most WATCH_KEEP of them. */
+export function protectedDirs(now = Date.now()): string[] {
+  const window = Math.max(1, config.hls.keepHours) * 3600_000
+  return [...watched.entries()].filter(([, at]) => now - at < window).sort((a, b) => b[1] - a[1]).slice(0, WATCH_KEEP).map(([k]) => k)
+}
+
+/** The `${torrentId}-${fileIndex}` a cache folder belongs to, whatever rendition of it the folder holds. */
+const dirKey = (dir: string) => { const m = /^(\d+)-(\d+)/.exec(dir); return m ? `${m[1]}-${m[2]}` : null }
+
+/**
+ * Whether a run may start. Background work -- a copy cut ahead, the whole-file remux a fallback started -- does not start
+ * while somebody is watching, unless it is the opening of the NEXT episode: that one is bounded (see buildHead), and it is
+ * what makes the next play start at once. The file on screen is never refused.
+ */
+export function backgroundRunAllowed(j: { low?: boolean; played?: boolean; head?: boolean }, now = Date.now()): boolean {
+  if (j.played) return true // the episode on screen: it is what the viewer is waiting for
+  if (j.head) return true // at most three minutes of one file, and gated on memory and stalls by the caller
+  if (!j.low) return true // a foreground job: something a play is being served from
+  return !playingNow(now)
+}
+
+/**
+ * A play started on `torrentId`: stop the background work running for anything else, and keep what is on screen. The
+ * pieces already cut stay where they are, so the next play of that file picks up from them instead of from zero.
+ */
+export function beginPlayback(torrentId: number, fileIndex?: number): number {
+  notePlaying(torrentId, fileIndex)
+  const now = Date.now()
+  const stopped: string[] = []
+  for (const [key, j] of [...jobs]) {
+    if (key.startsWith(`${torrentId}:`)) continue
+    // A second screen is not background: a job a player is reading (played, or touched within ACTIVE_MS) is left alone, so
+    // one person pressing play never stops the episode somebody else is watching.
+    if (j.played || now - j.touched < ACTIVE_MS) continue
+    const run = j.vod?.run
+    const live = (!!run && !run.exited && run.proc.exitCode === null) || (!!j.proc && j.proc.exitCode === null)
+    if (!live) continue
+    run?.proc.kill('SIGKILL')
+    if (j.proc) j.proc.kill('SIGKILL')
+    j.head = false
+    stopped.push(key)
+  }
+  if (stopped.length) hitch('hls', 'stopped the copy running in the background: a play started', { passed: stopped.join(','), torrent: torrentId, file: fileIndex ?? null })
+  return stopped.length
+}
+
 /** A job as the cap sees it: when it was last read, and whether it holds one of the box's encode slots. */
 export interface CapView { key: string; touched: number; enc: boolean }
 /** What starting one more job means for the ones already running. */
@@ -398,10 +477,17 @@ export function evictHls(maxBytes: number, keep: string[] = []): { removed: stri
     let touched = j?.touched ?? 0
     if (!j) { try { touched = statSync(join(hlsRoot(), x.dir)).mtimeMs } catch { /* gone */ } }
     return { ...x, key, touched, active: !!j && now - j.touched < ACTIVE_MS }
-  }).filter((x) => !x.active && !keep.includes(x.dir)).sort((a, b) => a.touched - b.touched)
+  })
+  // What somebody watched lately is never taken, whatever the cap says: the guard must not take away the episode that is
+  // on screen, or the one the player went back to a minute ago (2026-11-12: the folder of the file being watched was
+  // emptied and the whole 589-piece build restarted under the player).
+  const pinned = protectedDirs(now)
+  const removable = candidates
+    .filter((x) => !x.active && !keep.includes(x.dir) && !pinned.includes(dirKey(x.dir) ?? ''))
+    .sort((a, b) => a.touched - b.touched)
   const removed: string[] = []
   let freed = 0
-  for (const x of candidates) {
+  for (const x of removable) {
     if (left <= maxBytes) break
     if (x.key) stopJob(x.key)
     else rmSync(join(hlsRoot(), x.dir), { recursive: true, force: true })
@@ -478,6 +564,9 @@ function vodNext(v: Vod, r: Run) { let n = r.from; while (v.done.has(n)) n++; re
 /** `limit` ends the run before that piece even when nothing is there yet: a head cut ahead of the play stops at its last piece. */
 function startRun(j: Job, n: number, limit = Infinity) {
   const v = j.vod!
+  // Background work does not start while somebody is watching (see beginPlayback): the box has four cores, and the one the
+  // player needs is the one a copy cut for another episode is using.
+  if (!backgroundRunAllowed(j)) return
   v.run?.proc.kill('SIGKILL')
   scanDone(j)
   let stopAt = n + 1
@@ -688,6 +777,32 @@ export function copyPlanFor(kf: number[] | null, p: { duration?: number; startTi
   return copyBounds(kf, (p.startTime ?? 0) + dur)
 }
 
+/** Where a copied cut records the plan its pieces were cut to, so a later run can tell whether they still line up. */
+export const planPath = (dir: string) => join(dir, 'plan.json')
+
+/**
+ * The pieces an earlier run already cut into this folder, when they were cut to exactly this plan -- or null when the
+ * folder holds a different one and has to go.
+ *
+ * The folder used to be wiped whenever a job was made, which threw away work the box had already paid for: 2026-11-12 the
+ * log said `made 1 of 589` at the moment of a play while hls/1903475-2 held 54 of 589 pieces, and the whole episode was cut
+ * again from the first piece under a player that was waiting. Only a CSV the segment muxer wrote counts as whole -- it
+ * writes straight into the final name, so a file on its own may be half of a piece.
+ */
+export function adoptCopy(dir: string, bounds: number[]): Set<number> | null {
+  try {
+    const old: unknown = JSON.parse(readFileSync(planPath(dir), 'utf8'))
+    if (!Array.isArray(old) || old.length !== bounds.length) return null
+    for (let i = 0; i < bounds.length; i++) if (Math.abs(Number(old[i]) - bounds[i]) > 0.001) return null
+  } catch { return null }
+  const done = new Set<number>()
+  for (const f of readdirSync(dir)) {
+    if (!/^list\d+\.csv$/.test(f)) continue
+    try { for (const line of readFileSync(join(dir, f), 'utf8').split('\n')) { const s = /^seg(\d{5})\.ts,/.exec(line); if (s) done.add(Number(s[1])) } } catch { /* gone */ }
+  }
+  return done
+}
+
 /**
  * Start (or touch) the HLS job. Every picture gets a complete playlist straight away and ffmpeg only works where the
  * viewer is (see vodSegment), so a seek, a resume or a jump backwards is a piece made in about a second wherever it is:
@@ -737,7 +852,8 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
       : (p.height ?? 0) > outH ? `scale=-2:${outH}` : undefined
     const target = scaleExpr ? scaleTarget(p.width, p.height, box, outH) : null
     const filters = tonemap ? [TONEMAP] : []
-    rmSync(dir, { recursive: true, force: true })
+    // The folder is NOT emptied here: whether what is already in it can be kept depends on the plan worked out below,
+    // and pieces already cut are worth more than a clean folder. Each branch wipes when it must (see adoptCopy).
     mkdirSync(dir, { recursive: true })
     // A finished file is read from disk, never through its own range endpoint. ffmpeg can SEEK a file, so a piece asked
     // for at 17:28 costs one seek; over HTTP the same ask walked the source from byte 0 -- 614 MB and 28.5 s for one
@@ -781,8 +897,12 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
           ...(last - from > 1 ? ['-segment_times', b.slice(from + 1, last).map((_t, i) => copyPieceLen(b, from, from + 1 + i, gap).toFixed(3)).join(',')] : []),
           '-segment_list', join(dir, `list${from}.csv`), '-segment_list_type', 'csv', join(dir, 'seg%05d.ts')]
       }
-      Object.assign(j, { vod: { count, bounds: b, copy: true, start, run: null, done: new Set() } })
+      const kept = adoptCopy(dir, b)
+      if (!kept) { rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true }) }
+      try { writeFileSync(planPath(dir), JSON.stringify(b)) } catch { /* a folder that cannot be written is caught by the build itself */ }
+      Object.assign(j, { vod: { count, bounds: b, copy: true, start, run: null, done: kept ?? new Set() } })
     } else if (!hdr && !copy && p.duration && p.duration > 0) {
+      rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true })
       const count = Math.max(1, Math.ceil(p.duration / SEG))
       const bounds = Array.from({ length: count }, (_, n) => n * SEG).concat(p.duration)
       const start = (from: number, stopAt: number) => ['-hide_banner', '-loglevel', 'error', ...(from ? ['-ss', String(from * SEG)] : []), ...encRef.current!.inputArgs, ...input, ...maps,
@@ -803,6 +923,11 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
         : undefined
       Object.assign(j, { vod: { count, bounds, start, run: null, done: new Set(), rebuild } })
     } else {
+      // A background copy of a WHOLE file that could not get a plan falls back to remuxing the episode from its first byte,
+      // and that ffmpeg then runs for as long as it takes, whatever a player does. Measured 2026-11-12: 3,914,000,000 bytes
+      // written into a folder nobody was watching while the episode on screen stalled. A play may do it; nothing else may.
+      if (opts.lowPriority && opts.complete && copy && !copyPlan) throw new Error('the keyframes of this file are not read yet: left for the play')
+      rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true })
       const args = ['-hide_banner', '-loglevel', 'error', ...(enc?.inputArgs ?? []), ...input, ...maps,
         ...(hdr
           ? ['-c:v', 'copy', '-tag:v', 'hvc1',
@@ -868,6 +993,9 @@ export function dropHls(torrentId: number, fileIndex: number, audio = 0, hdr = f
 }
 
 export function touchHls(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0) {
+  // Every request a player makes says somebody is watching, whether or not the job it asks for is still there: this is
+  // what keeps the play lock on for exactly as long as the player keeps asking.
+  notePlaying(torrentId, fileIndex)
   const key = jobKey(torrentId, fileIndex, audio, hdr, encode, maxH)
   const j = jobs.get(key)
   if (!j) return false
@@ -981,13 +1109,37 @@ const VTT_HEAD = 'WEBVTT\n\n'
 const vttCache = new Map<string, string>()
 const vttBusy = new Map<string, Promise<string>>()
 
+const subsCacheDir = () => join(config.dataDir, 'subs-cache')
+/**
+ * Where the WebVTT read out of one embedded track is kept, keyed by torrent, file and track.
+ *
+ * Extracting a whole track is a read of the whole episode, and it was being paid again on every single play: 2026-11-12 the
+ * box spent 25-180 s and 1.6 GB through Flix's own range endpoint (the log's `raw open` 8029-<size> then `raw close`
+ * sentMb 1659.3) to hand the player a subtitle of a file that is already on the disk, then did it again on the next play.
+ * Written once, a read of this file ends it, so the second play starts no ffmpeg at all.
+ */
+export const subtitleCachePath = (torrentId: number, fileIndex: number, n: number) =>
+  join(subsCacheDir(), `${torrentId}-${fileIndex}-${n}.vtt`)
+
+/**
+ * What ffmpeg is given to read a track from: the file on disk once it is whole (a seek, not a walk), and only a file still
+ * arriving through the range endpoint that feeds it.
+ */
+export function subtitleInput(torrentId: number, fileIndex: number, complete: boolean, source?: string): string {
+  return complete && source && existsSync(source) ? source : rawUrl(torrentId, fileIndex)
+}
+
 /**
  * A subtitle track as WebVTT. The file is still downloading in order while it plays, so only the part that has arrived can be
  * read: we extract the first N seconds (N follows the download, minus a safety margin, in 30 s steps) and the player asks again
- * as the file grows. A finished file is extracted whole, once.
+ * as the file grows. A finished file is extracted whole, once, and then read from `subsCachePath` for ever after.
  */
-export async function subtitleVtt(torrentId: number, fileIndex: number, n: number, progress: number, duration: number): Promise<{ vtt: string; complete: boolean }> {
+export async function subtitleVtt(torrentId: number, fileIndex: number, n: number, progress: number, duration: number, source?: string): Promise<{ vtt: string; complete: boolean }> {
   const complete = progress >= 1
+  if (complete) {
+    // Read out already: no ffmpeg, and no read of the episode, on any play after the first.
+    try { const onDisk = readFileSync(subtitleCachePath(torrentId, fileIndex, n), 'utf8'); if (onDisk.startsWith('WEBVTT')) return { vtt: onDisk, complete } } catch { /* not read out yet */ }
+  }
   const seconds = complete ? 0 : Math.floor((duration * progress * 0.85) / 30) * 30
   if (!complete && seconds < 30) return { vtt: VTT_HEAD, complete }
   const key = `${torrentId}:${fileIndex}:${n}:${seconds}`
@@ -995,9 +1147,18 @@ export async function subtitleVtt(torrentId: number, fileIndex: number, n: numbe
   if (hit !== undefined) return { vtt: hit, complete }
   let p = vttBusy.get(key)
   if (!p) {
-    const args = ['-v', 'error', '-i', rawUrl(torrentId, fileIndex), '-map', `0:s:${n}`, ...(complete ? [] : ['-t', String(seconds)]), '-f', 'webvtt', '-']
+    const args = ['-v', 'error', '-i', subtitleInput(torrentId, fileIndex, complete, source), '-map', `0:s:${n}`, ...(complete ? [] : ['-t', String(seconds)]), '-f', 'webvtt', '-']
     p = execFileP('ffmpeg', args, { timeout: 180_000, maxBuffer: 16 << 20 })
-      .then((r) => { for (const k of [...vttCache.keys()]) if (k.startsWith(`${torrentId}:${fileIndex}:${n}:`)) vttCache.delete(k); vttCache.set(key, r.stdout || VTT_HEAD); return r.stdout || VTT_HEAD })
+      .then((r) => {
+        const vtt = r.stdout || VTT_HEAD
+        for (const k of [...vttCache.keys()]) if (k.startsWith(`${torrentId}:${fileIndex}:${n}:`)) vttCache.delete(k)
+        vttCache.set(key, vtt)
+        // Only a real read is kept: a track ffmpeg could not open must be tried again next time, not pinned as an empty file.
+        if (complete && vtt.length > VTT_HEAD.length) {
+          try { mkdirSync(subsCacheDir(), { recursive: true }); writeFileSync(subtitleCachePath(torrentId, fileIndex, n), vtt) } catch { /* a full disk is not a failed play */ }
+        }
+        return vtt
+      })
       .catch((e) => { console.warn(`[subs] ${key}: ${String(e.stderr || e.message).replace(config.internalKey, '***').slice(0, 200)}`); return VTT_HEAD })
       .finally(() => vttBusy.delete(key))
     vttBusy.set(key, p)

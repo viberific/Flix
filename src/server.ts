@@ -19,7 +19,7 @@ import { recoverPace, setWatching, tick as paceTick } from './pace.ts'
 import { manualOffset, needsMeasure, offsetAsk, setManualOffset, shiftFor, shiftVtt, startSync, syncRow } from './subsync.ts'
 import { wantedBytes, withFileProgress } from './wanted.ts'
 import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs.ts'
-import { MP4_CARRY, SUBFILE, audioDirect, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
+import { MP4_CARRY, SUBFILE, audioDirect, beginPlayback, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { noteStall, prebuildHead, startPrebuild } from './prebuild.ts'
 import { copyPictureFor, ensureHls, hlsBuild, hlsLateness, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
@@ -662,6 +662,9 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const complete = (fi?.file.progress ?? 0) >= 1
   const source = fi ? join(fi.layout.savePath, fi.file.name) : undefined
   const p = await probe(+t, +f, { complete, source, savePath: fi?.layout.savePath })
+  // A play has begun: from here the box belongs to it, and any copy running in the background for something else stands
+  // down (see beginPlayback). Nothing is refused here -- a play outranks every other job there is.
+  beginPlayback(+t, +f)
   // The smaller sizes worth offering (only ones below the picture's own), and the one the player asked for ("q"): a phone on
   // a slow connection, by its own choice or because its Auto setting saw the picture keep stalling. A size is a conversion,
   // so it skips the direct play and the repack below.
@@ -808,7 +811,7 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
   const fi = await fileInfo(+t, +f)
   const p = await probe(+t, +f, fi ? { complete: fi.file.progress >= 1, source: join(fi.layout.savePath, fi.file.name), savePath: fi.layout.savePath } : {})
   if (!fi || !p.subs.some((s) => s.n === +m[1])) return reply.code(404).send({ error: 'no such subtitle' })
-  const { vtt, complete } = await subtitleVtt(+t, +f, +m[1], fi.file.progress, p.duration ?? 0)
+  const { vtt, complete } = await subtitleVtt(+t, +f, +m[1], fi.file.progress, p.duration ?? 0, join(fi.layout.savePath, fi.file.name))
   reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0')
   return syncedVtt(reply, +t, +f, `embedded:${m[1]}`, vtt, complete && p.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null)
 })
@@ -977,6 +980,8 @@ async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
   if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
   if (hdr) return reply.code(409).send({ error: CONVERT_OFF })
   if (file === 'index.m3u8' || !touchHls(+t, +f, a, false, encode, maxH)) {
+    // A TV or a cast device comes straight here, with no /info before it: this is its play, and it takes the box too.
+    beginPlayback(+t, +f)
     const fi = await fileInfo(+t, +f)
     const complete = (fi?.file.progress ?? 0) >= 1
     const p = await probe(+t, +f, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, savePath: fi?.layout.savePath })

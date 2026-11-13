@@ -4,7 +4,7 @@ import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { diag } from './diag.ts'
 import { fileInfo } from './streaming.ts'
-import { audioDirect, buildHead, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, probe, stopHeadRuns, type ProbeOptions } from './transcode.ts'
+import { audioDirect, buildHead, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, playingNow, probe, stopHeadRuns, type ProbeOptions } from './transcode.ts'
 import { engineFiles } from './wanted.ts'
 import { isVideo } from './btn/parse.ts'
 
@@ -100,6 +100,9 @@ export async function prebuildOne(torrentId: number, fileIndex: number, opts: { 
     if (!wanted) { setMarker(torrentId, fileIndex); return null }
     if (!copy) { setAside(torrentId, fileIndex); diag('prebuild', 'left for the play: this picture would have to be re-encoded', { torrentId, fileIndex }); return null }
     const size = fi?.file.size ?? 0
+    // A play that begins while this file is being planned takes the box: the plan is worth nothing if the box it was
+    // made on cannot serve the episode on screen.
+    if (playingNow()) { diag('prebuild', 'stopped planning ahead: a play started', { torrentId, fileIndex }); return null }
     // Room first: the copy comes to about the size of the file, and the oldest copies nobody is watching are evicted to
     // make it, so the cap holds before it is reached rather than after the disk is full.
     const cap = Math.round(config.hls.cacheMaxGb * 1e9)
@@ -188,9 +191,12 @@ export async function prebuildTick(): Promise<void> {
     const freeMb = Math.round(freemem() / 1048576)
     if (freeMb < config.hls.minFreeMb) return diag('prebuild', 'not building ahead: the box is short of memory', { freeMb, needMb: config.hls.minFreeMb })
     // Nothing is built while somebody is watching: the disk it reads is the disk the player reads.
-    if (hlsBusy()) return diag('prebuild', 'not building ahead while something plays', {})
+    if (hlsBusy() || playingNow()) return diag('prebuild', 'not building ahead while something plays', {})
     const list = await prebuildCandidates()
     if (!list.length) return
+    // The lock is read again here, not only at the top of the tick: waiting for the file list is where a play can have
+    // started, and the rule is that nothing else reads the disk the player reads.
+    if (playingNow()) return diag('prebuild', 'not building ahead: a play started while the queue was being read', {})
     // One at a time, newest download first: it is the one about to be watched.
     await prebuildOne(list[0].torrentId, list[0].fileIndex)
   } catch (e: any) {
