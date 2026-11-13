@@ -31,7 +31,7 @@ import { artPathSql, getArt, getCastPhoto, getPosterThumb, getStill, POSTER_WIDT
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching, currentEpisode, episodeOfFile } from './episodes.ts'
 import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
-import { unplayableSeries } from './candidates.ts'
+import { unplayableSeries, unavailableSeries } from './candidates.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
@@ -236,7 +236,12 @@ app.get('/api/discover', auth, async (req) => {
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC LIMIT 3000`).all(...f.params) as any[])
     .map((r) => ({ ...r, genres: genresOf(r) }))
   const net = netInfo()
-  const browsable = rows.filter((r) => isBrowsableService(net.get(r.id)?.streamer))
+  // Discover is a browse surface like the home rows, so a poster that opens onto "nothing is available to play" is left
+  // out of it: a show every copy of which is dead or unseeded (see unavailableSeries) and one with nothing that plays
+  // without converting (see unplayableSeries). The genre pills are built from the same list, so a pill never opens an
+  // empty grid.
+  const empty = unavailableSeries(), unplayable = hidden()
+  const browsable = rows.filter((r) => isBrowsableService(net.get(r.id)?.streamer) && !empty.has(r.id) && !unplayable.has(r.id))
   // A show watched all the way through does not come back here either: this is the same rule the home rows follow.
   const finished = finishedShows(req.user!.id)
   const term = String(q.q ?? '').trim().toLowerCase()
@@ -331,6 +336,12 @@ app.get('/api/home', auth, async (req) => {
   const clean = ({ genres, ...r }: any) => ({ ...r, isNew: r.latest > fresh })
 
   const uid = req.user!.id
+  // A show with nothing watchable is not a recommendation: every copy of it is dead or unseeded, so opening it leads to a
+  // page where nothing plays. It is left out of every row this screen picks -- Trending, the genre rows, the Queue's
+  // suggestions, the picks -- but not out of the rows the person made themselves: My List, Ready to Watch and Continue
+  // watching read `all` (or their own table) and keep such a show where they put it. See unavailableSeries().
+  const empty = unavailableSeries()
+  const pickable = all.filter((r) => !empty.has(r.id))
   const listed = db.prepare('SELECT series_id, seen_at FROM my_list WHERE user_id = ? ORDER BY added_at DESC').all(uid) as { series_id: number; seen_at: number | null }[]
   // hasNew: something was uploaded for a show on the list since the viewer last opened its page
   // A show in Continue Watching is not shown again anywhere else on the screen.
@@ -357,7 +368,7 @@ app.get('/api/home', auth, async (req) => {
   const peers = new Map((db.prepare(`SELECT series_id AS id, MAX(leechers) AS n FROM releases WHERE leechers > 0 AND COALESCE(seeders, 0) > 0 AND fetched_at > ? AND dead_at IS NULL GROUP BY series_id`).all(now() - 7 * 86400) as { id: number; n: number }[]).map((r) => [r.id, r.n]))
   // (Only for a viewer who has a Queue to put them in; see queueOf in app.js.)
   const hasQueue = resume.size > 0 || myList.length > 0 || ready.length > 0
-  const grab = !hasQueue ? [] : all.filter((r) => peers.has(r.id) && !taken.has(r.id) && !started.has(r.id) && !finished.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer))
+  const grab = !hasQueue ? [] : pickable.filter((r) => peers.has(r.id) && !taken.has(r.id) && !started.has(r.id) && !finished.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer))
     .sort((a, b) => peers.get(b.id)! - peers.get(a.id)! || b.latest - a.latest).slice(0, GRAB_SIZE).map((r) => ({ ...clean(r), leechers: peers.get(r.id)! }))
   grab.forEach((r) => taken.add(r.id))
   // "Because you watched X": other shows sharing X's genres that this person has not started.
@@ -369,18 +380,18 @@ app.get('/api/home', auth, async (req) => {
   if (base) {
     const mine = new Set<string>(base.genres)
     const touched = new Set((db.prepare('SELECT DISTINCT r.series_id AS id FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id WHERE i.user_id = ?').all(uid) as any[]).map((r) => r.id))
-    const rec = all.filter((r) => !touched.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && net.get(r.id)?.streamer && !isHiddenService(net.get(r.id)?.streamer)).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length + 0.5 * taste.fit(r.genres) })).filter((x) => x.score > 0)
+    const rec = pickable.filter((r) => !touched.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && net.get(r.id)?.streamer && !isHiddenService(net.get(r.id)?.streamer)).map((r) => ({ r, score: r.genres.filter((g: string) => mine.has(g)).length + 0.5 * taste.fit(r.genres) })).filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || b.r.latest - a.r.latest).slice(0, ROW_SIZE).map((x) => clean(x.r))
     if (rec.length === ROW_SIZE) { because = { name: base.name, liked: likedBase, series: rec }; rec.forEach((r) => taken.add(r.id)) }
   }
   // "Picked for you": the freshest shows that suit their taste, when they have given any thumbs or finished enough to tell.
   let picked: any[] | null = null
   if (taste.genres.size) {
-    const cands = all.filter((r) => !started.has(r.id) && !finished.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer) && taste.fit(r.genres) > 0.2)
+    const cands = pickable.filter((r) => !started.has(r.id) && !finished.has(r.id) && !taken.has(r.id) && !taste.hidden.has(r.id) && !isHiddenService(net.get(r.id)?.streamer) && taste.fit(r.genres) > 0.2)
     const rows = tasteSort(cands, taste, 40).slice(0, ROW_SIZE)
     if (rows.length === ROW_SIZE) { picked = rows.map(clean); rows.forEach((r) => taken.add(r.id)) }
   }
-  const { hero, sections } = curateHome(all.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
+  const { hero, sections } = curateHome(pickable.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
   const listIds = listed.map((l) => l.series_id)
   return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, ready, because, picked, grab }
 })

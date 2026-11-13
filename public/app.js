@@ -454,7 +454,12 @@ async function rememberProfile(drop) {
 }
 const picked = () => { try { return sessionStorage.getItem('flix.picked') === '1' } catch { return true } }
 const markPicked = () => { try { sessionStorage.setItem('flix.picked', '1') } catch { /* ignore */ } }
-const goHome = () => { history.replaceState(null, '', '#/'); route() }
+const goHome = () => {
+  // Already at the root: draw it again, but leave the entry alone -- replacing it throws away the guard that stops Back
+  // from closing the app at the home screen (see armRoot).
+  if (location.hash === '#/' || !location.hash) { route(); return }
+  history.replaceState(null, '', '#/'); route()
+}
 let signinHint = ''
 
 function profilesView() {
@@ -4078,6 +4083,31 @@ let lastHash = null, playerOrigin = null
 try { history.scrollRestoration = 'manual' } catch { /* the browser decides */ }
 const viewState = new Map()
 let navIdx = 0
+/**
+ * The shells this app runs in -- a television, the Android app, an installed PWA -- have no browser bar, so a Back press
+ * the page lets through closes the app: Android finishes the activity when the WebView cannot go back. On those, the root
+ * of the app keeps one entry behind the one it is on and absorbs the press (see armRoot). An ordinary browser tab is left
+ * alone: Back there is the site before Flix, and taking it away would only trap the person in the tab.
+ */
+const shell = isTv || /FlixApp/.test(navigator.userAgent) || (() => { try { return matchMedia('(display-mode: standalone)').matches } catch { return false } })()
+/**
+ * Back at the root: put the absorbing entry back and stay where we are, instead of going past it and out of the app.
+ * The entry the person backed onto is reused rather than added to, so pressing Back at the home screen ten times leaves
+ * the history exactly as long as one press did -- a Back that walks through copies of the same page is the same bug
+ * wearing a hat.
+ */
+function armRoot() {
+  try {
+    history.pushState({ flix: ++navIdx, guard: true }, '', location.href)
+    lastHash = location.hash
+  } catch { /* no history API: Back does whatever the browser does */ }
+}
+addEventListener('popstate', () => {
+  // A real page change is routed by hashchange below. This is the one it cannot see: the address is already the one the
+  // page is on, because the person pressed Back over the root's absorbing entry.
+  if (!shell || location.hash !== lastHash || (location.hash !== '#/' && location.hash !== '')) return
+  armRoot()
+})
 function captureView() {
   const el = document.activeElement
   let at = null
@@ -4118,6 +4148,10 @@ async function route() {
   const hst = history.state
   const arrived = hst && typeof hst.flix === 'number'
   if (arrived) navIdx = hst.flix; else { try { history.replaceState({ flix: ++navIdx }, '') } catch { /* no history */ } }
+  // At the root, the person must be sitting on the guard entry, not on the last entry of the app: a page opened straight
+  // into has nothing but the app's own home screen behind it, and a Back from there is a page load out of the app that no
+  // handler can catch (see armRoot). One push, of the address already showing, so nothing is re-rendered.
+  if (shell && (location.hash === '#/' || location.hash === '') && !hst?.guard) armRoot()
   cleanup?.(); cleanup = null
   clearTimeout(retryT)
   const fromHash = lastHash
@@ -4192,10 +4226,16 @@ if ('serviceWorker' in navigator) {
 // Opened straight into a page -- a resumed PWA, a TV's last-used shortcut, a shared link -- the browser's history holds
 // nothing of Flix's behind that entry, so Back left the app instead of going to the page before it. Put the home page
 // behind it, so Back behaves as it does when the app is entered at home and everything after that is ordinary browsing.
-// The entries use the router's own numbering, so the deep page is a normal entry that Back and Forward walk like any other.
-if (location.hash && location.hash !== '#/' && location.hash !== '#') {
-  try { history.replaceState({ flix: 0 }, '', '#/'); history.pushState({ flix: 1 }, '', location.hash) } catch { /* no history API: Back does whatever the browser does */ }
-}
+// The entries use the router's own numbering, so the deep page is a normal entry that Back and Forward walk like any
+// other. `deep` is read BEFORE the replaceState: it is the address that call changes, and reading location.hash after it
+// is what made this put the home screen twice and throw the page the person opened away.
+const deep = location.hash && location.hash !== '#/' && location.hash !== '#' ? location.hash : null
+try {
+  history.replaceState({ flix: 0, root: true }, '', '#/')
+  if (deep) history.pushState({ flix: 1 }, '', deep)
+  // At the root on a shell: the one absorbing entry that stops Back from closing the app (see armRoot).
+  else if (shell) history.pushState({ flix: 1, guard: true }, '', '#/')
+} catch { /* no history API: Back does whatever the browser does */ }
 route()
 
 /**

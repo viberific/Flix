@@ -39,3 +39,33 @@ export function unplayableSeries(): Set<number> {
   hiddenCache = { v, ids }
   return ids
 }
+
+/**
+ * Shows with nothing left to watch: every copy Flix knows of is one BTN no longer serves, or one nobody is seeding, and
+ * none of it is on the box. Such a show is not a recommendation -- the person opens it and every episode is unavailable,
+ * which is what "some shows that aren't available yet show up" means -- so it is left off the home screen's rows and off
+ * Discover. See `isAlive` in pick.ts: this is that same rule, in SQL and over a whole show rather than one episode.
+ *
+ * Two things keep a show visible whatever its releases look like, both of them the person's own doing rather than the
+ * screen's pick: a torrent of it on the box (`downloads.state = 'active'` -- downloaded, kept, seeding) is here already
+ * and plays; My List and Continue watching are drawn from `my_list` and the watch history on their own, never from this
+ * set, so a show they added or started stays where they put it.
+ *
+ * Cached until the catalog changes, like unplayableSeries(): streaming.ts bumps it when a download starts (a show becomes
+ * watchable) and when a release is found dead (one stops being).
+ */
+let emptyCache: { v: number; ids: Set<number> } | null = null
+export function unavailableSeries(): Set<number> {
+  const v = catalogVersion()
+  if (emptyCache && emptyCache.v === v) return emptyCache.ids
+  const rows = db.prepare(`
+    SELECT r.series_id AS id FROM releases r WHERE r.series_id IS NOT NULL
+    GROUP BY r.series_id
+    HAVING SUM(CASE
+      WHEN EXISTS (SELECT 1 FROM downloads d WHERE d.torrent_id = r.torrent_id AND d.state = 'active') THEN 1
+      WHEN r.dead_at IS NULL AND COALESCE(r.seeders, 0) > 0 THEN 1
+      ELSE 0 END) = 0`).all() as { id: number }[]
+  const ids = new Set(rows.map((r) => r.id))
+  emptyCache = { v, ids }
+  return ids
+}
