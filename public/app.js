@@ -828,6 +828,8 @@ async function homeView(q, local = false) {
     if (queue) html += queueHtml(queue)
     // Whatever the Queue holds (or could fill in with) is drawn nowhere else on the screen: not in Leaving soon, not in Discover.
     const inQueue = new Set(queue ? [...queue.resume.map((c) => c.seriesId), ...queue.ready.map((s) => s.id), ...queue.list.map((s) => s.id), ...queue.sugg.map((s) => s.id), ...queue.pool.map((s) => s.id)] : [])
+    // Shows they finished that have a new episode or season out: back on the screen, under the Queue, badged (see /api/home).
+    if (!q && home.returning?.length) html += `<h2 class="sec">New episodes</h2>${rowOf(home.returning, tile)}`
     const leavingRow = leaving.items.filter((l) => !lpIds.has(l.torrentId) && !inQueue.has(l.seriesId))
     if (!q && leavingRow.length) html += `<h2 class="sec">Leaving soon</h2>${rowOf(leavingRow, leavingTile)}`
     if (!q && !queue && home.picked) html += `<h2 class="sec">Picked for you</h2>${rowOf(home.picked, tile)}`

@@ -797,6 +797,46 @@ test('a show watched through and then deleted stays finished, so it is not recom
   assert.ok(!finishedShows(other).has(987001), 'finished by one person, not by another')
 })
 
+test('a finished show comes back when a later episode or season turns up, and not for a copy of what was watched', async () => {
+  const { finishedShows, returningShows, RETURN_DAYS } = await import('../src/finished.ts')
+  const { db, now } = await import('../src/db.ts')
+  const ids = [987101, 987102, 987103, 987104, 987105, 987106]
+  for (const id of ids) {
+    db.prepare('DELETE FROM interests WHERE torrent_id = ?').run(id)
+    db.prepare('DELETE FROM downloads WHERE torrent_id = ?').run(id)
+    db.prepare('DELETE FROM releases WHERE torrent_id = ?').run(id)
+  }
+  const u = createUser('fin_back', 'password123', false).id
+  const sid = 987101, t = now()
+  const rel = (tid: number, season: number, episode: number | null, time: number, pack = 0, seeders = 5, dead: number | null = null) =>
+    db.prepare(`INSERT INTO releases (torrent_id, series_id, series, group_name, season, episode, is_pack, info_hash, time, seeders, dead_at, fetched_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(tid, sid, 'Back Show', 'x', season, episode, pack, 'h' + tid, time, seeders, dead, t)
+  // Watched S01E01 and S01E02 a day ago, then deleted.
+  rel(987101, 1, 1, t - 10 * 86400); rel(987102, 1, 2, t - 9 * 86400)
+  for (const tid of [987101, 987102]) {
+    db.prepare(`INSERT INTO downloads (torrent_id, info_hash, added_at, state, removed_at) VALUES (?,?,?, 'removed', ?)`).run(tid, 'h' + tid, t - 1e6, t)
+    db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,?,0,?,?,?)`).run(u, tid, t, t, t - 86400)
+  }
+  assert.ok(finishedShows(u).has(sid), 'finished')
+  assert.equal(returningShows(u).size, 0, 'nothing new: stays hidden')
+
+  // A fresh copy of an episode already watched, and a season pack of the season watched: not new.
+  rel(987103, 1, 2, t - 3600); rel(987104, 1, null, t - 3600, 1)
+  assert.ok(!returningShows(u).has(sid), 'a re-upload or a pack of the watched season does not bring it back')
+
+  // The next episode, but nobody seeds it: nothing to play, so not back yet.
+  rel(987105, 1, 3, t - 1800, 0, 0)
+  assert.ok(!returningShows(u).has(sid), 'an unseeded new episode does not bring it back')
+
+  // A new season, seeded: back, until it is RETURN_DAYS old.
+  rel(987106, 2, null, t - 600, 1)
+  assert.equal(returningShows(u).get(sid), t - 600, 'a new season brings it back')
+  assert.ok(!returningShows(u, finishedShows(u), t + RETURN_DAYS * 86400).has(sid), 'and it drops away again after RETURN_DAYS')
+
+  // Someone who never watched it is not told it has new episodes.
+  assert.ok(!returningShows(createUser('fin_back_other', 'password123', false).id).has(sid))
+})
+
 test('the leaving-soon prompt: "Keep it" stops the clock, "Let it go" counts as done for a whole pack', async () => {
   const { updateLeaving, unwatchedEligible, leavingSoonFor, keepFor, letGoFor } = await import('../src/retention.ts')
   const { db, now } = await import('../src/db.ts')
