@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
+import { SEARCH_NORM_SQL, searchNorm, searchRank } from './search.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar, isChild, hasPassword } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause, refreshRatings, startRatingSweeper } from './ratings.ts'
 import { qb } from './qb.ts'
@@ -195,7 +196,7 @@ app.get('/api/series', auth, async (req) => {
   const { q, local } = req.query as { q?: string; local?: string }
   const f = ratingClause(req.user)
   const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score FROM releases ${META_JOIN}releases.series_id
-      WHERE ${f.sql}${q ? ' AND series LIKE ?' : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${q}%`] : [])) as any[]
+      WHERE ${f.sql}${q ? ` AND ${SEARCH_NORM_SQL} LIKE ?` : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${searchNorm(q)}%`] : [])) as any[]
   // `local` answers from what Flix already knows, instantly; the page follows up without it to bring in BTN's results.
   // A term searched on BTN in the last few minutes is not asked again.
   const term = q?.trim().toLowerCase() ?? ''
@@ -211,7 +212,8 @@ app.get('/api/series', auth, async (req) => {
   // Search is a browse surface like Discover: a show on Netflix, Disney+ or Prime Video does not come back here (see
   // isBrowsableService). It opens and plays if it is already in My List or being watched, which is the person's own doing.
   const net = netInfo()
-  const rows = query().filter(isListed).filter((r) => isBrowsableService(net.get(r.id)?.streamer)).slice(0, 100)
+  const rows = query().filter(isListed).filter((r) => isBrowsableService(net.get(r.id)?.streamer))
+    .map((r, i) => [r, searchRank(r.name ?? '', q ?? ''), i] as const).sort((x, y) => x[1] - y[1] || x[2] - y[2]).map(([r]) => r).slice(0, 100)
   rows.filter((r) => r.rating === 'Unrated' || r.score == null).forEach((r) => queueRating(r.id))
   return { series: rows }
 })
@@ -1258,11 +1260,11 @@ app.post('/api/admin/downloads/group-delete', admin, async (req) => {
   if (!removed) throw Object.assign(new Error(`Nothing was removed: ${failed.join('; ')}`), { statusCode: 409 })
   return { removed, freed, failed }
 })
-const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash })
+const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash, avatar: u.avatar ?? null })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number
 
 app.get('/api/admin/users', admin, async () => ({
-  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash, pass_hash FROM users ORDER BY id').all() as any[]).map(userRow),
+  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash, pass_hash, avatar FROM users ORDER BY id').all() as any[]).map(userRow),
   ratings: RATINGS, ratingLookup: !!(config.omdb.apiKey || config.tmdb.apiKey),
 }))
 app.post('/api/admin/users', admin, async (req) => {

@@ -115,6 +115,19 @@ function backdrop(el, banner, poster, still) {
 }
 
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
+/**
+ * A page that is nothing but a message (an empty library, no search results) shows it in the middle of what is on screen
+ * under the header, not hanging just below whatever came above it. Measured, because what sits above it varies.
+ */
+function centerFills() {
+  for (const el of app.querySelectorAll('.empty.fill')) {
+    el.style.minHeight = ''
+    const top = el.getBoundingClientRect().top + scrollY, head = document.getElementById('top')?.offsetHeight ?? 0
+    el.style.minHeight = Math.max(200, Math.round(innerHeight + head - 2 * top)) + 'px'
+  }
+}
+addEventListener('resize', () => centerFills())
+
 async function swap(fn) {
   window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
   let ran = false
@@ -127,6 +140,7 @@ async function swap(fn) {
     clearTimeout(guard)
   }
   once()
+  centerFills()
   // A television gets no cross-fade (two snapshots of the whole screen), but a page that simply appears reads as a jolt:
   // the new one eases in on opacity alone, which the compositor does without repainting anything.
   if (isTv && !rmq.matches && app.animate) app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' })
@@ -256,9 +270,13 @@ function castTrack(player, ids) {
 }
 
 /* ---------- top bar ---------- */
+/** Set when typing in the search field opened the results page: the new header picks up the field where the old one left off. */
+let keepSearch = false
 function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
+  const typed = keepSearch ? $('#q') : null, typedAt = typed ? [typed.value, typed.selectionStart, typed.selectionEnd] : null
+  keepSearch = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
     <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
     <div class="hact">${me.cast && !isTv && !isCar ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
@@ -290,7 +308,10 @@ function renderTop() {
   }
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
-  if (cur) q.value = cur
+  if (typedAt) { q.value = typedAt[0]; q.focus({ preventScroll: true }); try { q.setSelectionRange(typedAt[1], typedAt[2]) } catch { /* not a text field */ } }
+  // Letters typed while this page was on its way: search for all of them, not just the first.
+  if (typedAt && typedAt[0].trim() !== (cur ?? '')) queueMicrotask(() => q.oninput?.())
+  else if (cur) q.value = cur
   // In the car the header's logo, search and avatar are the car's own buttons (see window.__flixCar), so the search bar is
   // only on screen from the search button until it is left empty.
   if (isCar) { top.classList.toggle('car-find', !!cur); q.onblur = () => { if (!q.value.trim()) top.classList.remove('car-find') } }
@@ -303,11 +324,15 @@ function renderTop() {
     if (!/^#?\/?(\?|$)/.test(location.hash)) return
     history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/')
     if (v && $('#app [data-live]')?.dataset.live === view.key) return
-    view()
+    view(); centerFills()
   }
   q.oninput = () => {
     clearTimeout(liveT); clearTimeout(fullT)
     const v = q.value.trim(), mine = ++liveN
+    // Typing on any other page (a show, Settings) goes straight to the results, the way it does from Home: before this the
+    // field took the letters and nothing happened until Enter. It is a page of its own, so Back returns to where it started,
+    // and the field keeps focus, the caret and anything typed while the results page is being built (see renderTop).
+    if (v && !/^#?\/?(\?|$)/.test(location.hash)) { keepSearch = true; go('#/?q=' + encodeURIComponent(v)); return }
     liveT = setTimeout(async () => {
       if (!v) { const r = await homeView('').catch(() => null); if (r && mine === liveN) { show(r, v); window.scrollTo({ top: 0, behavior: 'instant' }) } return }
       const quick = await homeView(v, true).catch(() => null)
@@ -445,11 +470,16 @@ addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { 
 /* ---------- profiles ("Who's watching?") ---------- */
 // Each profile used on this device keeps its own long-lived sign-in in local storage, so switching never asks for a password.
 const profiles = () => store.get('profiles', [])
+/** The creature chosen in Profile, kept on this device's saved profile so "Who's watching?" shows it too. */
+function syncProfileAvatar() {
+  const ps = profiles(), i = ps.findIndex((p) => p.name === me?.name)
+  if (i >= 0 && (ps[i].avatar || null) !== (me.avatar || null)) { ps[i] = { ...ps[i], avatar: me.avatar || null }; store.set('profiles', ps) }
+}
 async function rememberProfile(drop) {
   if (!me) return
   try {
     const { token } = await api('/api/device-token', {})
-    store.set('profiles', [...profiles().filter((p) => p.name !== me.name && p.name !== drop), { name: me.name, token }])
+    store.set('profiles', [...profiles().filter((p) => p.name !== me.name && p.name !== drop), { name: me.name, token, avatar: me.avatar || null }])
   } catch { /* the picker just won't list them */ }
 }
 const picked = () => { try { return sessionStorage.getItem('flix.picked') === '1' } catch { return true } }
@@ -466,7 +496,7 @@ function profilesView() {
   return () => {
     top.hidden = true
     const ps = profiles()
-    app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av" style="--h:${hue(p.name)}">${esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
+    app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av${AV_ART[p.avatar] ? ' has-art' : ''}" style="--h:${hue(p.name)}">${avSvg(p.avatar) || esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
       <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div></div>`
     app.querySelectorAll('.who-tile[data-n]').forEach((b) => b.onclick = async () => {
       const p = ps.find((x) => x.name === b.dataset.n)
@@ -643,7 +673,16 @@ function wireQueue(root, st) {
     fill(boxes.list, st.list.length ? st.list.map((s) => els.get(s.id)) : [empty])
     fill(boxes.sugg, st.sugg.map((s) => els.get(s.id)))
     boxes.sugg.closest('.qsec').hidden = !st.sugg.length
+    trim()
   }
+  // Suggestions fill whole rows: one left alone on a row of its own read as a mistake, so past the first row a part-filled
+  // last row is left out. They are only suggestions; adding one brings the next one up.
+  const trim = () => {
+    const cards = [...boxes.sugg.children], cols = getComputedStyle(boxes.sugg).gridTemplateColumns.split(' ').filter(Boolean).length || 1
+    const keep = cards.length > cols ? cards.length - (cards.length % cols) : cards.length
+    cards.forEach((el, i) => el.classList.toggle('qtrim', i >= keep))
+  }
+  if ('ResizeObserver' in window) new ResizeObserver(trim).observe(boxes.sugg)
   const flip = (mutate) => {
     const before = new Map()
     if (!rmq.matches) els.forEach((e, id) => before.set(id, e.getBoundingClientRect()))
@@ -713,8 +752,8 @@ function leavingPrompt(show) {
     <ul class="lp-list">${show.map((l) => `<li data-t="${l.torrentId}">
       <a class="lp-name" href="#/series/${l.seriesId}">${esc(l.series || l.label || 'This download')}${l.season ? ' · S' + l.season : ''}</a>
       <span class="lp-when">${lpDays(l)}</span>
-      <button class="btn lp-keep" data-t="${l.torrentId}">Keep it</button>
-      <button class="btn lp-go" data-t="${l.torrentId}">Let it go</button>
+      <span class="lp-acts"><button class="btn lp-keep" data-t="${l.torrentId}">Keep it</button>
+      <button class="btn lp-go" data-t="${l.torrentId}">Let it go</button></span>
     </li>`).join('')}</ul>
   </section>`
 }
@@ -783,19 +822,19 @@ async function homeView(q, local = false) {
       const tiles = series.map(tile).join('')
       html += `<h2 class="sec" style="margin-top:0" data-live="${esc(key)}">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
         (series.length ? `<div class="grid">${again ? tiles.replaceAll('tile rise"', 'tile"') : tiles}</div>`
-          : `<div class="empty">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
+          : `<div class="empty fill">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
     }
     else {
       for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
       // Discover: the whole library, behind the few rows picked above. The filters are a fetch each rather than a page of
       // their own, so a filtered view cannot be lost to a Back press and the router needs no new route for it.
-      html += `<h2 class="sec">Discover <span class="dim" style="font-weight:500;font-size:.7em" id="discount"></span></h2>
+      html += `<section id="disc"><h2 class="sec">Discover <span class="dim" style="font-weight:500;font-size:.7em" id="discount"></span></h2>
         <div class="disc-f">
           <div class="disc-grp"><span class="disc-lb" id="discglb">Genre</span><div class="pills" role="tablist" aria-labelledby="discglb" id="discg">${discPill('Every genre', '')}</div></div>
           <div class="disc-grp"><span class="disc-lb" id="discslb">Order</span><div class="pills" role="tablist" aria-labelledby="discslb" id="discsort">${DISCOVER_SORTS.map(([v, l]) => discPill(l, v)).join('')}</div></div>
         </div><div class="grid" id="discgrid"></div>
-        <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div>`
-      if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
+        <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div></section>`
+      if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty fill">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
@@ -813,7 +852,9 @@ async function homeView(q, local = false) {
           if (!d) { dgrid.innerHTML = '<div class="empty">Could not read the library just now.</div>'; return }
           const tiles = d.series.filter((x) => !inQueue.has(x.id)).map(tile).join('')
           if (append) dgrid.insertAdjacentHTML('beforeend', tiles)
-          else dgrid.innerHTML = tiles || '<div class="empty">Nothing matches those filters.</div>'
+          else dgrid.innerHTML = tiles || `<div class="empty">${dgenre ? 'No shows in that genre yet.' : 'No shows in the library yet.'}</div>`
+          // An empty library has nothing to filter: the page's own "Nothing here yet" says why, so the filters are not shown.
+          const disc = $('#disc'); if (disc && !append && disc.hidden !== (disc.hidden = !d.total && !dgenre)) centerFills()
           // The genres are filled once, from the first answer, so choosing one cannot shrink the choices to itself.
           if (!genresFilled && d.genres?.length) { genresFilled = true; dg.insertAdjacentHTML('beforeend', d.genres.map((g) => discPill(g, g)).join('')); mark(dg, dgenre) }
           dcount.textContent = d.total ? `${d.total} show${d.total === 1 ? '' : 's'}` : ''
@@ -1087,7 +1128,7 @@ async function seriesView(id) {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
-          <span class="es">${[e.title ? esc(e.label) : '', e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · ')}</span>
+          <span class="es">${((rest) => (e.title ? `<span class="elab">${esc(e.label)}${rest ? ' · ' : ''}</span>` : '') + rest)([e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · '))}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
         <span class="eside">${e.available ? '' : `<span class="lock" aria-label="Not available yet" title="Not available yet">${I.lock}</span>`}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => {
@@ -1994,7 +2035,7 @@ function playView(seriesId, season, label) {
       clearInterval(timer); clearTimeout(subT); hls?.destroy(); hls = null
       $('.mark')?.remove(); restoreWait()
       const said = friendly(msg, haveFrac >= 1)
-      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
+      $('#msg').innerHTML = `<div style="max-width:34ch;line-height:1.5">${esc(said)}</div>${me?.is_admin && said !== msg && !/^Something went wrong playing this\.( Go back and try again\.)?$/i.test(msg) ? `<div class="dim" style="font-size:12px;margin-top:8px;color:rgba(255,255,255,.55)">${esc(msg)}</div>` : ''}
         <div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn primary" id="again">Try again</button><button class="btn" id="fback">Back</button></div>`
       $('#again').onclick = () => route()
       $('#fback').onclick = leavePlayer
@@ -3081,7 +3122,8 @@ function ratingPills(all, on, attrs = '') {
   return `<div class="rpills" ${attrs}>${all.map((r) => `<button type="button" class="rpill" data-r="${esc(r)}" aria-pressed="${on.includes(r)}" title="${esc(RATING_HELP[r] || '')}">${esc(r)}</button>`).join('')}</div>`
 }
 
-const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['playback', 'Playback'], ['btn', 'BTN'], ['ratings', 'OMDb'], ['tmdb', 'TMDB'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
+// In the order the sections sit on the page, so the tab row reads the same way the page scrolls.
+const SETTINGS_PILLS = [['torrents', 'Torrents'], ['family', 'Family'], ['btn', 'BTN'], ['ratings', 'OMDb'], ['tmdb', 'TMDB'], ['playback', 'Playback'], ['qb', 'qBittorrent'], ['subs', 'Subtitles']]
 const LEGACY_SECTION = { '': 'torrents', family: 'family', settings: 'btn' } // the old #/admin, #/admin/family and #/admin/settings addresses
 
 /** One page for everything an admin manages: sections stacked under a row of pills that stays put while the page scrolls. */
@@ -3112,9 +3154,17 @@ async function settingsView(section = 'torrents') {
     pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); jump(p.dataset.s, !rmq.matches) })
     // Highlight the section being read: the last one whose top has scrolled up under the pills.
     const onScroll = () => {
-      let cur = SETTINGS_PILLS[0][0]
-      for (const [id] of SETTINGS_PILLS) { const el = document.getElementById('s-' + id); if (el && el.getBoundingClientRect().top <= 150) cur = id }
-      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) cur = SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
+      // A section is the one being read once its top is within a short reach under the tab bar, measured from the bar itself
+      // (it is taller on a phone), so arriving on a section that settled a little lower still lights its own tab.
+      let cur = SETTINGS_PILLS[0][0], line = (app.querySelector('.snav')?.getBoundingClientRect().bottom ?? 120) + 110
+      let best = -Infinity
+      for (const [id] of SETTINGS_PILLS) { const t = document.getElementById('s-' + id)?.getBoundingClientRect().top; if (t != null && t <= line && t > best) { best = t; cur = id } }
+      // At the foot of the page the last sections can never scroll up to the bar: the one asked for (its tab, or the link
+      // that opened it) stays lit while it is on screen, else the last one.
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        const asked = location.hash.split('/')[2], at = document.getElementById('s-' + asked)?.getBoundingClientRect()
+        cur = at && at.top < innerHeight && at.bottom > 0 ? asked : SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
+      }
       pills.forEach((p) => { const on = p.dataset.s === cur; p.setAttribute('aria-selected', String(on)); if (on && p.scrollIntoView) { const box = p.parentElement; box.scrollTo({ left: p.offsetLeft - (box.clientWidth - p.offsetWidth) / 2, behavior: 'auto' }) } })
     }
     addEventListener('scroll', onScroll, { passive: true })
@@ -3229,33 +3279,33 @@ function downloadsPanel(data, root) {
     const groups = d.finished ?? []
     const eps = (n) => `${n} episode${n === 1 ? '' : 's'}`
     const gKey = (g, season) => `${g.seriesId ?? g.series}|${season == null ? '' : season}`
-    const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy">`)
-    const chev = (open) => `<span class="chev" aria-hidden="true">${open ? '▾' : '▸'}</span>`
-    const gdel = (label, g, season, n, size) => `<button class="btn sm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}">${label}</button>`
-    const epRow = (it) => `<li class="trow tgrp eps"><div class="tgrp-body">${tposter(null)}<span class="tgrp-txt"><b>${esc(it.label)}</b>
-        <span class="dim sm">Finished seeding${it.heldFor.length ? ` · not watched yet by ${esc(it.heldFor.join(', '))}` : ''}</span></span></div>
-      <span class="size">${gb(it.size)}</span><span class="tacts"><button class="btn sm-btn" data-rm="${it.torrentId}">Remove</button></span></li>`
+    const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`)
+    const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
+    const chev = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
+    // The group Remove is small and quiet until it is pressed; the confirming press is the only loud thing here.
+    const gdel = (label, g, season, n, size) => `<button class="rm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}" aria-label="${label}: ${eps(n)}, ${gb(size)}">${trash}<span>${label}</span></button>`
+    const stillNote = (list) => `<span class="fg-still" title="${esc(list.map((x) => x.label + (x.note ? ` (${x.note})` : '')).join(', '))} still seeding">${list.length === 1 ? esc(list[0].label) : list.length} still seeding</span>`
+    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b>${it.heldFor.length ? `<span class="dim sm">Not watched yet by ${esc(it.heldFor.join(', '))}</span>` : ''}</span>
+      <span class="fg-size">${gb(it.size)}</span><button class="rm-btn icon" data-rm="${it.torrentId}" aria-label="Remove ${esc(it.label)}">${trash}</button></li>`
     const seasonRow = (g, s) => {
       const k = gKey(g, s.season), open = openSeasons.has(k)
-      const kids = open ? `<ul class="trows tnest">${s.items.map(epRow).join('')}</ul>` : ''
-      return `<li class="trow tgrp sub"><button class="tgrp-main" data-gexp="${esc(k)}" data-level="season" aria-expanded="${open}">${tposter(null)}
-          <span class="tgrp-txt"><b>${s.season == null ? 'Specials' : 'Season ' + s.season}</b><span class="dim sm">${eps(s.items.length)} · ${gb(s.size)}</span></span>${chev(open)}</button>
-        <span class="size">${gb(s.size)}</span>
-        <span class="tacts">${s.finished ? gdel('Remove season', g, s.season, s.items.length, s.size) : `<span class="dim sm">${esc(s.still.map((x) => x.label).join(', '))} still seeding</span>`}</span>${kids}</li>`
+      return `<li class="fg-season${open ? ' open' : ''}"><div class="fg-head">
+          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="season" aria-expanded="${open}">${chev}<span class="fg-txt"><b>${s.season == null ? 'Specials' : 'Season ' + s.season}</b><span class="dim sm">${eps(s.items.length)} · ${gb(s.size)}</span></span></button>
+          <span class="fg-act">${s.finished ? gdel('Remove season', g, s.season, s.items.length, s.size) : stillNote(s.still)}</span></div>
+        ${open ? `<ul class="fg-eps">${s.items.map(epRow).join('')}</ul>` : ''}</li>`
     }
     const showRow = (g) => {
       const k = gKey(g, null), open = openShows.has(k)
-      const kids = open ? `<ul class="trows tnest">${g.seasons.map((s) => seasonRow(g, s)).join('')}</ul>` : ''
-      return `<li class="trow tgrp"><button class="tgrp-main" data-gexp="${esc(k)}" data-level="show" aria-expanded="${open}">${tposter(g.seriesId)}
-          <span class="tgrp-txt"><b>${esc(g.series)}</b><span class="dim sm">${g.seasons.length} season${g.seasons.length === 1 ? '' : 's'} · ${eps(g.episodes)} finished · ${gb(g.size)}</span></span>${chev(open)}</button>
-        <span class="size">${gb(g.size)}</span>
-        <span class="tacts">${g.finished ? gdel('Remove show', g, null, g.episodes, g.size) : `<span class="dim sm">${g.still.length} still seeding</span>`}</span>${kids}</li>`
+      return `<li class="fg-show${open ? ' open' : ''}"><div class="fg-head">
+          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="show" aria-expanded="${open}">${chev}${tposter(g.seriesId)}<span class="fg-txt"><b>${esc(g.series)}</b><span class="dim sm">${g.seasons.length} season${g.seasons.length === 1 ? '' : 's'} · ${eps(g.episodes)} · ${gb(g.size)}</span></span></button>
+          <span class="fg-act">${g.finished ? gdel('Remove show', g, null, g.episodes, g.size) : stillNote(g.still)}</span></div>
+        ${open ? `<ul class="fg-seasons">${g.seasons.map((s) => seasonRow(g, s)).join('')}</ul>` : ''}</li>`
     }
     const pressure = disk && state[0] !== 'ok'
       ? `<p class="dim sm" style="margin:0 0 8px;max-width:66ch">${pct}% is free, so new shows are refused below ${d.minFreePct}% and nothing is fetched ahead of time below ${d.autoPausePct}%. Removing everything under “Finished seeding” frees ${gb(groups.reduce((s, g) => s + g.size, 0))}.</p>` : ''
     const finishedView = `<div class="sub-h">Finished seeding</div>${pressure}
       <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${groups.length ? 'Shows whose downloads have finished seeding, by season. Removing one takes its torrents out of the download engine and deletes their files, as removing a single episode does. A whole show or season can be removed only when every episode in it has finished seeding; anything still seeding is named instead, and never removed.' : 'Nothing has finished seeding yet. Downloads appear here once BTN’s seeding goal is met on them.'}</p>
-      ${groups.length ? `<ul class="trows tgroups">${groups.map(showRow).join('')}</ul>` : ''}`
+      ${groups.length ? `<ul class="fg">${groups.map(showRow).join('')}</ul>` : ''}`
     const space = `${finishedView}
       ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}`
     $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
@@ -3277,14 +3327,14 @@ function downloadsPanel(data, root) {
         return `<li class="trow tgrp"><div class="tgrp-body">${tposter(x.series_id)}<span class="tgrp-txt"><b>${esc(x.series)}</b>
             <span class="dim sm"><span class="badge ${cls}">${state}</span> ${shortName(x)}${x.is_pack ? ' · season pack' : ''} · ${esc(left)}</span></span></div>
           <span class="size">${gb(x.held)}</span>
-          <span class="tacts">${finished ? `<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove</button>` : ''}</span></li>`
+          <span class="tacts">${finished ? `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)}">${trash}<span>Remove</span></button>` : ''}</span></li>`
       }).join('')}</ul>` : ''
     const fc = chartData?.fullInDays
     const heldSpace = heldForOthers.length ? `<div class="sub-h">Finished by you, not yet by everyone</div>
       <p class="dim sm" style="margin:0 0 8px;max-width:66ch">BTN's seeding goal is met on these, so BTN is satisfied. Nothing here is deleted on its own, because someone in the house has not finished it. Removing one frees the space now, and it has to be downloaded again if they do watch it.</p>
-      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove anyway</button>` })).join('')}</ul>` : ''
+      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)} anyway">${trash}<span>Remove anyway</span></button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
-    $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
+    $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
     wire($('#tinfo'))
   }
@@ -3296,9 +3346,10 @@ function downloadsPanel(data, root) {
   async function onRemove(b) {
     // Deleting a download is not undone by anything, so a second press confirms it, as everywhere else in Settings.
     if (b.dataset.sure !== '1') {
-      const was = b.textContent
-      b.dataset.sure = '1'; b.textContent = 'Press again to remove'; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = was; b.classList.remove('danger') } }, 4000)
+      const was = b.innerHTML
+      b.dataset.sure = '1'; b.classList.add('danger')
+      if (b.classList.contains('rm-btn')) b.innerHTML = '<span>Remove?</span>'; else b.textContent = 'Press again to remove'
+      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 4000)
       return
     }
     try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
@@ -3311,9 +3362,9 @@ function downloadsPanel(data, root) {
   async function onGroupRemove(b) {
     const n = Number(b.dataset.count) || 0, size = b.dataset.size || ''
     if (b.dataset.sure !== '1') {
-      const was = b.textContent
-      b.dataset.sure = '1'; b.textContent = `Press again: ${n} episode${n === 1 ? '' : 's'}, ${size}`; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = was; b.classList.remove('danger') } }, 6000)
+      const was = b.innerHTML
+      b.dataset.sure = '1'; b.innerHTML = `<span>Confirm</span><span class="rm-size"> · ${size}</span>`; b.title = `Removes ${n} episode${n === 1 ? '' : 's'} (${size}). Press again to confirm.`; b.classList.add('danger')
+      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.title = ''; b.classList.remove('danger') } }, 6000)
       return
     }
     try {
@@ -3415,7 +3466,7 @@ function familyPanel(data, root) {
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
       ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → OMDb (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
-        <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
+        <div class="who"><span class="avatar${AV_ART[u.avatar] ? ' has-art' : ''}" style="width:44px;height:44px;cursor:default">${avSvg(u.avatar) || esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}${u.hasPassword ? '' : ' · No password'}</div></div></div>
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
         <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
@@ -3507,7 +3558,8 @@ function playbackSection(tc) {
       <form id="tpf" class="person">
         <label class="dim"><input type="checkbox" id="thw"${tc.hardwareAllowed ? ' checked' : ''}> Use this box's GPU to convert, when it has one<span class="dim"> — Quick Sync on Intel. If it turns out not to work, Flix uses the CPU by itself and never refuses to play a file.</span></label>
         <label class="dim" for="tprofile">Quality</label>
-        <select class="field" id="tprofile" name="profile">${rows.map(([v, l, d]) => `<option value="${v}"${tc.profile === v ? ' selected' : ''}>${l} — ${d}</option>`).join('')}</select>
+        <select class="field" id="tprofile" name="profile" aria-describedby="tprofd">${rows.map(([v, l, d]) => `<option value="${v}" data-d="${esc(d)}"${tc.profile === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        <div class="dim sm" id="tprofd">${esc(((rows.find(([v]) => v === tc.profile) ?? rows[1])[2]).replace(/^./, (c) => c.toUpperCase()))}.</div>
         <label class="dim"><input type="checkbox" id="tnever"${tc.mode === 'off' ? ' checked' : ''}> Only download copies that play as they are (H.264), so nothing has to be converted</label>
         <div class="row-form"><button type="button" class="btn" id="trest">Test the encoder again</button></div>
         <div class="dim" id="tm2" role="status"></div></form></div>`
@@ -3568,6 +3620,7 @@ function settingsPanel(data, root) {
     const pmsg = (t) => { const el = $('#tm2'); if (el) el.textContent = t }
     const ps = $('#tprofile')
     if (ps) ps.onchange = async () => {
+      const d = ps.selectedOptions[0]?.dataset.d; if (d) $('#tprofd').textContent = d[0].toUpperCase() + d.slice(1) + '.'
       pmsg('Saving…')
       try { tc = (await api('/api/admin/settings/transcode', { profile: ps.value }, 'PUT')).transcode; paint(); $('#tm2').textContent = 'Saved. Takes effect from the next thing you play.' } catch (err) { pmsg(err.message) }
     }
@@ -3714,7 +3767,7 @@ function profileView() {
       const msg = $('#avmsg')
       b.disabled = true
       try {
-        me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user
+        me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user; syncProfileAvatar()
         app.querySelectorAll('.avpick').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.av === me.avatar)))
         renderTop()
         setMsg(msg, 'Saved.')
@@ -3763,7 +3816,7 @@ async function downloadsView(offline = false) {
           <div class="ep dl-item" data-id="${esc(m.id)}" role="button" tabindex="0"><span class="thumb"><img class="fade" src="${dl.imgUrl(m.id)}" alt="" onload="this.classList.add('in')" onerror="this.remove()"><span class="play">${I.play}</span>${m.position > 30 && !m.watched ? `<span class="bar"><b style="width:${pct(m.position, m.duration)}%"></b></span>` : ''}</span>
             <span class="etxt"><span class="en">${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span><span class="es">${mb(m.size)} · 1080p or lower${m.watched ? ' · Watched' : ''}</span></span>
             <span class="eside"><button class="btn dl-rm" data-id="${esc(m.id)}" aria-label="Delete from this device">Delete</button></span></div>`).join('')}</div>`).join('')
-          : `<div class="empty">Nothing is downloaded to this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap <b>Download</b>, or the ${I.dl.replace('<svg', '<svg class="inl"')} next to an episode.${dl.active.size ? ` ${dl.active.size === 1 ? 'One episode is' : dl.active.size + ' episodes are'} on the way.` : ''}</span></div>`}</div>`
+          : `<div class="empty fill">Nothing is downloaded to this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap <b>Download</b>, or the ${I.dl.replace('<svg', '<svg class="inl"')} next to an episode.${dl.active.size ? ` ${dl.active.size === 1 ? 'One episode is' : dl.active.size + ' episodes are'} on the way.` : ''}</span></div>`}</div>`
       app.querySelectorAll('.dl-item').forEach((el) => {
         const open = () => go('#/offplay/' + el.dataset.id)
         el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter' && e.target === el) open() }
@@ -3816,7 +3869,7 @@ async function offlinePlayView(id) {
     v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); save(false) } }
     v.onpause = () => save(false)
     v.onended = () => { save(true); go('#/downloads') }
-    v.onerror = () => { app.innerHTML = `<div class="pad page-top"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
+    v.onerror = () => { app.innerHTML = `<div class="pad page-msg"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
     // The remote works the saved episode the way it works the streamed one: back leaves, left and right skip ten seconds,
     // OK and the media keys play and pause.
     const key = (e) => {
@@ -3886,7 +3939,7 @@ async function healthBanner() {
   if (!bad.length || $('.player')) return
   const first = bad[0]
   const el = document.createElement('div')
-  el.id = 'hb'; el.className = 'hbanner ' + first.level
+  el.id = 'hb'; el.className = 'hbanner ' + first.level + (location.hash.startsWith('#/settings') ? ' static' : '')
   el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/settings')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
   el.querySelector('.hbx').addEventListener('click', () => {
     const s = hbDismissed()
@@ -4175,6 +4228,7 @@ async function route() {
   me = st.user
   myState = st
   if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
+  else if (me) syncProfileAvatar()
   renderTop()
   syncDownloads().catch(() => {})
   top.classList.toggle('solid', scrollY > 30)
@@ -4199,13 +4253,15 @@ async function route() {
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return
+    // Typing went on while these results were fetched: live search has already drawn (or is drawing) the newer ones.
+    if (!parts.length && query && location.hash !== '#' + path + '?' + query) return
     await swap(render)
     if (arrived && viewState.has(location.hash) && parts[0] !== 'play') restoreView(viewState.get(location.hash))
     if (me.is_admin && parts[0] !== 'play') healthBanner()
   } catch (e) {
     clearTimeout(slow)
     if (token === navToken) {
-      app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
+      app.innerHTML = `<div class="pad page-msg"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
       $('#retry').onclick = () => route()
       if (isTv) $('#retry').focus({ preventScroll: true })
     }
