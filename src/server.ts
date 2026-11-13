@@ -36,7 +36,7 @@ import { unplayableSeries, unavailableSeries } from './candidates.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
-import { finishedShows } from './finished.ts'
+import { finishedShows, returningShows } from './finished.ts'
 import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, isBrowsableService, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
@@ -245,12 +245,16 @@ app.get('/api/discover', auth, async (req) => {
   const empty = unavailableSeries(), unplayable = hidden()
   const browsable = rows.filter((r) => isBrowsableService(net.get(r.id)?.streamer) && !empty.has(r.id) && !unplayable.has(r.id))
   // A show watched all the way through does not come back here either: this is the same rule the home rows follow.
+  // ...unless something new has come out for it since (see returningShows): then it is back, badged.
   const finished = finishedShows(req.user!.id)
+  const back = returningShows(req.user!.id, finished)
+  for (const id of back.keys()) finished.delete(id)
   const term = String(q.q ?? '').trim().toLowerCase()
   // Trending first when there is trending data; popularity is the fallback, then newest. A show with neither still appears,
   // at the end, rather than being dropped from a page that claims to show the library.
   const heat = (id: number) => { const n = net.get(id); return n?.trending != null ? 1e6 - n.trending : (n?.popularity ?? 0) }
   let list = browsable.filter((r) => !finished.has(r.id) && (!term || String(r.name).toLowerCase().includes(term)))
+    .map((r) => back.has(r.id) ? { ...r, hasNew: true } : r)
   if (q.genre) list = list.filter((r) => r.genres.some((g: string) => g.toLowerCase() === String(q.genre).toLowerCase()))
   list.sort(sort === 'new' ? (a, b) => b.latest - a.latest
     : sort === 'rating' ? (a, b) => (b.score ?? 0) - (a.score ?? 0) || b.latest - a.latest
@@ -363,6 +367,15 @@ app.get('/api/home', auth, async (req) => {
   // finishedShows also counts a show whose download has since been deleted, which is what keeps a cleaned-up show from
   // reappearing under Recommended.
   const finished = finishedShows(uid)
+  // The exception: a finished show with a new episode or season since (see returningShows) comes back, at the top of the
+  // screen in its own row with a "New episode" badge, rather than staying hidden for good. Newest first. A show they put on
+  // My List already says so there, and one being resumed or on the box is in the Queue, so neither is drawn twice.
+  const back = returningShows(uid, finished)
+  for (const id of back.keys()) finished.delete(id)
+  const returning = [...back.entries()].sort((a, b) => b[1] - a[1])
+    .map(([id]) => all.find((r) => r.id === id)).filter((r) => r && !taken.has(r.id) && !taste.hidden.has(r.id))
+    .map((r) => ({ ...clean(r), hasNew: true }))
+  returning.forEach((r) => taken.add(r.id))
   // The Queue's suggestions lead with what the most peers are downloading right now: seeding it is how the ratio is earned,
   // and a torrent with a crowd on it is the one that uploads. Only a show somebody could actually start (a seeder, or one the
   // viewer has not begun or finished) qualifies, and BTN's count is ignored once it is a week old. These shows are held
@@ -395,7 +408,7 @@ app.get('/api/home', auth, async (req) => {
   }
   const { hero, sections } = curateHome(pickable.filter((r) => !started.has(r.id) && !taste.hidden.has(r.id) && !finished.has(r.id)), net, taken, taste)
   const listIds = listed.map((l) => l.series_id)
-  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, ready, because, picked, grab }
+  return { hero: hero && clean(hero), listIds, sections: sections.map((s) => ({ title: s.title, series: s.series.map(clean) })), checking: unsyncedCount(), myList, ready, because, picked, grab, returning }
 })
 
 /** Thumbs up (1), thumbs down (-1) or clear (0) for a show. Feeds the home screen's picks. */
