@@ -51,7 +51,7 @@ export function visibleSeasons(rows: SeasonRow[], expected?: Map<number, number>
 // ---- which shows are listable -----------------------------------------------------------------
 
 /** Bumped whenever the network crawler learns something new about how a show is read (see networks.ts); older rows are read again. */
-export const NET_VER = 3
+export const NET_VER = 4
 
 let version = 0
 let cache: { v: number; map: Map<number, Map<number, SeasonSource>> } | null = null

@@ -56,6 +56,12 @@ const go = (h) => { location.hash = h }
 const hue = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7)
 const pct = (p, d) => Math.min(100, Math.round((p / (d || 1)) * 100))
 
+/* ---------- Discover filters ---------- */
+// Discover's two controls, drawn as the app's own pill rail (the same .pills/.pill the seasons and the settings use): a
+// genre, and the order the shows come in. There is no service filter -- see /api/discover in src/server.ts.
+const DISCOVER_SORTS = [['trending', 'Trending'], ['new', 'Newest'], ['rating', 'Best rated']]
+const discPill = (label, value) => `<button class="pill" role="tab" data-v="${esc(value)}" aria-selected="false">${esc(label)}</button>`
+
 /* ---------- little creatures ---------- */
 // The pictures a person can choose for their own profile. Drawn here as flat shapes so there is nothing to download,
 // they stay sharp at any size, and the whole set costs a few hundred bytes. Each one is a round badge that fills the slot.
@@ -433,7 +439,7 @@ const CAN_PLAY = (() => {
 })()
 
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
-addEventListener('click', () => closeMenu($('.menu')))
+addEventListener('click', () => { for (const m of document.querySelectorAll('.menu:not(.out)')) closeMenu(m) })
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
 
 /* ---------- profiles ("Who's watching?") ---------- */
@@ -779,10 +785,9 @@ async function homeView(q, local = false) {
       // Discover: the whole library, behind the few rows picked above. The filters are a fetch each rather than a page of
       // their own, so a filtered view cannot be lost to a Back press and the router needs no new route for it.
       html += `<h2 class="sec">Discover <span class="dim" style="font-weight:500;font-size:.7em" id="discount"></span></h2>
-        <div id="discf" style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">
-          <select id="discg" aria-label="Filter by genre"><option value="">Every genre</option></select>
-          <select id="discs" aria-label="Filter by service"><option value="">Every service</option></select>
-          <select id="discsort" aria-label="Order"><option value="trending">Trending first</option><option value="new">Newest first</option><option value="rating">Best rated (IMDb)</option></select>
+        <div class="disc-f">
+          <div class="disc-grp"><span class="disc-lb" id="discglb">Genre</span><div class="pills" role="tablist" aria-labelledby="discglb" id="discg">${discPill('Every genre', '')}</div></div>
+          <div class="disc-grp"><span class="disc-lb" id="discslb">Order</span><div class="pills" role="tablist" aria-labelledby="discslb" id="discsort">${DISCOVER_SORTS.map(([v, l]) => discPill(l, v)).join('')}</div></div>
         </div><div class="grid" id="discgrid"></div>
         <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div>`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
@@ -790,27 +795,31 @@ async function homeView(q, local = false) {
     html += '</div>'
     app.innerHTML = html
     wireRows(app)
-      // Nothing here is a route: the pickers just refetch. Paging appends, so a person keeps their place.
-      const dg = $('#discg'), ds = $('#discs'), dsort = $('#discsort'), dgrid = $('#discgrid'), dmore = $('#discmore'), dcount = $('#discount')
+      // Nothing here is a route: the pills just refetch. Paging appends, so a person keeps their place.
+      const dg = $('#discg'), dsort = $('#discsort'), dgrid = $('#discgrid'), dmore = $('#discmore'), dcount = $('#discount')
       if (dgrid) {
-        let dpage = 0
+        let dpage = 0, dgenre = '', dorder = DISCOVER_SORTS[0][0], genresFilled = false
+        // Which pill in a rail is the chosen one: the filled pill, the same way a season reads.
+        const mark = (box, v) => box.querySelectorAll('.pill').forEach((p) => p.setAttribute('aria-selected', String(p.dataset.v === v)))
         const loadDiscover = async (append) => {
-          const pr = new URLSearchParams({ sort: dsort.value, page: String(dpage) })
-          if (dg.value) pr.set('genre', dg.value)
-          if (ds.value) pr.set('service', ds.value)
+          const pr = new URLSearchParams({ sort: dorder, page: String(dpage) })
+          if (dgenre) pr.set('genre', dgenre)
           const d = await fetch('/api/discover?' + pr).then((r) => (r.ok ? r.json() : null)).catch(() => null)
           if (!d) { dgrid.innerHTML = '<div class="empty">Could not read the library just now.</div>'; return }
           const tiles = d.series.filter((x) => !inQueue.has(x.id)).map(tile).join('')
           if (append) dgrid.insertAdjacentHTML('beforeend', tiles)
           else dgrid.innerHTML = tiles || '<div class="empty">Nothing matches those filters.</div>'
-          // The lists are filled once, from the unfiltered first answer, so choosing a genre cannot shrink the choices to itself.
-          const fill = (sel, list) => { if (sel.options.length <= 1) for (const v of list) sel.insertAdjacentHTML('beforeend', `<option value="${esc(v)}">${esc(v)}</option>`) }
-          fill(dg, d.genres); fill(ds, d.services)
+          // The genres are filled once, from the first answer, so choosing one cannot shrink the choices to itself.
+          if (!genresFilled && d.genres?.length) { genresFilled = true; dg.insertAdjacentHTML('beforeend', d.genres.map((g) => discPill(g, g)).join('')); mark(dg, dgenre) }
           dcount.textContent = d.total ? `${d.total} show${d.total === 1 ? '' : 's'}` : ''
           dmore.hidden = (dpage + 1) * d.per >= d.total
         }
         const resetDiscover = () => { dpage = 0; loadDiscover(false) }
-        dg.onchange = ds.onchange = dsort.onchange = resetDiscover
+        // A pick refetches from the top; the rail holds focus where it was, so a remote can carry on down the row.
+        const picks = (box, put) => (e) => { const p = e.target.closest?.('.pill'); if (!p || p.getAttribute('aria-selected') === 'true') return; put(p.dataset.v); mark(box, p.dataset.v); resetDiscover() }
+        dg.onclick = picks(dg, (v) => { dgenre = v })
+        dsort.onclick = picks(dsort, (v) => { dorder = v })
+        mark(dsort, dorder)
         dmore.onclick = () => { dpage++; loadDiscover(true) }
         loadDiscover(false)
       }
@@ -1463,6 +1472,12 @@ function playView(seriesId, season, label) {
       if (refocus && isTv) refocus.focus({ preventScroll: true }); else dropFocus()
       quietTouch() // a pick from the list is the viewer's own hand: the bar gets its five seconds again
     }
+    /** Only one list is ever open over the picture. Each button used to look for an open list inside its own `.p-menu`
+        only, so the audio list and the quality list could be open at the same time -- and the one underneath, opened
+        first, was never closed by the pick in the other. An open list is exactly what holds the bar up (menuOpen, and
+        the stylesheet's `.p-top:has(.menu)`), so the controls and the pointer then stayed over a playing show until the
+        viewer left the episode. Every opener closes the rest first, through here. */
+    const closeLists = () => { for (const m of pl.querySelectorAll('.p-menu .menu:not(.out)')) closePlayerMenu(m, m.parentElement?.querySelector('button')) }
     /** Leave the player for the show's page. Replaced, not pushed: Back from the show must not reopen the episode, and an
         episode reached through "Up next" must not leave the one before it in the history for Back to start playing again. */
     const leavePlayer = () => {
@@ -1473,7 +1488,9 @@ function playView(seriesId, season, label) {
       else location.replace(show)
     }
     // Mouse movement wakes the bar. Touch must not: a tap fires touchstart, then click, and waking on one and toggling on the other made the bar flash.
-    pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') { quietTouch(); wake() } })
+    // A pointermove with no movement of its own is not the viewer's hand -- the page's own layout changes and a synthetic
+    // event can both produce one -- and counting those restarted the five seconds over and over, so the bar never went.
+    pl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' && (e.movementX || e.movementY)) { quietTouch(); wake() } })
     // Touching the bar itself restarts the five seconds and shows it.
     $('#pctl').addEventListener('pointerdown', () => { quietTouch(); wake() })
     // Every other way in: a tap anywhere on the player, a finger on the picture (which only restarts the clock -- the tap's
@@ -1550,7 +1567,7 @@ function playView(seriesId, season, label) {
       // A remote with a captions list open walks the list rather than seeking the picture underneath it. Enter picks the
       // focused entry on its own (it is a real button), and Escape or the back key closes the list again; left and right
       // still skip 10 seconds, which is what a viewer expects from them whatever has the focus.
-      const open = pl.querySelector('.p-menu .menu')
+      const open = pl.querySelector('.p-menu .menu:not(.out)')
       if (open && k !== 'Enter') {
         const items = [...open.querySelectorAll('button')]
         if (items.length && (k === 'ArrowDown' || k === 'ArrowUp')) {
@@ -2724,10 +2741,12 @@ function playView(seriesId, season, label) {
       btn.hidden = info.audio.length < 2
       btn.onclick = (e) => {
         e.stopPropagation()
-        const old = $('.p-menu .menu'); if (old) return closePlayerMenu(old, btn)
+        const mine = btn.parentElement.querySelector('.menu:not(.out)')
+        closeLists() // any other list goes first: only one is ever open over the picture
+        if (mine) return
         const m = document.createElement('div'); m.className = 'menu'
         m.innerHTML = `<div class="who">Audio</div>${info.audio.map((t) => `<button data-n="${t.n}" ${t.n === info.audioIndex ? 'aria-current="true"' : ''}>${t.n === info.audioIndex ? '✓ ' : ''}${esc(t.label || 'Track ' + (t.n + 1))}</button>`).join('')}`
-        $('.p-menu').appendChild(m)
+        btn.parentElement.appendChild(m) // its own container, not the first `.p-menu` on the page
         m.querySelectorAll('button[data-n]').forEach((b) => b.onclick = async () => {
           const n = +b.dataset.n; closePlayerMenu(m, btn)
           if (n === info.audioIndex) return
@@ -2746,7 +2765,9 @@ function playView(seriesId, season, label) {
       btn.textContent = info.quality ? info.quality + 'p' : qSetting() === 'auto' ? 'AUTO' : 'HD'
       btn.onclick = (e) => {
         e.stopPropagation()
-        const old = btn.parentElement.querySelector('.menu'); if (old) return closePlayerMenu(old, btn)
+        const mine = btn.parentElement.querySelector('.menu:not(.out)')
+        closeLists() // any other list goes first: only one is ever open over the picture
+        if (mine) return
         const pick = qSetting()
         const row = (val, label) => {
           const on = String(pick) === String(val)

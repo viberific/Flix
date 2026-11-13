@@ -34,7 +34,16 @@ export const config = {
     maxCallsPerHour: num('BTN_MAX_CALLS_PER_HOUR', 100),
   },
   // Content ratings (TV-Y … TV-MA) and the IMDb score come from IMDb through OMDb (needs a free key). TMDB is the fallback for the rating.
+  // The ratings backlog: a sweep of the shows with no IMDb score or no rating, whatever was fetched before. Called when
+  // an OMDb key is saved, and again whenever the queue of work has drained, so the answer is as fresh as the hour.
   omdb: { apiKey: env.OMDB_API_KEY ?? '', apiUrl: (env.OMDB_API_URL ?? 'https://www.omdbapi.com').replace(/\/$/, '') },
+  // The backlog sweep for ratings (see src/ratings.ts). The free OMDb plan is 1,000 lookups a day and the cap here is
+  // what keeps Flix inside it: the sweep stops when the day's budget is gone and carries on tomorrow where it left off.
+  ratings: {
+    omdbDailyCap: num('OMDB_DAILY_CAP', 1000),
+    sweepIntervalSec: num('RATINGS_SWEEP_SEC', 600),
+    sweepBatch: num('RATINGS_SWEEP_BATCH', 20),
+  },
   // Optional: also the source of networks, languages, season sizes, trending shows, summaries and artwork.
   tmdb: { apiKey: env.TMDB_API_KEY ?? '', apiUrl: (env.TMDB_API_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, '') },
   // Backup artwork when BTN has none (or its image host refuses us): TMDB (needs the key above), then TVmaze (no key).

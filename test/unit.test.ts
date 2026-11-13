@@ -489,6 +489,7 @@ test('networks: a show\'s service, language and season lengths are read (the air
   const { createServer } = await import('node:http')
   const { db } = await import('../src/db.ts')
   const { ensureNet, netInfo } = await import('../src/networks.ts')
+  const { NET_VER } = await import('../src/seasons.ts')
   const srv = createServer((req, res) => {
     res.setHeader('content-type', 'application/json')
     if (req.url!.startsWith('/find/900')) return void res.end(JSON.stringify({ tv_results: [{ id: 5 }] }))
@@ -504,7 +505,7 @@ test('networks: a show\'s service, language and season lengths are read (the air
     db.prepare(`INSERT INTO releases (torrent_id, series_id, series, tvdb_id, group_name, info_hash, fetched_at) VALUES (9001, 90, 'Net Show', 900, 'Net Show - S01E01', 'hh', 0)`).run()
     await ensureNet(90)
     const r = db.prepare('SELECT streamer, lang, season_counts, ver FROM series_net WHERE series_id = 90').get() as any
-    assert.equal(r.streamer, 'HBO'); assert.equal(r.lang, 'en'); assert.equal(r.ver, 3)
+    assert.equal(r.streamer, 'HBO'); assert.equal(r.lang, 'en'); assert.equal(r.ver, NET_VER)
     assert.deepEqual(JSON.parse(r.season_counts), { 1: 8, 2: 4 })
     assert.equal(netInfo().get(90)!.popularity, 80)
   } finally { config.tmdb.apiUrl = old.apiUrl; config.tmdb.apiKey = old.apiKey; config.art.tvmazeUrl = old.tvmaze; srv.close() }

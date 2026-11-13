@@ -17,17 +17,29 @@ export const STREAMERS = ['HBO', 'Crave', 'Showcase', 'Apple TV+', 'Paramount+']
 const PATTERNS: [string, RegExp][] = [['HBO', /\bhbo\b|^max$/i], ['Crave', /\bcrave\b/i], ['Showcase', /\bshowcase\b/i], ['Netflix', /netflix/i],
   // Disney brands its shows across several channels, and TMDB files most Disney+ series under "Disney Channel"; Hulu and
   // National Geographic are Disney's too. Matching the family, not just the words "Disney+", is what puts them on the row.
-  ['Disney+', /disney|hulu|national\s*geographic|natgeo/i], ['Apple TV+', /apple\s*tv/i], ['Paramount+', /paramount\s*(\+|plus)/i]]
+  ['Disney+', /disney|hulu|national\s*geographic|natgeo/i], ['Apple TV+', /apple\s*tv/i], ['Paramount+', /paramount\s*(\+|plus)/i],
+  // Prime Video: TMDB files it as "Amazon" on some shows and "Amazon Prime Video" on others. "Amazon Freevee" is a
+  // different, free service, and "Amazon Studios" is a production company, so the word Amazon alone is not enough.
+  ['Prime Video', /prime\s*video|^amazon(\s+prime(\s+video)?)?$/i]]
 
 /**
- * Services Flix recognises and keeps in the library, but never puts on the home screen: the person watches these in the
- * service's own app, and Flix is there to supplement them. Netflix and Disney+ are those. Their shows still search,
- * list and play; they just do not get a row or a billboard of their own.
+ * Services Flix recognises and keeps in the library, but never lists: the person watches these in the
+ * service's own app, and Flix is there to supplement them. Netflix, Disney+ and Prime Video are those. Their shows still
+ * open, play, and stay in My List and Continue watching; they get no row, no billboard and no place in Discover or search.
  */
-export const HIDDEN_STREAMERS: readonly string[] = ['Netflix', 'Disney+']
+export const HIDDEN_STREAMERS: readonly string[] = ['Netflix', 'Disney+', 'Prime Video']
 /** True for a show on a service the home screen leaves out (see HIDDEN_STREAMERS). */
 export function isHiddenService(streamer?: string | null): boolean {
   return !!streamer && HIDDEN_STREAMERS.includes(streamer)
+}
+/**
+ * Whether a show may be LISTED on the browse surfaces: the home rows, Discover and search. This is the only rule those
+ * three use, and it is deliberately not the rule for what the person put somewhere themselves: a show on a hidden
+ * service that is in My List, or that they are part-way through, stays where they can see it. Their own choice outranks
+ * a recommendation rule; a show vanishing out of their own row would read as a bug.
+ */
+export function isBrowsableService(streamer?: string | null): boolean {
+  return !isHiddenService(streamer)
 }
 
 /** A network name as TMDB or TVmaze spells it, mapped onto one of our rows ('Disney Plus' and 'Disney+' are the same row). */
@@ -56,7 +68,7 @@ async function getJson(url: string): Promise<any> {
 
 interface Net { lang: string | null; counts: Record<number, number>; tmdb_id: number | null; streamer: string | null; network: string | null; first_air: string | null; popularity: number | null; notable: boolean }
 
-async function tvmaze(t: { series: string; tvdb_id: number | null; imdb_id: string | null }): Promise<any | null> {
+export async function tvmazeLookup(t: { series: string; tvdb_id: number | null; imdb_id: string | null }): Promise<any | null> {
   const base = config.art.tvmazeUrl
   if (!base) return null
   const q = t.tvdb_id ? `lookup/shows?thetvdb=${t.tvdb_id}` : /^tt\d+$/.test(t.imdb_id ?? '') ? `lookup/shows?imdb=${t.imdb_id}` : null
@@ -88,7 +100,7 @@ async function lookup(seriesId: number): Promise<Net> {
   }
   // TVmaze answers without a key, and knows web channels ("Netflix") that TMDB sometimes files under a production company.
   if (!out.streamer || out.popularity === null || !out.lang || !Object.keys(out.counts).length) {
-    const show = await tvmaze(t)
+    const show = await tvmazeLookup(t)
     if (show) {
       out.lang ??= show.language ? String(show.language).toLowerCase() : null
       if (!Object.keys(out.counts).length && show.id) {

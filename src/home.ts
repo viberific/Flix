@@ -22,7 +22,8 @@ const byAir = (net: Map<number, NetRow>) => (a: HomeRow, b: HomeRow) =>
 
 /**
  * The home screen's discovery rows. Only shows on HBO, Crave, Showcase, Disney+, Apple TV+ or Paramount+ are on it (everything
- * else is still in the library and search), and a show on a hidden service such as Netflix is left off it altogether. From the
+ * else is still in the library and search), and a show on a hidden service (Netflix, Disney+, Prime Video) is left off it
+ * altogether. From the
  * top: the featured show, Trending, then the newest from each service in
  * turn, then the rest under the single genre each fits best. Every row has exactly ROW_SIZE shows, except a service row that the
  * library cannot fill (see SERVICE_MIN).
@@ -33,7 +34,7 @@ const byAir = (net: Map<number, NetRow>) => (a: HomeRow, b: HomeRow) =>
  */
 export function curateHome(rows: HomeRow[], net: Map<number, NetRow>, taken: Set<number> = new Set(), taste?: Taste): { hero: HomeRow | null; sections: Section[] } {
   const used = new Set(taken)
-  // A hidden service (Netflix) is off the screen entirely: not the billboard, not a service row, not a genre row.
+  // A hidden service (Netflix, Disney+, Prime Video) is off the screen entirely: not the billboard, not a service row, not a genre row.
   const pool = rows.filter((r) => !isHiddenService(net.get(r.id)?.streamer))
   const eligible = pool.filter((r) => net.get(r.id)?.streamer)
   const newest = byAir(net)

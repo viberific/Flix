@@ -194,6 +194,17 @@ img.fade.in { opacity: 1; }
 .pill { flex: none; border: 1px solid var(--line); background: var(--surface); padding: 8px 18px; border-radius: 99px; font-weight: 600; font-size: 14px; color: var(--dim); transition: background .3s var(--ease), color .3s var(--ease), transform .3s var(--spring), border-color .3s; }
 .pill:active { transform: scale(.95); }
 .pill:hover { color: var(--fg); } .pill[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: transparent; transform: translateY(-1px); }
+/* Discover's filters: the same pill rail as the seasons and the settings, with a quiet caption beside each. The caption is
+   a fixed column so the genre rail and the order rail start on the same line instead of stepping in and out by its width. */
+.disc-f { display: flex; flex-direction: column; gap: 0; margin: 0 0 12px; }
+.disc-grp { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.disc-lb { flex: none; width: 54px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.disc-grp .pills { flex: 1 1 auto; min-width: 0; padding: 4px 0 8px; }
+.disc-grp .pill { padding: 6px 14px; font-size: 13px; }
+@media (max-width: 520px) { .disc-grp { flex-direction: column; align-items: stretch; gap: 0; } .disc-lb { width: auto; padding: 4px 0 0; } }
+html.tv .disc-grp .pill { padding: 10px 18px; font-size: 16px; }
+html.tv .disc-lb { font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { .disc-grp .pill { transition: none; } }
 .eps { display: grid; gap: 8px; }
 .ep { display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 14px 16px; min-height: 68px; background: var(--surface); border: 1px solid transparent; border-radius: var(--radius);
   transition: transform .3s var(--ease), background .25s, border-color .25s; position: relative; overflow: hidden; }
@@ -344,7 +355,7 @@ img.fade.in { opacity: 1; }
 .player.p-quiet .p-top { transform: translateY(-14px); }
 .player.p-quiet .p-ctl { transform: translateY(10px); }
 .player.p-quiet { cursor: none; }
-.player.p-quiet .p-top:has(.menu), .player.p-quiet .p-ctl:has(.menu),
+.player.p-quiet .p-top:has(.menu:not(.out)), .player.p-quiet .p-ctl:has(.menu:not(.out)),
 .player.p-quiet .p-top:focus-within, .player.p-quiet .p-ctl:focus-within { opacity: 1; transform: none; pointer-events: auto; }
 /* A television is always full screen already, so fill-the-screen is a phone's button. `html.tv` is the shared answer to
    "is this a set?" -- the same `isTv` (public/app.js:353) that already hands the TV its focus ring at line 481. */

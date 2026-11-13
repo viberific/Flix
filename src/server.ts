@@ -7,7 +7,7 @@ import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar, isChild, hasPassword } from './auth.ts'
-import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause, refreshRatings } from './ratings.ts'
+import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause, refreshRatings, startRatingSweeper } from './ratings.ts'
 import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
@@ -38,7 +38,7 @@ import { ROW_SIZE, curateHome } from './home.ts'
 import { finishedShows } from './finished.ts'
 import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
-import { ensureNet, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
+import { ensureNet, isBrowsableService, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
 import { holdersOf, keepFor, leavingSoonFor, letGoFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
@@ -207,7 +207,10 @@ app.get('/api/series', auth, async (req) => {
     const unsynced = query().filter((r) => !(read.get(r.id) as any).ok).slice(0, 5)
     await Promise.all(unsynced.map((r) => ensureSynced(r.id)))
   }
-  const rows = query().filter(isListed).slice(0, 100)
+  // Search is a browse surface like Discover: a show on Netflix, Disney+ or Prime Video does not come back here (see
+  // isBrowsableService). It opens and plays if it is already in My List or being watched, which is the person's own doing.
+  const net = netInfo()
+  const rows = query().filter(isListed).filter((r) => isBrowsableService(net.get(r.id)?.streamer)).slice(0, 100)
   rows.filter((r) => r.rating === 'Unrated' || r.score == null).forEach((r) => queueRating(r.id))
   return { series: rows }
 })
@@ -215,7 +218,9 @@ app.get('/api/series', auth, async (req) => {
 /**
  * The Discover area: the whole library, filtered and paged, instead of the handful of rows the home screen picked.
  *
- * Everything is a plain query parameter so a filtered view is an address of its own. The filtering and sorting happen in
+ * There is no service filter: which service a show is on stopped being a way anybody browses, and the three they watch in
+ * their own apps are not listed here at all (isBrowsableService in networks.ts). Genres come from the shows that can be
+ * listed, so a pill never leads to an empty grid. The filtering and sorting happen in
  * this process rather than in SQL because the library is a few hundred shows and a show's genres are a JSON list that the
  * rest of the app already parses one way (genresOf); writing a second interpretation in SQL is how the two views would
  * start disagreeing about what counts as a comedy.
@@ -230,21 +235,20 @@ app.get('/api/discover', auth, async (req) => {
       WHERE ${f.sql} GROUP BY series_id ORDER BY latest DESC LIMIT 3000`).all(...f.params) as any[])
     .map((r) => ({ ...r, genres: genresOf(r) }))
   const net = netInfo()
+  const browsable = rows.filter((r) => isBrowsableService(net.get(r.id)?.streamer))
   // A show watched all the way through does not come back here either: this is the same rule the home rows follow.
   const finished = finishedShows(req.user!.id)
   const term = String(q.q ?? '').trim().toLowerCase()
   // Trending first when there is trending data; popularity is the fallback, then newest. A show with neither still appears,
   // at the end, rather than being dropped from a page that claims to show the library.
   const heat = (id: number) => { const n = net.get(id); return n?.trending != null ? 1e6 - n.trending : (n?.popularity ?? 0) }
-  let list = rows.filter((r) => !finished.has(r.id) && (!term || String(r.name).toLowerCase().includes(term)))
+  let list = browsable.filter((r) => !finished.has(r.id) && (!term || String(r.name).toLowerCase().includes(term)))
   if (q.genre) list = list.filter((r) => r.genres.some((g: string) => g.toLowerCase() === String(q.genre).toLowerCase()))
-  if (q.service) list = list.filter((r) => (net.get(r.id)?.streamer ?? '') === q.service)
   list.sort(sort === 'new' ? (a, b) => b.latest - a.latest
     : sort === 'rating' ? (a, b) => (b.score ?? 0) - (a.score ?? 0) || b.latest - a.latest
     : (a, b) => heat(b.id) - heat(a.id) || b.latest - a.latest)
-  const genres = [...new Set(rows.flatMap((r) => r.genres.map((g: string) => String(g).trim())))].filter(Boolean).sort((a, b) => a.localeCompare(b))
-  const services = [...new Set(rows.map((r) => net.get(r.id)?.streamer).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b))
-  return { total: list.length, page, per, sort, genre: q.genre ?? null, service: q.service ?? null, genres, services, series: list.slice(page * per, page * per + per) }
+  const genres = [...new Set(browsable.flatMap((r) => r.genres.map((g: string) => String(g).trim())))].filter(Boolean).sort((a, b) => a.localeCompare(b))
+  return { total: list.length, page, per, sort, genre: q.genre ?? null, genres, series: list.slice(page * per, page * per + per) }
 })
 
 app.get('/api/series/:id', auth, async (req) => {
@@ -312,7 +316,7 @@ const genresOf = (r: any): string[] => { try { return (JSON.parse(r.genres ?? '[
 /**
  * Netflix-style home: your own rows first (My List, "Because you watched"), then what is trending and the newest shows from HBO,
  * Crave, Showcase, Disney+, Apple TV+ and Paramount+, then more of those under one genre each. Shows on a hidden service
- * (Netflix) are left off the discovery rows; see HIDDEN_STREAMERS in networks.ts. Discovery rows hold ten shows (see home.ts).
+ * (Netflix, Disney+, Prime Video) are left off the discovery rows; see HIDDEN_STREAMERS in networks.ts. Discovery rows hold ten shows (see home.ts).
  */
 app.get('/api/home', auth, async (req) => {
   const f = ratingClause(req.user)
@@ -1384,6 +1388,7 @@ export async function start() {
   }
   startCrawler()
   startNetworkCrawler()
+  startRatingSweeper() // the shows nobody has opened a page for get their score in the background, inside OMDb's daily cap
   await relocateDownloads() // point every torrent at the Downloads folder Flix is set to use now, without taking any out of the engine
   await recheckMissingFiles() // then let qBittorrent re-verify the ones whose files it cannot find there (a moved folder), nothing re-added or deleted
   startAutoDownloads()
