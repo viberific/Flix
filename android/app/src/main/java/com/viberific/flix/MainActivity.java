@@ -33,6 +33,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * Flix as an app: a full-screen WebView on the Flix server, so it is exactly the web app, with nothing to keep in step.
@@ -57,6 +58,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(BG);
         setContentView(root);
         immersive();
+        registerBack();
 
         String url = prefs().getString(KEY_URL, null);
         if (url == null) showSetup(null);
@@ -301,28 +303,62 @@ public class MainActivity extends Activity {
         return super.onKeyDown(code, e);
     }
 
-    @SuppressWarnings("deprecation")
-    @Override
-    public void onBackPressed() {
-        if (fullscreenView != null) { leaveFullscreen(); return; }
-        if (setup != null && web != null && prefs().getString(KEY_URL, null) != null) { root.removeView(setup); setup = null; web.requestFocus(); return; }
-        if (web != null) {
-            // The page gets Back first. A WebView never hands the Back key to the page as a key press, so with the
-            // captions list open Back went straight past it and out of the episode, leaving the player's bar to be
-            // cleared by opening the episode again. The player answers true when it used the press (it closed a list,
-            // or left for the show's page); anything else is the browser's ordinary back.
-            web.evaluateJavascript("(function(){try{return !!(window.__flixBack&&window.__flixBack())}catch(e){return false}})()", result -> {
-                if ("true".equals(result)) return;
-                if (web != null && web.canGoBack()) web.goBack();
-                else defaultBack();
-            });
-            return;
-        }
-        super.onBackPressed();
+    /**
+     * Android 13+ with predictive back turned on -- which targetSdk 36 (the Play build) makes the default on Android 16 --
+     * never calls onBackPressed: the system just closes the app. A registered callback is the only way to see the press
+     * there. On older targets the callback is not used and onBackPressed below runs instead; handleBack ignores a second
+     * call for the same press in case a device delivers both.
+     */
+    private Object backCallback;
+
+    private void registerBack() {
+        if (Build.VERSION.SDK_INT < 33 || backCallback != null) return;
+        android.window.OnBackInvokedCallback cb = this::handleBack;
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+        backCallback = cb;
     }
 
     @SuppressWarnings("deprecation")
-    private void defaultBack() { super.onBackPressed(); }
+    @Override
+    public void onBackPressed() { handleBack(); }
+
+    private long lastBack, exitArmedAt;
+
+    private void handleBack() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastBack < 150) return; // the same press arriving by both routes
+        lastBack = now;
+        if (fullscreenView != null) { leaveFullscreen(); return; }
+        if (setup != null && web != null && prefs().getString(KEY_URL, null) != null) { root.removeView(setup); setup = null; web.requestFocus(); return; }
+        if (web == null) { leaveApp(); return; }
+        // The page gets Back first. A WebView never hands the Back key to the page as a key press, so with the
+        // captions list open Back went straight past it and out of the episode, leaving the player's bar to be
+        // cleared by opening the episode again. The player answers true when it used the press (it closed a list,
+        // or left for the show's page); anything else is the browser's ordinary back.
+        web.evaluateJavascript("(function(){try{return !!(window.__flixBack&&window.__flixBack())}catch(e){return false}})()", result -> {
+            if ("true".equals(result) || web == null) return;
+            if (web.canGoBack()) { web.goBack(); return; }
+            // Nothing behind this page in the WebView's history. That happens more than it should: the WebView skips
+            // history entries a page added without a tap, which is how the web app's own "stay in the app" entries are
+            // made. So the app decides here instead of the history: anywhere but the home screen, Back goes home.
+            String url = web.getUrl();
+            String hash = url == null || url.indexOf('#') < 0 ? "" : url.substring(url.indexOf('#'));
+            if (!hash.isEmpty() && !hash.equals("#") && !hash.equals("#/")) {
+                web.evaluateJavascript("location.replace('#/')", null);
+                return;
+            }
+            // At home with nowhere further back: a second press within two seconds leaves, so one stray press never
+            // closes Flix but the app is not a trap either.
+            if (now - exitArmedAt < 2000) { leaveApp(); return; }
+            exitArmedAt = now;
+            Toast.makeText(this, "Press Back again to leave Flix", Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    /** Leave the way Android 12+ leaves a launcher app: to the background, so coming back opens Flix where it was. */
+    private void leaveApp() {
+        if (!moveTaskToBack(true)) finish();
+    }
 
     @Override
     protected void onSaveInstanceState(Bundle out) {
