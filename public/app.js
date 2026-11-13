@@ -115,6 +115,19 @@ function backdrop(el, banner, poster, still) {
 }
 
 /** Swap the page with a cross-fade when the browser supports View Transitions. */
+/**
+ * A page that is nothing but a message (an empty library, no search results) shows it in the middle of what is on screen
+ * under the header, not hanging just below whatever came above it. Measured, because what sits above it varies.
+ */
+function centerFills() {
+  for (const el of app.querySelectorAll('.empty.fill')) {
+    el.style.minHeight = ''
+    const top = el.getBoundingClientRect().top + scrollY, head = document.getElementById('top')?.offsetHeight ?? 0
+    el.style.minHeight = Math.max(200, Math.round(innerHeight + head - 2 * top)) + 'px'
+  }
+}
+addEventListener('resize', () => centerFills())
+
 async function swap(fn) {
   window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
   let ran = false
@@ -127,6 +140,7 @@ async function swap(fn) {
     clearTimeout(guard)
   }
   once()
+  centerFills()
   // A television gets no cross-fade (two snapshots of the whole screen), but a page that simply appears reads as a jolt:
   // the new one eases in on opacity alone, which the compositor does without repainting anything.
   if (isTv && !rmq.matches && app.animate) app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' })
@@ -256,9 +270,13 @@ function castTrack(player, ids) {
 }
 
 /* ---------- top bar ---------- */
+/** Set when typing in the search field opened the results page: the new header picks up the field where the old one left off. */
+let keepSearch = false
 function renderTop() {
   if (!me) { top.hidden = true; return }
   top.hidden = false
+  const typed = keepSearch ? $('#q') : null, typedAt = typed ? [typed.value, typed.selectionStart, typed.selectionEnd] : null
+  keepSearch = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
     <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
     <div class="hact">${me.cast && !isTv && !isCar ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
@@ -290,7 +308,10 @@ function renderTop() {
   }
   const q = $('#q'), sf = $('#sf')
   const cur = new URLSearchParams((location.hash.split('?')[1]) || '').get('q')
-  if (cur) q.value = cur
+  if (typedAt) { q.value = typedAt[0]; q.focus({ preventScroll: true }); try { q.setSelectionRange(typedAt[1], typedAt[2]) } catch { /* not a text field */ } }
+  // Letters typed while this page was on its way: search for all of them, not just the first.
+  if (typedAt && typedAt[0].trim() !== (cur ?? '')) queueMicrotask(() => q.oninput?.())
+  else if (cur) q.value = cur
   // In the car the header's logo, search and avatar are the car's own buttons (see window.__flixCar), so the search bar is
   // only on screen from the search button until it is left empty.
   if (isCar) { top.classList.toggle('car-find', !!cur); q.onblur = () => { if (!q.value.trim()) top.classList.remove('car-find') } }
@@ -303,11 +324,15 @@ function renderTop() {
     if (!/^#?\/?(\?|$)/.test(location.hash)) return
     history.replaceState(null, '', v ? '#/?q=' + encodeURIComponent(v) : '#/')
     if (v && $('#app [data-live]')?.dataset.live === view.key) return
-    view()
+    view(); centerFills()
   }
   q.oninput = () => {
     clearTimeout(liveT); clearTimeout(fullT)
     const v = q.value.trim(), mine = ++liveN
+    // Typing on any other page (a show, Settings) goes straight to the results, the way it does from Home: before this the
+    // field took the letters and nothing happened until Enter. It is a page of its own, so Back returns to where it started,
+    // and the field keeps focus, the caret and anything typed while the results page is being built (see renderTop).
+    if (v && !/^#?\/?(\?|$)/.test(location.hash)) { keepSearch = true; go('#/?q=' + encodeURIComponent(v)); return }
     liveT = setTimeout(async () => {
       if (!v) { const r = await homeView('').catch(() => null); if (r && mine === liveN) { show(r, v); window.scrollTo({ top: 0, behavior: 'instant' }) } return }
       const quick = await homeView(v, true).catch(() => null)
@@ -797,7 +822,7 @@ async function homeView(q, local = false) {
       const tiles = series.map(tile).join('')
       html += `<h2 class="sec" style="margin-top:0" data-live="${esc(key)}">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
         (series.length ? `<div class="grid">${again ? tiles.replaceAll('tile rise"', 'tile"') : tiles}</div>`
-          : `<div class="empty">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
+          : `<div class="empty fill">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
     }
     else {
       for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
@@ -809,7 +834,7 @@ async function homeView(q, local = false) {
           <div class="disc-grp"><span class="disc-lb" id="discslb">Order</span><div class="pills" role="tablist" aria-labelledby="discslb" id="discsort">${DISCOVER_SORTS.map(([v, l]) => discPill(l, v)).join('')}</div></div>
         </div><div class="grid" id="discgrid"></div>
         <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div></section>`
-      if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
+      if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty fill">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
     app.innerHTML = html
@@ -829,7 +854,7 @@ async function homeView(q, local = false) {
           if (append) dgrid.insertAdjacentHTML('beforeend', tiles)
           else dgrid.innerHTML = tiles || `<div class="empty">${dgenre ? 'No shows in that genre yet.' : 'No shows in the library yet.'}</div>`
           // An empty library has nothing to filter: the page's own "Nothing here yet" says why, so the filters are not shown.
-          const disc = $('#disc'); if (disc && !append) disc.hidden = !d.total && !dgenre
+          const disc = $('#disc'); if (disc && !append && disc.hidden !== (disc.hidden = !d.total && !dgenre)) centerFills()
           // The genres are filled once, from the first answer, so choosing one cannot shrink the choices to itself.
           if (!genresFilled && d.genres?.length) { genresFilled = true; dg.insertAdjacentHTML('beforeend', d.genres.map((g) => discPill(g, g)).join('')); mark(dg, dgenre) }
           dcount.textContent = d.total ? `${d.total} show${d.total === 1 ? '' : 's'}` : ''
@@ -3791,7 +3816,7 @@ async function downloadsView(offline = false) {
           <div class="ep dl-item" data-id="${esc(m.id)}" role="button" tabindex="0"><span class="thumb"><img class="fade" src="${dl.imgUrl(m.id)}" alt="" onload="this.classList.add('in')" onerror="this.remove()"><span class="play">${I.play}</span>${m.position > 30 && !m.watched ? `<span class="bar"><b style="width:${pct(m.position, m.duration)}%"></b></span>` : ''}</span>
             <span class="etxt"><span class="en">${esc(m.label)}${m.episodeTitle ? ' · ' + esc(m.episodeTitle) : ''}</span><span class="es">${mb(m.size)} · 1080p or lower${m.watched ? ' · Watched' : ''}</span></span>
             <span class="eside"><button class="btn dl-rm" data-id="${esc(m.id)}" aria-label="Delete from this device">Delete</button></span></div>`).join('')}</div>`).join('')
-          : `<div class="empty">Nothing is downloaded to this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap <b>Download</b>, or the ${I.dl.replace('<svg', '<svg class="inl"')} next to an episode.${dl.active.size ? ` ${dl.active.size === 1 ? 'One episode is' : dl.active.size + ' episodes are'} on the way.` : ''}</span></div>`}</div>`
+          : `<div class="empty fill">Nothing is downloaded to this device yet.<br><span class="dim" style="font-size:14px">Open a show and tap <b>Download</b>, or the ${I.dl.replace('<svg', '<svg class="inl"')} next to an episode.${dl.active.size ? ` ${dl.active.size === 1 ? 'One episode is' : dl.active.size + ' episodes are'} on the way.` : ''}</span></div>`}</div>`
       app.querySelectorAll('.dl-item').forEach((el) => {
         const open = () => go('#/offplay/' + el.dataset.id)
         el.onclick = open; el.onkeydown = (e) => { if (e.key === 'Enter' && e.target === el) open() }
@@ -3844,7 +3869,7 @@ async function offlinePlayView(id) {
     v.ontimeupdate = () => { if (Date.now() - last > 10000) { last = Date.now(); save(false) } }
     v.onpause = () => save(false)
     v.onended = () => { save(true); go('#/downloads') }
-    v.onerror = () => { app.innerHTML = `<div class="pad page-top"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
+    v.onerror = () => { app.innerHTML = `<div class="pad page-msg"><div class="empty err">This download can’t be played any more. Delete it and download it again.<br><br><a class="btn" href="#/downloads">Back</a></div></div>` }
     // The remote works the saved episode the way it works the streamed one: back leaves, left and right skip ten seconds,
     // OK and the media keys play and pause.
     const key = (e) => {
@@ -4228,13 +4253,15 @@ async function route() {
     else render = await homeView(new URLSearchParams(query).get('q'))
     clearTimeout(slow)
     if (token !== navToken) return
+    // Typing went on while these results were fetched: live search has already drawn (or is drawing) the newer ones.
+    if (!parts.length && query && location.hash !== '#' + path + '?' + query) return
     await swap(render)
     if (arrived && viewState.has(location.hash) && parts[0] !== 'play') restoreView(viewState.get(location.hash))
     if (me.is_admin && parts[0] !== 'play') healthBanner()
   } catch (e) {
     clearTimeout(slow)
     if (token === navToken) {
-      app.innerHTML = `<div class="pad page-top"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
+      app.innerHTML = `<div class="pad page-msg"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
       $('#retry').onclick = () => route()
       if (isTv) $('#retry').focus({ preventScroll: true })
     }
