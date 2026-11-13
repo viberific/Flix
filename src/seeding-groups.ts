@@ -12,9 +12,10 @@ import { config } from './config.ts'
  *
  * The deleting rules are here too, in one place the route and the page both use:
  *  - a torrent left the seeding goal short is never in the view at all, so it can never be picked;
- *  - a season or a show is only offered for removal when every torrent under it has finished seeding, and its removal
- *    names what is still seeding instead;
- *  - nothing is ever deleted silently: the route refuses the whole group when any member fails.
+ *  - the Remove beside a season or a show takes only the episodes everybody has watched, and leaves the rest;
+ *  - Delete show takes every episode, watched or not, but never one short of BTN's seeding goal: those are marked to go
+ *    the moment they reach it;
+ *  - nothing is ever deleted silently: the route says what it removed, what it queued and what it left.
  */
 
 /** The numbers retention.ts reports for one torrent, against what BTN asks. */
@@ -70,6 +71,9 @@ export interface FinishedSeason {
   size: number
   /** True when every torrent in this season has finished seeding, and there is at least one. */
   finished: boolean
+  /** Finished episodes everybody has watched: what "Remove watched" takes. */
+  watched: number
+  watchedSize: number
 }
 
 export interface FinishedShow {
@@ -84,6 +88,8 @@ export interface FinishedShow {
   episodes: number
   held: string[]
   finished: boolean
+  watched: number
+  watchedSize: number
 }
 
 /** A torrent is finished when the engine says it holds the whole thing and BTN's seeding goal is met on it. */
@@ -141,11 +147,12 @@ export function groupFinished(rows: FinishedRow[]): FinishedShow[] {
     for (const [season, list] of [...show.seasons.entries()].sort((a, b) => seasonOrder(a[0], b[0]))) {
       const items: FinishedItem[] = []
       const still: StillItem[] = []
-      let size = 0
+      let size = 0, watched = 0, watchedSize = 0
       for (const r of list) {
         if (isFinished(r)) {
           items.push({ torrentId: r.torrent_id, label: episodeLabel(r), size: r.size ?? 0, ratio: r.ratio ?? 0, seedHours: r.seedHours ?? 0, heldFor: r.notWatched ?? [] })
           size += r.size ?? 0
+          if (!(r.notWatched ?? []).length) { watched++; watchedSize += r.size ?? 0 }
           for (const n of r.notWatched ?? []) held.add(n)
         } else {
           const s = stillItem(r)
@@ -155,40 +162,68 @@ export function groupFinished(rows: FinishedRow[]): FinishedShow[] {
       }
       if (!items.length) continue // a season with nothing finished has nothing to show: only what is still seeding, listed above
       items.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }))
-      seasons.push({ season, items, still, size, finished: still.length === 0 })
+      seasons.push({ season, items, still, size, finished: still.length === 0, watched, watchedSize })
       showSize += size
       episodes += items.length
     }
     if (!episodes) continue // nothing of this show has finished seeding: it belongs to the "still seeding" list, not here
-    out.push({ seriesId: show.seriesId, series: show.series, poster: show.poster, seasons, still: showStill, size: showSize, episodes, held: [...held].sort(), finished: showStill.length === 0 })
+    out.push({ seriesId: show.seriesId, series: show.series, poster: show.poster, seasons, still: showStill, size: showSize, episodes, held: [...held].sort(), finished: showStill.length === 0,
+      watched: seasons.reduce((n, x) => n + x.watched, 0), watchedSize: seasons.reduce((n, x) => n + x.watchedSize, 0) })
   }
   return out.sort((a, b) => a.series.localeCompare(b.series))
 }
 
 export interface GroupTarget { seriesId: number | null; season?: number | null }
 
+/**
+ * What a group removal takes.
+ *  - 'watched' (the Remove beside a show or a season): only the episodes everybody in the house has finished, that have
+ *    met BTN's seeding goal and that nobody is partway through. Everything else under it is left alone and counted.
+ *  - 'all' (Delete show, behind a confirmation dialog): every episode, watched or not. What has met the seeding goal goes
+ *    now; what has not is marked to go the moment it does, because BTN's seeding goal is never broken.
+ */
+export type GroupMode = 'watched' | 'all'
+
+/** A member of a group as the route reads it: the engine's numbers plus who has not finished it and who is partway. */
+export interface GroupRow extends FinishedRow { watching?: string[] }
+
 export interface GroupPlan {
   ok: boolean
-  /** Every torrent the removal would take, when it is allowed. */
+  /** Every torrent removed now. */
   torrentIds: number[]
+  /** Torrents still short of BTN's seeding goal that a Delete show marks to go as soon as they reach it. */
+  queued: number[]
+  /** What is left alone, and why: still seeding, not watched by everyone yet, or being watched. */
+  kept: StillItem[]
   still: StillItem[]
-  /** The line shown when it is refused: exactly what is still seeding, so it is never a bare "no". */
+  /** The line shown when nothing can be done: exactly why, so it is never a bare "no". */
   why: string
 }
 
 /**
- * Whether a whole show, or one season of one, can be removed. Allowed only when every torrent under it is on disk and
- * past BTN's seeding goal: one still seeding refuses the group, and says which. The route applies the same rule, so a
- * request made by hand cannot get past it either.
+ * What a removal of a whole show, or one season of one, takes now, what it leaves and what it queues. The route applies
+ * exactly this, so a request made by hand cannot get past it: BTN's seeding goal is never broken by either mode.
  */
-export function groupDeletePlan(rows: FinishedRow[], target: GroupTarget): GroupPlan {
+export function groupDeletePlan(rows: GroupRow[], target: GroupTarget, mode: GroupMode = 'watched'): GroupPlan {
   const members = rows.filter((r) => r.state === 'active' && !r.missing && r.series_id === target.seriesId
     && (target.season == null || r.season === target.season))
-  if (!members.length) return { ok: false, torrentIds: [], still: [], why: 'Flix is not holding anything for this show' }
+  const none = { torrentIds: [], queued: [], kept: [], still: [] }
+  if (!members.length) return { ok: false, ...none, why: 'Flix is not holding anything for this show' }
   const still = members.filter((r) => !isFinished(r)).map(stillItem)
-  if (still.length) {
-    const what = target.season == null ? 'this show' : `Season ${target.season}`
-    return { ok: false, torrentIds: [], still, why: `${what} cannot be removed as one: still seeding ${still.map((s) => `${s.label} (${s.note})`).join(', ')}` }
+  const what = target.season == null ? 'this show' : `Season ${target.season}`
+  if (mode === 'all') {
+    const now = members.filter(isFinished).map((r) => r.torrent_id)
+    const queued = members.filter((r) => !isFinished(r)).map((r) => r.torrent_id)
+    return { ok: true, torrentIds: now, queued, kept: still, still, why: '' }
   }
-  return { ok: true, torrentIds: members.map((r) => r.torrent_id), still: [], why: '' }
+  const torrentIds: number[] = [], kept: StillItem[] = []
+  for (const r of members) {
+    if (!isFinished(r)) kept.push(stillItem(r))
+    else if (r.watching?.length) kept.push({ torrentId: r.torrent_id, label: episodeLabel(r), note: `${r.watching.join(', ')} is partway through it` })
+    else if (r.notWatched?.length) kept.push({ torrentId: r.torrent_id, label: episodeLabel(r), note: `not watched yet by ${r.notWatched.join(', ')}` })
+    else torrentIds.push(r.torrent_id)
+  }
+  if (!torrentIds.length)
+    return { ok: false, ...none, kept, still, why: `Nothing in ${what} has been watched by everyone yet: ${kept.map((k) => `${k.label} (${k.note})`).join(', ')}` }
+  return { ok: true, torrentIds, queued: [], kept, still, why: '' }
 }

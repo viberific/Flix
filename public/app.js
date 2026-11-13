@@ -544,6 +544,23 @@ function askPin(name, error = '', locked = false) {
   })
 }
 
+/** A yes/no box for something that cannot be undone. Resolves true only on the confirming button. Uses the PIN box's
+    frame, so the remote's focus stays inside it and Android's Back closes it. */
+function askConfirm({ title, body, confirm }) {
+  return new Promise((done) => {
+    const m = document.createElement('div'); m.className = 'pin-modal'
+    m.innerHTML = `<div class="pin-box confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="cft"><b id="cft">${esc(title)}</b><div class="confirm-body">${body}</div>
+      <div class="row-form"><button type="button" class="btn" id="pc">Cancel</button><button type="button" class="btn danger" id="pok">${esc(confirm)}</button></div></div>`
+    document.body.appendChild(m)
+    const end = (v) => { m.remove(); done(v) }
+    $('#pc', m).onclick = () => end(false)
+    $('#pok', m).onclick = () => end(true)
+    m.addEventListener('click', (e) => { if (e.target === m) end(false) })
+    m.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'BrowserBack' || e.key === 'GoBack') { e.preventDefault(); end(false) } })
+    $('#pc', m).focus()
+  })
+}
+
 function joinView(token) {
   return () => {
     top.hidden = true
@@ -3282,29 +3299,30 @@ function downloadsPanel(data, root) {
     const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`)
     const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
     const chev = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
-    // The group Remove is small and quiet until it is pressed; the confirming press is the only loud thing here.
-    const gdel = (label, g, season, n, size) => `<button class="rm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}" aria-label="${label}: ${eps(n)}, ${gb(size)}">${trash}<span>${label}</span></button>`
-    const stillNote = (list) => `<span class="fg-still" title="${esc(list.map((x) => x.label + (x.note ? ` (${x.note})` : '')).join(', '))} still seeding">${list.length === 1 ? esc(list[0].label) : list.length} still seeding</span>`
-    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b>${it.heldFor.length ? `<span class="dim sm">Not watched yet by ${esc(it.heldFor.join(', '))}</span>` : ''}</span>
-      <span class="fg-size">${gb(it.size)}</span><button class="rm-btn icon" data-rm="${it.torrentId}" aria-label="Remove ${esc(it.label)}">${trash}</button></li>`
+    // Show > season > episode, one line each. The Remove beside a show or a season takes only what everybody has watched
+    // (and that has met BTN's seeding goal); Delete show takes the lot, behind a confirmation dialog.
+    const gdel = (g, season, n, size, label) => `<button class="rm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}" title="${label}: ${eps(n)}, ${gb(size)}" aria-label="${label}: ${eps(n)}, ${gb(size)}">${trash}<span>${label}</span></button>`
+    const meta = (parts) => parts.filter(Boolean).join(' · ')
+    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b><span class="dim sm">${it.heldFor.length ? `Not watched yet by ${esc(it.heldFor.join(', '))}` : 'Watched'}</span></span>
+      <span class="fg-size">${gb(it.size)}</span><button class="rm-btn icon" data-rm="${it.torrentId}" title="Remove ${esc(it.label)}" aria-label="Remove ${esc(it.label)}">${trash}</button></li>`
     const seasonRow = (g, s) => {
       const k = gKey(g, s.season), open = openSeasons.has(k)
       return `<li class="fg-season${open ? ' open' : ''}"><div class="fg-head">
-          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="season" aria-expanded="${open}">${chev}<span class="fg-txt"><b>${s.season == null ? 'Specials' : 'Season ' + s.season}</b><span class="dim sm">${eps(s.items.length)} · ${gb(s.size)}</span></span></button>
-          <span class="fg-act">${s.finished ? gdel('Remove season', g, s.season, s.items.length, s.size) : stillNote(s.still)}</span></div>
+          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="season" aria-expanded="${open}">${chev}<span class="fg-txt"><b>${s.season == null ? 'Specials' : 'Season ' + s.season}</b><span class="dim sm">${meta([gb(s.size), eps(s.items.length), `${s.watched} watched`, s.still.length ? `${s.still.length} still seeding` : ''])}</span></span></button>
+          <span class="fg-act">${s.watched ? gdel(g, s.season, s.watched, s.watchedSize, 'Remove watched') : ''}</span></div>
         ${open ? `<ul class="fg-eps">${s.items.map(epRow).join('')}</ul>` : ''}</li>`
     }
     const showRow = (g) => {
       const k = gKey(g, null), open = openShows.has(k)
-      return `<li class="fg-show${open ? ' open' : ''}"><div class="fg-head">
-          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="show" aria-expanded="${open}">${chev}${tposter(g.seriesId)}<span class="fg-txt"><b>${esc(g.series)}</b><span class="dim sm">${g.seasons.length} season${g.seasons.length === 1 ? '' : 's'} · ${eps(g.episodes)} · ${gb(g.size)}</span></span></button>
-          <span class="fg-act">${g.finished ? gdel('Remove show', g, null, g.episodes, g.size) : stillNote(g.still)}</span></div>
+      return `<li class="fg-show${open ? ' open' : ''}"><div class="fg-head fg-show-head">
+          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="show" aria-expanded="${open}">${chev}${tposter(g.seriesId)}<span class="fg-txt"><b>${esc(g.series)}</b><span class="dim sm">${meta([gb(g.size), `${g.seasons.length} season${g.seasons.length === 1 ? '' : 's'}`, eps(g.episodes), `${g.watched} watched`])}</span>${g.still.length ? `<span class="dim sm">${g.still.length} more still seeding</span>` : ''}</span></button>
+          <span class="fg-act">${g.watched ? gdel(g, null, g.watched, g.watchedSize, 'Remove watched') : ''}<button class="rm-btn danger-o" data-gall="${g.seriesId}" data-name="${esc(g.series)}" data-count="${g.episodes}" data-still="${g.still.length}" data-size="${gb(g.size)}" data-unwatched="${g.episodes - g.watched}">${trash}<span>Delete show</span></button></span></div>
         ${open ? `<ul class="fg-seasons">${g.seasons.map((s) => seasonRow(g, s)).join('')}</ul>` : ''}</li>`
     }
     const pressure = disk && state[0] !== 'ok'
       ? `<p class="dim sm" style="margin:0 0 8px;max-width:66ch">${pct}% is free, so new shows are refused below ${d.minFreePct}% and nothing is fetched ahead of time below ${d.autoPausePct}%. Removing everything under “Finished seeding” frees ${gb(groups.reduce((s, g) => s + g.size, 0))}.</p>` : ''
     const finishedView = `<div class="sub-h">Finished seeding</div>${pressure}
-      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${groups.length ? 'Shows whose downloads have finished seeding, by season. Removing one takes its torrents out of the download engine and deletes their files, as removing a single episode does. A whole show or season can be removed only when every episode in it has finished seeding; anything still seeding is named instead, and never removed.' : 'Nothing has finished seeding yet. Downloads appear here once BTN’s seeding goal is met on them.'}</p>
+      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${groups.length ? 'Shows whose downloads have finished seeding: open a show for its seasons, and a season for its episodes. <b>Remove watched</b> deletes only the episodes everyone has watched. <b>Delete show</b> deletes every episode, watched or not, after you confirm; anything still owed to BTN goes as soon as its seeding goal is met.' : 'Nothing has finished seeding yet. Downloads appear here once BTN’s seeding goal is met on them.'}</p>
       ${groups.length ? `<ul class="fg">${groups.map(showRow).join('')}</ul>` : ''}`
     const space = `${finishedView}
       ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}`
@@ -3355,23 +3373,37 @@ function downloadsPanel(data, root) {
     try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
   }
   /**
-   * Removing a whole season or a whole show. The second press says how many episodes and how much space, because this is
-   * the one action here that can take more than the row it sits on. The server refuses the group unless every episode in
-   * it has finished seeding and nobody is watching any of them, and says which one stopped it.
+   * Remove watched, beside a show or a season: only the episodes everyone has watched. The second press says how many and
+   * how much space; the server leaves anything not watched by everyone, still seeding or being watched, and says so.
    */
   async function onGroupRemove(b) {
     const n = Number(b.dataset.count) || 0, size = b.dataset.size || ''
     if (b.dataset.sure !== '1') {
       const was = b.innerHTML
-      b.dataset.sure = '1'; b.innerHTML = `<span>Confirm</span><span class="rm-size"> · ${size}</span>`; b.title = `Removes ${n} episode${n === 1 ? '' : 's'} (${size}). Press again to confirm.`; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.title = ''; b.classList.remove('danger') } }, 6000)
+      b.dataset.sure = '1'; b.innerHTML = `<span>Remove ${n}?</span><span class="rm-size"> · ${size}</span>`; b.classList.add('danger')
+      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 6000)
       return
     }
     try {
-      const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gdel), season: b.dataset.season === '' ? null : Number(b.dataset.season) })
-      flashNote(`Removed ${r.removed} episode${r.removed === 1 ? '' : 's'}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
+      const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gdel), season: b.dataset.season === '' ? null : Number(b.dataset.season), mode: 'watched' })
+      flashNote(`Removed ${r.removed} watched episode${r.removed === 1 ? '' : 's'}${r.kept?.length ? `; kept ${r.kept.length} not watched by everyone yet` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
       draw(await api('/api/admin/downloads')); loadChart()
     } catch (e) { b.textContent = 'Nothing removed'; b.disabled = true; flashNote(e.message) }
+  }
+  /** Delete show: everything of it, watched or not, once the dialog is confirmed. */
+  async function onShowDelete(b) {
+    const n = Number(b.dataset.count) || 0, still = Number(b.dataset.still) || 0, unwatched = Number(b.dataset.unwatched) || 0
+    const ok = await askConfirm({
+      title: `Delete ${b.dataset.name}?`,
+      body: `<p>This deletes all ${eps(n)} (${esc(b.dataset.size)}) from the server${unwatched ? `, including ${unwatched} that not everyone has watched yet` : ''}. Anyone who wants them later will have to download them again.</p>${still ? `<p class="dim">${eps(still)} still ${still === 1 ? 'owes' : 'owe'} BTN seeding time, so ${still === 1 ? 'it is' : 'they are'} deleted automatically as soon as the seeding goal is met.</p>` : ''}`,
+      confirm: 'Delete show',
+    })
+    if (!ok) { b.focus({ preventScroll: true }); return }
+    try {
+      const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gall), season: null, mode: 'all' })
+      flashNote(`Deleted ${r.removed} episode${r.removed === 1 ? '' : 's'}${r.queued ? `; ${r.queued} more go${r.queued === 1 ? 'es' : ''} once seeded` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
+      draw(await api('/api/admin/downloads')); loadChart()
+    } catch (e) { flashNote(e.message) }
   }
   /** Opening a show or a season. Kept in this page rather than the element, so a refresh does not close what is open. */
   function onToggle(b) {
@@ -3385,6 +3417,7 @@ function downloadsPanel(data, root) {
     if (!el) return
     el.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => onRemove(b) })
     el.querySelectorAll('[data-gdel]').forEach((b) => { b.onclick = () => onGroupRemove(b) })
+    el.querySelectorAll('[data-gall]').forEach((b) => { b.onclick = () => onShowDelete(b) })
     el.querySelectorAll('[data-gexp]').forEach((b) => { b.onclick = () => onToggle(b) })
     el.querySelectorAll('[data-ws]').forEach((b) => { b.onclick = async () => {
       try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { flashNote(e.message) }
