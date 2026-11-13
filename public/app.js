@@ -3229,33 +3229,33 @@ function downloadsPanel(data, root) {
     const groups = d.finished ?? []
     const eps = (n) => `${n} episode${n === 1 ? '' : 's'}`
     const gKey = (g, season) => `${g.seriesId ?? g.series}|${season == null ? '' : season}`
-    const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy">`)
-    const chev = (open) => `<span class="chev" aria-hidden="true">${open ? '▾' : '▸'}</span>`
-    const gdel = (label, g, season, n, size) => `<button class="btn sm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}">${label}</button>`
-    const epRow = (it) => `<li class="trow tgrp eps"><div class="tgrp-body">${tposter(null)}<span class="tgrp-txt"><b>${esc(it.label)}</b>
-        <span class="dim sm">Finished seeding${it.heldFor.length ? ` · not watched yet by ${esc(it.heldFor.join(', '))}` : ''}</span></span></div>
-      <span class="size">${gb(it.size)}</span><span class="tacts"><button class="btn sm-btn" data-rm="${it.torrentId}">Remove</button></span></li>`
+    const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`)
+    const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
+    const chev = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
+    // The group Remove is small and quiet until it is pressed; the confirming press is the only loud thing here.
+    const gdel = (label, g, season, n, size) => `<button class="rm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}" aria-label="${label}: ${eps(n)}, ${gb(size)}">${trash}<span>${label}</span></button>`
+    const stillNote = (list) => `<span class="fg-still" title="${esc(list.map((x) => x.label + (x.note ? ` (${x.note})` : '')).join(', '))} still seeding">${list.length === 1 ? esc(list[0].label) : list.length} still seeding</span>`
+    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b>${it.heldFor.length ? `<span class="dim sm">Not watched yet by ${esc(it.heldFor.join(', '))}</span>` : ''}</span>
+      <span class="fg-size">${gb(it.size)}</span><button class="rm-btn icon" data-rm="${it.torrentId}" aria-label="Remove ${esc(it.label)}">${trash}</button></li>`
     const seasonRow = (g, s) => {
       const k = gKey(g, s.season), open = openSeasons.has(k)
-      const kids = open ? `<ul class="trows tnest">${s.items.map(epRow).join('')}</ul>` : ''
-      return `<li class="trow tgrp sub"><button class="tgrp-main" data-gexp="${esc(k)}" data-level="season" aria-expanded="${open}">${tposter(null)}
-          <span class="tgrp-txt"><b>${s.season == null ? 'Specials' : 'Season ' + s.season}</b><span class="dim sm">${eps(s.items.length)} · ${gb(s.size)}</span></span>${chev(open)}</button>
-        <span class="size">${gb(s.size)}</span>
-        <span class="tacts">${s.finished ? gdel('Remove season', g, s.season, s.items.length, s.size) : `<span class="dim sm">${esc(s.still.map((x) => x.label).join(', '))} still seeding</span>`}</span>${kids}</li>`
+      return `<li class="fg-season${open ? ' open' : ''}"><div class="fg-head">
+          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="season" aria-expanded="${open}">${chev}<span class="fg-txt"><b>${s.season == null ? 'Specials' : 'Season ' + s.season}</b><span class="dim sm">${eps(s.items.length)} · ${gb(s.size)}</span></span></button>
+          <span class="fg-act">${s.finished ? gdel('Remove season', g, s.season, s.items.length, s.size) : stillNote(s.still)}</span></div>
+        ${open ? `<ul class="fg-eps">${s.items.map(epRow).join('')}</ul>` : ''}</li>`
     }
     const showRow = (g) => {
       const k = gKey(g, null), open = openShows.has(k)
-      const kids = open ? `<ul class="trows tnest">${g.seasons.map((s) => seasonRow(g, s)).join('')}</ul>` : ''
-      return `<li class="trow tgrp"><button class="tgrp-main" data-gexp="${esc(k)}" data-level="show" aria-expanded="${open}">${tposter(g.seriesId)}
-          <span class="tgrp-txt"><b>${esc(g.series)}</b><span class="dim sm">${g.seasons.length} season${g.seasons.length === 1 ? '' : 's'} · ${eps(g.episodes)} finished · ${gb(g.size)}</span></span>${chev(open)}</button>
-        <span class="size">${gb(g.size)}</span>
-        <span class="tacts">${g.finished ? gdel('Remove show', g, null, g.episodes, g.size) : `<span class="dim sm">${g.still.length} still seeding</span>`}</span>${kids}</li>`
+      return `<li class="fg-show${open ? ' open' : ''}"><div class="fg-head">
+          <button class="fg-toggle" data-gexp="${esc(k)}" data-level="show" aria-expanded="${open}">${chev}${tposter(g.seriesId)}<span class="fg-txt"><b>${esc(g.series)}</b><span class="dim sm">${g.seasons.length} season${g.seasons.length === 1 ? '' : 's'} · ${eps(g.episodes)} · ${gb(g.size)}</span></span></button>
+          <span class="fg-act">${g.finished ? gdel('Remove show', g, null, g.episodes, g.size) : stillNote(g.still)}</span></div>
+        ${open ? `<ul class="fg-seasons">${g.seasons.map((s) => seasonRow(g, s)).join('')}</ul>` : ''}</li>`
     }
     const pressure = disk && state[0] !== 'ok'
       ? `<p class="dim sm" style="margin:0 0 8px;max-width:66ch">${pct}% is free, so new shows are refused below ${d.minFreePct}% and nothing is fetched ahead of time below ${d.autoPausePct}%. Removing everything under “Finished seeding” frees ${gb(groups.reduce((s, g) => s + g.size, 0))}.</p>` : ''
     const finishedView = `<div class="sub-h">Finished seeding</div>${pressure}
       <p class="dim sm" style="margin:0 0 8px;max-width:66ch">${groups.length ? 'Shows whose downloads have finished seeding, by season. Removing one takes its torrents out of the download engine and deletes their files, as removing a single episode does. A whole show or season can be removed only when every episode in it has finished seeding; anything still seeding is named instead, and never removed.' : 'Nothing has finished seeding yet. Downloads appear here once BTN’s seeding goal is met on them.'}</p>
-      ${groups.length ? `<ul class="trows tgroups">${groups.map(showRow).join('')}</ul>` : ''}`
+      ${groups.length ? `<ul class="fg">${groups.map(showRow).join('')}</ul>` : ''}`
     const space = `${finishedView}
       ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}`
     $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
@@ -3296,9 +3296,10 @@ function downloadsPanel(data, root) {
   async function onRemove(b) {
     // Deleting a download is not undone by anything, so a second press confirms it, as everywhere else in Settings.
     if (b.dataset.sure !== '1') {
-      const was = b.textContent
-      b.dataset.sure = '1'; b.textContent = 'Press again to remove'; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = was; b.classList.remove('danger') } }, 4000)
+      const was = b.innerHTML
+      b.dataset.sure = '1'; b.classList.add('danger')
+      if (b.classList.contains('rm-btn')) b.innerHTML = '<span>Remove?</span>'; else b.textContent = 'Press again to remove'
+      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 4000)
       return
     }
     try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
@@ -3311,9 +3312,9 @@ function downloadsPanel(data, root) {
   async function onGroupRemove(b) {
     const n = Number(b.dataset.count) || 0, size = b.dataset.size || ''
     if (b.dataset.sure !== '1') {
-      const was = b.textContent
-      b.dataset.sure = '1'; b.textContent = `Press again: ${n} episode${n === 1 ? '' : 's'}, ${size}`; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = was; b.classList.remove('danger') } }, 6000)
+      const was = b.innerHTML
+      b.dataset.sure = '1'; b.innerHTML = `<span>Confirm</span><span class="rm-size"> · ${size}</span>`; b.title = `Removes ${n} episode${n === 1 ? '' : 's'} (${size}). Press again to confirm.`; b.classList.add('danger')
+      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.title = ''; b.classList.remove('danger') } }, 6000)
       return
     }
     try {
