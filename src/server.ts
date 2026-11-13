@@ -43,7 +43,7 @@ import { ensureNet, isBrowsableService, isHiddenService, netInfo, startNetworkCr
 import { tasteOf, tasteSort } from './taste.ts'
 import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
 import { holdersOf, keepFor, leavingSoonFor, letGoFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
-import { episodeLabel, groupDeletePlan, groupFinished, seedNote, type FinishedRow } from './seeding-groups.ts'
+import { episodeLabel, groupDeletePlan, groupFinished, seedNote, type GroupRow } from './seeding-groups.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
@@ -1213,16 +1213,17 @@ app.delete('/api/admin/downloads/:id', admin, async (req) => {
 /**
  * Remove a whole show, or one season of one, in a single action -- the point of grouping the finished-seeding view.
  *
- * Every rule the one-at-a-time removal follows is applied to every member before anything is touched, and the group is
- * refused as a whole when any member fails, so a press meant for "all finished" can never take something still seeding:
- * the engine must be readable for each one, each must hold the whole thing with BTN's seeding goal met, and nobody may be
- * partway through any of them. The removal itself is removeDownload(), the same call the single delete makes, so torrents
- * and files leave the same way and the state is recorded the same way. Refusals name what is still seeding.
+ * mode 'watched' (the default, the Remove beside a show or season) takes only the episodes everybody has finished, that
+ * have met BTN's seeding goal and that nobody is partway through, and leaves the rest. mode 'all' (Delete show, behind a
+ * confirmation dialog) takes every episode, watched or not; any still short of the seeding goal is marked to go the moment
+ * it reaches it, because that goal is never broken. The engine must be readable for every member before anything is
+ * touched (fail closed), and the removal itself is removeDownload(), the same call the single delete makes.
  */
 app.post('/api/admin/downloads/group-delete', admin, async (req) => {
   const b = (req.body ?? {}) as any
   const seriesId = Number(b.seriesId)
   const season = b.season == null || b.season === '' ? null : Number(b.season)
+  const mode = b.mode === 'all' ? 'all' : 'watched'
   if (!Number.isInteger(seriesId)) throw Object.assign(new Error('Which show? No show was given'), { statusCode: 400 })
   if (season !== null && !Number.isInteger(season)) throw Object.assign(new Error('Which season? That season is not a number'), { statusCode: 400 })
   const rows = db.prepare(`SELECT d.torrent_id, d.info_hash, r.series, r.series_id, r.season, r.episode, r.episode_end, r.label, r.is_pack
@@ -1230,35 +1231,36 @@ app.post('/api/admin/downloads/group-delete', admin, async (req) => {
     WHERE d.state = 'active' AND r.series_id = ?${season == null ? '' : ' AND r.season = ?'}`).all(seriesId, ...(season == null ? [] : [season])) as any[]
   if (!rows.length) throw Object.assign(new Error('Flix is not holding anything for this show any more'), { statusCode: 404 })
   // Read every member from the engine first. Fail closed: a member Flix cannot see cannot be proved to have met the goal.
-  const live: FinishedRow[] = []
+  const live: GroupRow[] = []
   for (const r of rows) {
     const t = await engine.info(r.info_hash).catch((e: any) => {
       console.warn(`[admin] could not read engine state for ${r.info_hash} (${e?.message ?? e}); refusing group removal`)
       return null
     })
     if (!t) throw Object.assign(new Error(`Could not read ${episodeLabel(r)} from the download engine, so its BTN seeding requirement cannot be confirmed; nothing was removed`), { statusCode: 409 })
-    const seed = seedStatus(t)
+    const k = whyKept(t, r.torrent_id)
     live.push({ torrent_id: r.torrent_id, series_id: r.series_id, series: r.series, season: r.season, episode: r.episode, episode_end: r.episode_end, is_pack: r.is_pack,
-      label: r.label, state: 'active', left: t.amount_left, size: t.size, seedMet: t.downloaded > 0 ? seed.met : true, ratio: seed.ratio, seedHours: seed.hours })
+      label: r.label, state: 'active', left: t.amount_left, size: t.size, seedMet: t.downloaded > 0 ? k.seed.met : true, ratio: k.seed.ratio, seedHours: k.seed.hours,
+      notWatched: k.notWatched, watching: pendingViewers(r.torrent_id) })
   }
-  const plan = groupDeletePlan(live, { seriesId, season })
+  const plan = groupDeletePlan(live, { seriesId, season }, mode)
   if (!plan.ok) throw Object.assign(new Error(plan.why), { statusCode: 409 })
-  // Still being watched: the same refusal the single delete gives, for every member, before any of them goes.
-  const watching = live.flatMap((r) => pendingViewers(r.torrent_id).map((n) => `${episodeLabel(r)} (${n})`))
-  if (watching.length)
-    throw Object.assign(new Error(`Still being watched: ${watching.join(', ')}; nothing was removed until they finish or release it`), { statusCode: 409 })
   let removed = 0, freed = 0
   const failed: string[] = []
   const hash = new Map(rows.map((r) => [r.torrent_id, r.info_hash]))
-  for (const r of live) {
+  const why = mode === 'all' ? 'removed by admin, whole show' : season == null ? 'removed by admin, watched episodes of the show' : `removed by admin, watched episodes of season ${season}`
+  for (const r of live.filter((x) => plan.torrentIds.includes(x.torrent_id))) {
     try {
-      await removeDownload(r.torrent_id, hash.get(r.torrent_id)!, season == null ? 'removed by admin, whole show' : `removed by admin, season ${season}`)
+      await removeDownload(r.torrent_id, hash.get(r.torrent_id)!, why)
       removed++
       freed += r.size ?? 0
     } catch (e: any) { failed.push(`${episodeLabel(r)}: ${e?.message ?? e}`) }
   }
-  if (!removed) throw Object.assign(new Error(`Nothing was removed: ${failed.join('; ')}`), { statusCode: 409 })
-  return { removed, freed, failed }
+  // Still short of the seeding goal: goes the moment it reaches it, without waiting for anyone to watch it.
+  const queue = db.prepare(`UPDATE downloads SET remove_when_seeded = 1 WHERE torrent_id = ? AND state = 'active'`)
+  for (const id of plan.queued) queue.run(id)
+  if (!removed && !plan.queued.length) throw Object.assign(new Error(`Nothing was removed: ${failed.join('; ')}`), { statusCode: 409 })
+  return { removed, freed, failed, queued: plan.queued.length, kept: mode === 'all' ? [] : plan.kept }
 })
 const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash, avatar: u.avatar ?? null })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number

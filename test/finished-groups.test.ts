@@ -1,7 +1,7 @@
 // Grouping what has finished seeding, by show and season, and what may be removed as a group.
 //
-// The rule Brian asked for, in his words: only episodes that have finished seeding go in these groups, and a whole show or
-// season may go only when every episode in it has finished. That is what these hold still, against a qBittorrent that
+// Only episodes that have finished seeding go in these groups. Remove watched takes only what everybody has watched; Delete show
+// takes the lot but never breaks the seeding goal. That is what these hold still, against a qBittorrent that
 // reports exactly the numbers each test gives it -- the seeding goal is measured from those numbers, so the page's state
 // and the group's removal have to be this and nothing else.
 import { test, after } from 'node:test'
@@ -100,38 +100,44 @@ test('only episodes that have finished seeding are grouped, never one still seed
   assert.ok(!shows.some((s) => s.seasons.some((x) => x.items.some((i) => i.torrentId === 2))), 'the still-seeding episode is in no group')
 })
 
-test('a season is removable only when every episode in it has finished seeding', () => {
+test('Remove watched takes only what everybody has watched and has finished seeding, and leaves the rest', () => {
   const rows = [
     row({ id: 11, seriesId: 201, series: 'Cold Coast', season: 1, episode: 1, sizeGb: 2, finished: true }),
     row({ id: 12, seriesId: 201, series: 'Cold Coast', season: 1, episode: 2, sizeGb: 2, finished: false }),
+    row({ id: 13, seriesId: 201, series: 'Cold Coast', season: 1, episode: 3, sizeGb: 2, finished: true, notWatched: ['Kid'] }),
+    { ...row({ id: 14, seriesId: 201, series: 'Cold Coast', season: 1, episode: 4, sizeGb: 2, finished: true }), watching: ['Kid'] },
   ] as any[]
-  const refused = groupDeletePlan(rows, { seriesId: 201, season: 1 })
-  assert.equal(refused.ok, false, 'one episode still seeding refuses the whole season')
-  assert.deepEqual(refused.torrentIds, [], 'and removes nothing')
-  assert.match(refused.why, /S01E02/, 'the refusal names what is still seeding')
-  assert.equal(refused.still.length, 1)
+  const plan = groupDeletePlan(rows, { seriesId: 201, season: 1 })
+  assert.equal(plan.ok, true)
+  assert.deepEqual(plan.torrentIds, [11], 'only the watched, seeded episode nobody is partway through')
+  assert.deepEqual(plan.kept.map((k) => k.torrentId).sort(), [12, 13, 14], 'the rest are left, and named')
+  assert.deepEqual(plan.queued, [])
 
-  rows[1].seedMet = true
-  const allowed = groupDeletePlan(rows, { seriesId: 201, season: 1 })
-  assert.equal(allowed.ok, true)
-  assert.deepEqual(allowed.torrentIds.sort(), [11, 12])
+  const none = groupDeletePlan(rows.filter((r) => r.torrent_id !== 11), { seriesId: 201, season: 1 })
+  assert.equal(none.ok, false, 'nothing watched by everyone: nothing to do, and it says why')
+  assert.match(none.why, /S01E03 \(not watched yet by Kid\)/)
 })
 
-test('a show is removable only when every season in it has finished seeding', () => {
+test('Delete show takes everything, watched or not, and queues what is still owed to BTN', () => {
   const rows = [
     row({ id: 21, seriesId: 301, series: 'Iron Valley', season: 1, episode: 1, sizeGb: 2, finished: true }),
-    row({ id: 22, seriesId: 301, series: 'Iron Valley', season: 2, episode: 1, sizeGb: 2, finished: true }),
+    row({ id: 22, seriesId: 301, series: 'Iron Valley', season: 2, episode: 1, sizeGb: 2, finished: true, notWatched: ['Kid'] }),
     row({ id: 23, seriesId: 301, series: 'Iron Valley', season: 2, episode: 2, sizeGb: 2, finished: false }),
   ] as any[]
-  const refused = groupDeletePlan(rows, { seriesId: 301 })
-  assert.equal(refused.ok, false, 'something in season 2 is still seeding, so the show cannot go as one')
-  assert.deepEqual(refused.torrentIds, [])
-  assert.match(refused.why, /S02E02/)
+  const plan = groupDeletePlan(rows, { seriesId: 301 }, 'all')
+  assert.equal(plan.ok, true)
+  assert.deepEqual(plan.torrentIds.sort(), [21, 22], 'unwatched goes too')
+  assert.deepEqual(plan.queued, [23], 'still seeding is never removed now, only marked to go once seeded')
+})
 
-  rows[2].seedMet = true
-  const allowed = groupDeletePlan(rows, { seriesId: 301 })
-  assert.equal(allowed.ok, true)
-  assert.deepEqual(allowed.torrentIds.sort(), [21, 22, 23])
+test('the grouping counts what Remove watched would take', () => {
+  const shows = groupFinished([
+    row({ id: 41, seriesId: 501, series: 'Low Tide', season: 1, episode: 1, sizeGb: 2, finished: true }),
+    row({ id: 42, seriesId: 501, series: 'Low Tide', season: 1, episode: 2, sizeGb: 3, finished: true, notWatched: ['Kid'] }),
+  ] as any[])
+  assert.equal(shows[0].watched, 1)
+  assert.equal(shows[0].watchedSize, 2 * GB)
+  assert.equal(shows[0].seasons[0].watched, 1)
 })
 
 test('a group of another show is never touched', () => {
@@ -178,30 +184,39 @@ test('the state shown for a download is the torrent’s real state', async () =>
   assert.equal(byId(502).size, 3 * GB)
 })
 
-test('a season removal is refused by the route while anything in it is still seeding, and removes nothing', async () => {
+test('Remove watched on a season is refused while nobody has watched anything in it, and removes nothing', async () => {
   const before = deleted.length
   const r = await post('/api/admin/downloads/group-delete', { seriesId: 901, season: 1 })
   assert.equal(r.statusCode, 409, r.body)
-  assert.match(r.body, /S01E02/)
+  assert.match(r.body, /not watched yet by Parent/)
   assert.equal(deleted.length, before, 'the engine was not asked to delete anything')
-  assert.equal((db.prepare(`SELECT state FROM downloads WHERE torrent_id = 502`).get() as any).state, 'active')
   assert.equal((db.prepare(`SELECT state FROM downloads WHERE torrent_id = 501`).get() as any).state, 'active')
 })
 
-test('a show removal is refused by the route while anything in it is still seeding', async () => {
-  const r = await post('/api/admin/downloads/group-delete', { seriesId: 901 })
-  assert.equal(r.statusCode, 409, r.body)
-  assert.equal((db.prepare(`SELECT state FROM downloads WHERE torrent_id = 501`).get() as any).state, 'active')
-})
-
-test('once every episode has finished seeding the season goes in one action, through the same delete', async () => {
-  state['h502'] = { ...state['h502'], seeding_time: 131 * 3600, uploaded: 3 * GB, ratio: 1 }
+test('Remove watched takes the watched, seeded episode and leaves the one still seeding', async () => {
+  for (const id of [501, 502]) db.prepare(`INSERT INTO interests (user_id, torrent_id, file_index, created_at, updated_at, watched_at) VALUES (?,?,0,?,?,?)`).run(admin.id, id, now(), now(), now())
   const before = deleted.length
   const r = await post('/api/admin/downloads/group-delete', { seriesId: 901, season: 1 })
   assert.equal(r.statusCode, 200, r.body)
   const out = r.json() as any
-  assert.equal(out.removed, 2)
-  assert.deepEqual(deleted.slice(before).sort(), ['h501', 'h502'], 'both torrents were removed from the engine')
-  assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM downloads WHERE state = 'active' AND torrent_id IN (501,502)`).get() as any).n, 0)
-  assert.equal((db.prepare(`SELECT remove_reason FROM downloads WHERE torrent_id = 501`).get() as any).remove_reason, 'removed by admin, season 1')
+  assert.equal(out.removed, 1)
+  assert.deepEqual(out.kept.map((k: any) => k.label), ['S01E02'])
+  assert.deepEqual(deleted.slice(before), ['h501'])
+  assert.equal((db.prepare(`SELECT remove_reason FROM downloads WHERE torrent_id = 501`).get() as any).remove_reason, 'removed by admin, watched episodes of season 1')
+  assert.equal((db.prepare(`SELECT state FROM downloads WHERE torrent_id = 502`).get() as any).state, 'active', 'still seeding: never removed')
+})
+
+test('Delete show never breaks the seeding goal: what is still owed is marked to go once seeded', async () => {
+  rel.run(503, 901, 'Deep Water', null, 'Deep Water - S01E03', 'S01E03', 1, 3, 3, 0, 'h503')
+  down.run(503, 'h503', now())
+  engine('h503', { sizeGb: 3, hours: 140, ratio: 0.4 }) // seeded, and nobody has watched it
+  const before = deleted.length
+  const r = await post('/api/admin/downloads/group-delete', { seriesId: 901, mode: 'all' })
+  assert.equal(r.statusCode, 200, r.body)
+  const out = r.json() as any
+  assert.equal(out.removed, 1)
+  assert.equal(out.queued, 1)
+  assert.deepEqual(deleted.slice(before), ['h503'], 'the unwatched one goes')
+  assert.equal((db.prepare(`SELECT state, remove_when_seeded FROM downloads WHERE torrent_id = 502`).get() as any).remove_when_seeded, 1)
+  assert.equal((db.prepare(`SELECT state FROM downloads WHERE torrent_id = 502`).get() as any).state, 'active')
 })
