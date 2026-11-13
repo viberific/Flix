@@ -445,11 +445,16 @@ addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { 
 /* ---------- profiles ("Who's watching?") ---------- */
 // Each profile used on this device keeps its own long-lived sign-in in local storage, so switching never asks for a password.
 const profiles = () => store.get('profiles', [])
+/** The creature chosen in Profile, kept on this device's saved profile so "Who's watching?" shows it too. */
+function syncProfileAvatar() {
+  const ps = profiles(), i = ps.findIndex((p) => p.name === me?.name)
+  if (i >= 0 && (ps[i].avatar || null) !== (me.avatar || null)) { ps[i] = { ...ps[i], avatar: me.avatar || null }; store.set('profiles', ps) }
+}
 async function rememberProfile(drop) {
   if (!me) return
   try {
     const { token } = await api('/api/device-token', {})
-    store.set('profiles', [...profiles().filter((p) => p.name !== me.name && p.name !== drop), { name: me.name, token }])
+    store.set('profiles', [...profiles().filter((p) => p.name !== me.name && p.name !== drop), { name: me.name, token, avatar: me.avatar || null }])
   } catch { /* the picker just won't list them */ }
 }
 const picked = () => { try { return sessionStorage.getItem('flix.picked') === '1' } catch { return true } }
@@ -466,7 +471,7 @@ function profilesView() {
   return () => {
     top.hidden = true
     const ps = profiles()
-    app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av" style="--h:${hue(p.name)}">${esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
+    app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av${AV_ART[p.avatar] ? ' has-art' : ''}" style="--h:${hue(p.name)}">${avSvg(p.avatar) || esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
       <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div></div>`
     app.querySelectorAll('.who-tile[data-n]').forEach((b) => b.onclick = async () => {
       const p = ps.find((x) => x.name === b.dataset.n)
@@ -789,12 +794,12 @@ async function homeView(q, local = false) {
       for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
       // Discover: the whole library, behind the few rows picked above. The filters are a fetch each rather than a page of
       // their own, so a filtered view cannot be lost to a Back press and the router needs no new route for it.
-      html += `<h2 class="sec">Discover <span class="dim" style="font-weight:500;font-size:.7em" id="discount"></span></h2>
+      html += `<section id="disc"><h2 class="sec">Discover <span class="dim" style="font-weight:500;font-size:.7em" id="discount"></span></h2>
         <div class="disc-f">
           <div class="disc-grp"><span class="disc-lb" id="discglb">Genre</span><div class="pills" role="tablist" aria-labelledby="discglb" id="discg">${discPill('Every genre', '')}</div></div>
           <div class="disc-grp"><span class="disc-lb" id="discslb">Order</span><div class="pills" role="tablist" aria-labelledby="discslb" id="discsort">${DISCOVER_SORTS.map(([v, l]) => discPill(l, v)).join('')}</div></div>
         </div><div class="grid" id="discgrid"></div>
-        <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div>`
+        <div style="text-align:center;margin:14px 0"><button class="btn" id="discmore" hidden>Show more</button></div></section>`
       if (!home.sections.length && !home.myList?.length && !home.because && !home.picked) html += `<div class="empty">${home.checking ? `Checking ${home.checking} show${home.checking === 1 ? '' : 's'} with BroadcasTheNet. Only English-language shows whose whole first season is available are listed, so this fills in over the next few minutes.` : 'Nothing here yet. The home screen shows rows of ten from HBO, Crave, Showcase, Netflix, Disney+, Apple TV+ and Paramount+ as Flix learns which service each show is on; search finds everything else.'}</div>`
     }
     html += '</div>'
@@ -813,7 +818,9 @@ async function homeView(q, local = false) {
           if (!d) { dgrid.innerHTML = '<div class="empty">Could not read the library just now.</div>'; return }
           const tiles = d.series.filter((x) => !inQueue.has(x.id)).map(tile).join('')
           if (append) dgrid.insertAdjacentHTML('beforeend', tiles)
-          else dgrid.innerHTML = tiles || '<div class="empty">Nothing matches those filters.</div>'
+          else dgrid.innerHTML = tiles || `<div class="empty">${dgenre ? 'No shows in that genre yet.' : 'No shows in the library yet.'}</div>`
+          // An empty library has nothing to filter: the page's own "Nothing here yet" says why, so the filters are not shown.
+          const disc = $('#disc'); if (disc && !append) disc.hidden = !d.total && !dgenre
           // The genres are filled once, from the first answer, so choosing one cannot shrink the choices to itself.
           if (!genresFilled && d.genres?.length) { genresFilled = true; dg.insertAdjacentHTML('beforeend', d.genres.map((g) => discPill(g, g)).join('')); mark(dg, dgenre) }
           dcount.textContent = d.total ? `${d.total} show${d.total === 1 ? '' : 's'}` : ''
@@ -3284,7 +3291,7 @@ function downloadsPanel(data, root) {
       <p class="dim sm" style="margin:0 0 8px;max-width:66ch">BTN's seeding goal is met on these, so BTN is satisfied. Nothing here is deleted on its own, because someone in the house has not finished it. Removing one frees the space now, and it has to be downloaded again if they do watch it.</p>
       <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="btn sm-btn" data-rm="${x.torrent_id}">Remove anyway</button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
-    $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
+    $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
     wire($('#tinfo'))
   }
@@ -3416,7 +3423,7 @@ function familyPanel(data, root) {
       <p class="dim" style="max-width:66ch">Only you can add people. Choose which ratings each person can watch; anything above their level is hidden completely. Shows with no known rating count as <b style="color:var(--fg)">Unrated</b>, so turn that off for kids.</p>
       ${data.ratingLookup ? '' : '<p class="notice">Ratings are not looked up yet. Add an OMDb key under Settings → OMDb (IMDb ratings are looked up automatically) or a TMDB key.</p>'}
       <div class="people">${users.map((u) => `<div class="person rise" data-id="${u.id}">
-        <div class="who"><span class="avatar" style="width:44px;height:44px;cursor:default">${esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
+        <div class="who"><span class="avatar${AV_ART[u.avatar] ? ' has-art' : ''}" style="width:44px;height:44px;cursor:default">${avSvg(u.avatar) || esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}${u.hasPassword ? '' : ' · No password'}</div></div></div>
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
         <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
@@ -3715,7 +3722,7 @@ function profileView() {
       const msg = $('#avmsg')
       b.disabled = true
       try {
-        me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user
+        me = (await api('/api/me', { avatar: b.dataset.av }, 'PATCH')).user; syncProfileAvatar()
         app.querySelectorAll('.avpick').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.av === me.avatar)))
         renderTop()
         setMsg(msg, 'Saved.')
@@ -3887,7 +3894,7 @@ async function healthBanner() {
   if (!bad.length || $('.player')) return
   const first = bad[0]
   const el = document.createElement('div')
-  el.id = 'hb'; el.className = 'hbanner ' + first.level
+  el.id = 'hb'; el.className = 'hbanner ' + first.level + (location.hash.startsWith('#/settings') ? ' static' : '')
   el.innerHTML = `<a class="hbmain" href="${esc(first.link || '#/settings')}"><b>${esc(first.title)}</b> ${esc(first.detail)}${bad.length > 1 ? ` <span>(+${bad.length - 1} more)</span>` : ''}</a><button type="button" class="hbx" aria-label="Dismiss" title="Dismiss">&times;</button>`
   el.querySelector('.hbx').addEventListener('click', () => {
     const s = hbDismissed()
@@ -4176,6 +4183,7 @@ async function route() {
   me = st.user
   myState = st
   if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
+  else if (me) syncProfileAvatar()
   renderTop()
   syncDownloads().catch(() => {})
   top.classList.toggle('solid', scrollY > 30)

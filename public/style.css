@@ -119,7 +119,7 @@ img.fade.in { opacity: 1; }
 .prog b, .ep .bar b { transform-origin: left; animation: grow .9s var(--ease-out) .35s both; }
 .prog b { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 2px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 26px 18px; }
-.grid .tile { width: 100%; min-width: 0; } /* 100%, not auto: a <button> tile shrinks to its text under auto */
+.grid .tile { width: 100%; min-width: 0; } .grid > .empty { grid-column: 1 / -1; } /* 100%, not auto: a <button> tile shrinks to its text under auto */
 
 .rowwrap { position: relative; }
 .row-scroll { display: flex; gap: 18px; overflow-x: auto; scroll-snap-type: x proximity; padding: 8px 24px 22px 4px; margin: 0 -4px; scrollbar-width: none; scroll-behavior: smooth; }
@@ -634,13 +634,16 @@ a.pill { display: inline-block; }
 /* Dark mode: a tinted strip with a coloured edge rather than a slab of saturated red across the top of every page. */
 .hbanner.bad { background: color-mix(in srgb, var(--bad) 20%, var(--bg-2)); box-shadow: inset 3px 0 0 var(--bad), 0 6px 18px rgba(0,0,0,.35); }
 .hbanner.warn { background: color-mix(in srgb, var(--warn) 18%, var(--bg-2)); box-shadow: inset 3px 0 0 var(--warn), 0 6px 18px rgba(0,0,0,.35); }
+.hbanner.static { position: relative; top: auto; }
 .hbanner b { color: #fff; } .hbanner span { opacity: .8; }
 .statusbox { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 12px; margin-top: 18px; }
 .issues { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .iss { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline; font-size: 14px; }
 .iss::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); align-self: center; grid-row: 1 / span 2; }
 .iss.bad::before { background: var(--bad); } .iss.warn::before { background: var(--warn); } .iss.info::before { background: var(--accent); }
-.iss span { grid-column: 2; color: var(--dim); font-size: 13px; } .iss a { grid-column: 3; grid-row: 1 / span 2; font-weight: 600; }
+.iss span { grid-column: 2; color: var(--dim); font-size: 13px; }
+.iss a { grid-column: 3; grid-row: 1 / span 2; align-self: center; font-size: 13px; font-weight: 600; color: var(--fg); text-decoration: none; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); }
+.iss a:hover, .iss a:focus-visible { background: var(--surface-2); }
 
 /* ---------- player extras ---------- */
 .p-menu { position: relative; } .p-menu .menu { top: 52px; right: 0; background: rgba(20,22,30,.96); color: #fff; }
@@ -1161,3 +1164,7 @@ html.tv .p-wait.gone .mark { animation-name: markOutTv; }
 @keyframes markOutTv { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: scale(1.16); } }
 .hdl-btns { display: flex; flex-wrap: wrap; gap: 10px; }
 .hdl-all[hidden] { display: none; }
+
+/* Checkboxes and radios in the app's colour, not the browser's blue. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+.who-av.has-art { background: none; box-shadow: none; padding: 0; } .who-av .avsvg { width: 100%; height: 100%; }

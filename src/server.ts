@@ -1258,11 +1258,11 @@ app.post('/api/admin/downloads/group-delete', admin, async (req) => {
   if (!removed) throw Object.assign(new Error(`Nothing was removed: ${failed.join('; ')}`), { statusCode: 409 })
   return { removed, freed, failed }
 })
-const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash })
+const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash, avatar: u.avatar ?? null })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number
 
 app.get('/api/admin/users', admin, async () => ({
-  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash, pass_hash FROM users ORDER BY id').all() as any[]).map(userRow),
+  users: (db.prepare('SELECT id, name, is_admin, created_at, allowed_ratings, pin_hash, pass_hash, avatar FROM users ORDER BY id').all() as any[]).map(userRow),
   ratings: RATINGS, ratingLookup: !!(config.omdb.apiKey || config.tmdb.apiKey),
 }))
 app.post('/api/admin/users', admin, async (req) => {
