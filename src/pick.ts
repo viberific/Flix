@@ -8,6 +8,27 @@ export interface Cand {
   dead?: number | boolean | null
   /** When BTN published it: between two copies of the same episode, the newer one is the one still being talked about. */
   time?: number | null
+  /** The release's own name: the only place the tracker says anything about the audio inside the file. */
+  release_name?: string | null
+}
+
+/**
+ * Whether a release's name says it carries English sound. The tracker has no audio field at all, so the name is the
+ * only evidence there is: a group that includes the dub writes "Dual Audio", "Eng Dub" or "English" in it. This is
+ * a guess and it can be wrong both ways -- a name that says nothing may still be a dub, and one that says "Dual Audio"
+ * may carry a bad one -- so it is only ever used to break a tie, never to overrule resolution or a living source.
+ *
+ * "English subtitles" is not English sound, and neither is a name that only says "Subs": both are excluded, or every
+ * anime release would claim to be a dub.
+ */
+export function saysEnglish(name?: string | null): boolean {
+  const n = String(name ?? '')
+  if (!n) return false
+  // Take out the subtitle markers first, so "Dual Audio ... Eng Subs" still counts on its audio and "Eng Subs" alone does not.
+  const sound = n.replace(/\b(?:eng(?:lish)?|multi)[\s._-]*sub(?:s|bed|title[sd]?)?\b/gi, ' ')
+  // "MULTi" on its own is how a multi-language release is named; in a name with dots either side, \b does not fire.
+  if (/(?:^|[.\s_-])multi(?:[.\s_-]|$)/i.test(sound)) return true
+  return /\bdual[\s._-]*audio\b|\b(?:eng(?:lish)?|multi)[\s._-]*(?:dub(?:bed)?|audio)\b|\b(?:eng|dub)\b|(?:^|[.\s_-])english(?:[.\s_-]|$)/i.test(sound)
 }
 
 /** 0 = 1080p (preferred), 1 = 720p, 2 = anything else, 3 = 4K: a last resort, because it takes far more disk than the rest. */
@@ -65,9 +86,13 @@ export function pickRelease<T extends Cand>(cands: T[]): T | undefined {
     // copied in seconds, where a 1080p HEVC would need a full encode. Otherwise resolution leads, as it always has.
     (off ? convertCost(a) - convertCost(b) : 0) ||
     tierOf(a.resolution) - tierOf(b.resolution) ||
+    // Same resolution: a release whose name says it has English sound wins, because a dub that is not there cannot be
+    // switched to however good the picture is. Below this line only, so it never costs a sharper copy or a living one.
+    Number(!saysEnglish(a.release_name)) - Number(!saysEnglish(b.release_name)) ||
     Number(!a.on_server) - Number(!b.on_server) ||
     (off ? 0 : convertCost(a) - convertCost(b)) ||
-    // Same resolution: the smaller file wins, because it is here sooner and this box's line is what stalls a play --
+    // Same resolution and same English question: the smaller file wins, because it is here sooner and this box's line
+    // is what stalls a play --
     // but only when it really is smaller. Two copies a few KB apart are the same download, so the swarm decides:
     // most seeders first, then the newest release (a stale listing is the one whose torrent has quietly been deleted).
     sizeBin(a.size) - sizeBin(b.size) ||

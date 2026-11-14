@@ -38,9 +38,38 @@ test('isVideo ignores samples and non-video', () => {
   assert.equal(isVideo('a/b.nfo'), false)
 })
 
-const { pickRelease, qualityLabel } = await import('../src/pick.ts')
+const { pickRelease, qualityLabel, saysEnglish } = await import('../src/pick.ts')
 const { youtubeUrl } = await import('../src/catalog.ts')
 const c = (id: number, resolution: string, o: any = {}) => ({ torrent_id: id, resolution, codec: 'H.264', seeders: 10, size: 1, on_server: false, ...o })
+
+test('source pick: a name that says English sound wins a tie, and never costs a sharper or a living copy', async () => {
+  const { config } = await import('../src/config.ts')
+  const was = config.transcode.mode
+  config.transcode.mode = 'auto'
+  try {
+    const plain = c(1, '1080p', { release_name: 'Some.Show.S01E01.1080p.WEB-DL.x264-GRP' })
+    const dub = c(2, '1080p', { release_name: 'Some.Show.S01E01.1080p.WEB-DL.Dual.Audio.x264-GRP' })
+    assert.equal(pickRelease([plain, dub])!.torrent_id, 2) // same everything else: the dub is taken
+    assert.equal(pickRelease([dub, plain])!.torrent_id, 2) // and the order the rows came back in does not matter
+    assert.equal(pickRelease([dub, c(3, '720p', { release_name: 'Some.Show.S01E01.720p.Dual.Audio.x264-GRP' })])!.torrent_id, 2) // a sharper picture still wins
+    assert.equal(pickRelease([dub, c(4, '1080p', { release_name: 'Some.Show.S01E01.1080p.Eng.Dub.x264-GRP', seeders: 3 })])!.torrent_id, 2) // both say English: the better seeded one wins
+    assert.equal(pickRelease([c(5, '1080p', { seeders: 0, release_name: 'X.1080p.Dual.Audio' }), plain])!.torrent_id, 1) // a dead dub is still dead
+    // Subtitles are not sound: an anime release saying only "Eng Subs" is not a dub, and must not beat a real one.
+    assert.equal(pickRelease([c(6, '1080p', { release_name: 'Anime.S01E01.1080p.JPN.Eng.Subs.x264' }), c(7, '1080p', { release_name: 'Anime.S01E01.1080p.Eng.Dub.x264' })])!.torrent_id, 7)
+  } finally { config.transcode.mode = was }
+})
+
+test('saysEnglish reads the release name, and is not fooled by subtitles', () => {
+  assert.equal(saysEnglish('Show.S01.1080p.Dual.Audio.x264'), true)
+  assert.equal(saysEnglish('Show.S01.1080p.ENG.DUB.x264'), true)
+  assert.equal(saysEnglish('Show.S01.1080p.English.x264'), true)
+  assert.equal(saysEnglish('Show.S01.1080p.MULTi.x264'), true)
+  assert.equal(saysEnglish('Show.S01.1080p.JPN.Eng.Subs.x264'), false)
+  assert.equal(saysEnglish('Show.S01.1080p.English.Subtitles.x264'), false)
+  assert.equal(saysEnglish('Show.S01.1080p.x264-GRP'), false)
+  assert.equal(saysEnglish(null), false)
+  assert.equal(saysEnglish(''), false)
+})
 
 test('source pick: 1080p first, then 720p, then the rest; 4K only as a last resort', async () => {
   const { config } = await import('../src/config.ts')
