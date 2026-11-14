@@ -3292,6 +3292,9 @@ function downloadsPanel(data, root) {
     <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
     <div id="trep"></div>
     <h2 class="sec">Downloads</h2><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+  // Shared by the lists in storage() and by the Delete show dialog, which runs outside it: kept inside storage(), the
+  // dialog's own call threw before it opened, so Delete show did nothing at all.
+  const eps = (n) => `${n} episode${n === 1 ? '' : 's'}`
   const shortName = (x) => esc(x.group_name.includes(' - ') ? x.group_name.slice(x.group_name.lastIndexOf(' - ') + 3) : x.group_name)
   const storage = (d, h) => {
     const disk = d.disk, pct = disk ? Math.round((disk.free / disk.total) * 100) : 100
@@ -3312,7 +3315,6 @@ function downloadsPanel(data, root) {
     // torrent under it has finished seeding; otherwise it names the ones still seeding and the finished episodes are
     // removed one at a time, which is what the Remove beside each of them does.
     const groups = d.finished ?? []
-    const eps = (n) => `${n} episode${n === 1 ? '' : 's'}`
     const gKey = (g, season) => `${g.seriesId ?? g.series}|${season == null ? '' : season}`
     const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`)
     const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
