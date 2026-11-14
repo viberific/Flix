@@ -1250,6 +1250,22 @@ async function seriesView(id) {
 }
 
 /* ---------- player ---------- */
+/** One language however the file spells it: "en", "eng" and "English" are the same track language. */
+const AUDIO_LANG = { en: 'eng', english: 'eng', ja: 'jpn', japanese: 'jpn', jp: 'jpn', es: 'spa', spanish: 'spa', fr: 'fre', fra: 'fre', french: 'fre', de: 'ger', deu: 'ger', german: 'ger', it: 'ita', ko: 'kor', kr: 'kor', zh: 'chi', zho: 'chi', pt: 'por', ru: 'rus' }
+const audioLang = (l) => { const k = String(l || '').toLowerCase(); return AUDIO_LANG[k] || k }
+/**
+ * Which of a file's audio tracks to play for a wanted language: -1 when the first track already is that language (or
+ * none is), so nothing is restarted. A commentary track is never picked over the programme itself.
+ */
+function pickAudio(tracks, want) {
+  if (!tracks?.length || !want) return -1
+  const w = audioLang(want), is = (t) => audioLang(t.lang) === w
+  if (is(tracks[0])) return -1
+  const ok = tracks.filter((t) => is(t) && !/commentary/i.test(t.label || ''))
+  const t = ok.find((t) => t.default) || ok[0]
+  return t ? tracks.indexOf(t) : -1
+}
+
 /** Per-device preferences (volume, subtitle and audio language). Quietly does nothing when storage is blocked. */
 const store = {
   get(k, d) { try { const v = localStorage.getItem('flix.' + k); return v === null ? d : JSON.parse(v) } catch { return d } },
@@ -1381,7 +1397,6 @@ function playView(seriesId, season, label) {
       <div class="p-top"><button class="icon-btn" id="pback" aria-label="Back">${I.back}</button>
         <span class="p-mark" aria-hidden="true">${I.logo}</span><span class="p-rate" id="prate" hidden></span>
         ${isCar ? '' : `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>`}<span class="sp"></span>
-        <div class="p-menu"><button class="icon-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
         <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
@@ -1395,6 +1410,7 @@ function playView(seriesId, season, label) {
           <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
+              <div class="p-menu"><button class="p-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
               <div class="p-menu"><button class="p-btn cc" id="pq" aria-label="Quality" aria-haspopup="true" hidden></button></div>
               <div class="p-sub"><button class="p-btn sub" id="psubm" aria-label="Subtitles a quarter of a second earlier" hidden>−</button><div class="p-menu"><button class="p-btn cc" id="pcc" aria-label="Subtitles" aria-pressed="false" hidden>CC</button><b class="p-subv" id="psubv" hidden aria-live="polite"></b></div><button class="p-btn sub" id="psubp" aria-label="Subtitles a quarter of a second later" hidden>+</button></div>
               <button class="p-btn" id="pfull" aria-label="Fill the screen">${ICON.fill}</button></div></div>
@@ -2178,11 +2194,11 @@ function playView(seriesId, season, label) {
       const got = await api(`${base}/info${q ? '?' + q : ''}`)
       if (seq !== infoSeq || !alive) return
       info = got
-      // A saved audio-language choice (on this device) wins over the file's default track.
+      // The audio language chosen on this device wins over the file's default track, and with no choice made yet that is
+      // English: an anime release's first track is usually Japanese, with the English dub second. Subtitles stay on either way.
       if (!a) {
-        const want = store.get('audio', null)
-        const i = want ? info.audio.findIndex((t) => t.lang === want) : -1
-        if (i > 0 && info.audio[0].lang !== want) return loadInfo(i, startAt)
+        const i = pickAudio(info.audio, store.get('audio', null) || 'eng')
+        if (i > 0) return loadInfo(i, startAt)
       }
       // A TV that is already connected gets the episode: casting stays on until it is stopped, so every
       // show tapped from now on follows it there.
