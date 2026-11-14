@@ -48,6 +48,10 @@ const INFO = {
   subs: [], qualities: [1080, 720], quality: 1080,
 }
 
+// Which /info answer is given, and the audio track each ask was for.
+let info: Record<string, unknown> = INFO
+const asked: number[] = []
+
 let server: Server | null = null, base = '', browser: Browser | null = null
 
 before(async () => {
@@ -65,7 +69,7 @@ before(async () => {
       if (p === '/api/leaving') return json({ items: [] })
       if (p === '/api/watch') return json(WATCH)
       if (p === '/api/series/5') return json({ series: { rating: 'TV-MA', ratingSource: 'imdb' }, seasons: [], episodes: [] })
-      if (/^\/api\/stream\/\d+\/\d+\/info/.test(p)) return json(INFO)
+      if (/^\/api\/stream\/\d+\/\d+\/info/.test(p)) { const a = Number(url.searchParams.get('a') ?? 0); asked.push(a); return json({ ...info, audioIndex: a }) }
       if (/^\/api\/stream\/\d+\/\d+\/status$/.test(p)) return json({ fileProgress: 1, dlspeed: 0, seeds: 9, peers: 2, downloaded: 1, size: 1 })
       return json({})
     }
@@ -133,7 +137,7 @@ test('a second list opened over the picture closes the first, and the bar still 
   try {
     await page.waitForFunction(() => !!document.querySelector('#pl.player')?.classList.contains('p-quiet'), null, { timeout: 12_000 })
     await touch(page)
-    await page.click('#aud') // the audio list, in the top bar
+    await page.click('#aud') // the audio list, in the control bar
     await page.waitForSelector('#pl .p-menu .menu button[data-n]')
     await page.click('#pq') // and now the quality list, in the control bar
     await page.waitForTimeout(300)
@@ -145,4 +149,24 @@ test('a second list opened over the picture closes the first, and the bar still 
     assert.equal(await page.waitForFunction(() => !!document.querySelector('#pl.player')?.classList.contains('p-quiet'), null, { timeout: 9000 }).then(() => true).catch(() => false), true,
       'after a pick from a list the bar goes again')
   } finally { await page.close() }
+})
+
+test('an anime with Japanese first plays the English dub, and the audio list sits bottom right', { skip }, async () => {
+  info = { ...INFO, audio: [{ n: 0, label: 'Japanese', lang: 'jpn', default: true }, { n: 1, label: 'English', lang: 'eng' }, { n: 2, label: 'English · Commentary', lang: 'eng' }] }
+  asked.length = 0
+  const page = await playing()
+  try {
+    assert.ok(asked.includes(1), `the English track is asked for (asked: ${asked.join(',')})`)
+    assert.ok(!asked.includes(2), 'never the commentary')
+    assert.equal(await page.$eval('#aud', (b) => !!b.closest('.p-ctl .p-r') && !(b as HTMLElement).hidden), true, 'the audio button is in the bottom-right controls')
+    await touch(page)
+    await page.click('#aud')
+    await page.waitForSelector('#pl .p-ctl .p-menu .menu button[data-n]')
+    assert.equal(await page.$eval('#pl .p-ctl .menu button[aria-current]', (b) => b.getAttribute('data-n')), '1', 'the list marks English as playing')
+    // Picking Japanese is kept for next time, and it is what is played.
+    asked.length = 0
+    await page.click('#pl .p-ctl .menu button[data-n="0"]')
+    await page.waitForFunction(() => localStorage.getItem('flix.audio') === '"jpn"', null, { timeout: 5000 })
+    assert.ok(asked.includes(0) && !asked.includes(1), `Japanese is played once picked (asked: ${asked.join(',')})`)
+  } finally { await page.close(); info = INFO }
 })
