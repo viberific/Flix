@@ -64,8 +64,13 @@ export function buildEpisodes(seriesId: number, userId: number, avoid?: Set<numb
   const add = (e: Omit<Episode, 'watched' | 'position' | 'duration' | 'lastAt'>) => {
     // Progress is keyed by label, so it carries over whichever release (single or pack) the episode came from.
     const mine = prog.filter((p) => p.season === e.season && p.label === e.label)
+    // Where they left off. A copy downloaded FRESH holds 0 until it is played, and its row is the newest one, so taking it
+    // blindly threw away the position the deleted copy had -- delete a show partway through an episode and download it
+    // again, and it started over. The newest row that actually has a position wins instead; a real restart writes a small
+    // one, which is not 0, so an intentional start-from-the-beginning is not undone by an older copy.
     const cur = mine.find((p) => !p.watched_at)
-    out.push({ ...e, watched: mine.some((p) => p.watched_at), position: cur?.position ?? 0, duration: cur?.duration ?? 0, lastAt: Number(mine[0]?.updated_at ?? 0) })
+    const at = cur && cur.position > 0 ? cur : mine.find((p) => !p.watched_at && p.position > 0) ?? cur
+    out.push({ ...e, watched: mine.some((p) => p.watched_at), position: at?.position ?? 0, duration: at?.duration ?? 0, lastAt: Number(mine[0]?.updated_at ?? 0) })
   }
   for (const [season, source] of seasons) {
     if (source === 'episodes') {
@@ -115,7 +120,8 @@ export function currentEpisode(eps: Pick<Episode, 'watched' | 'position' | 'avai
 }
 
 /** One entry per show, newest first: the episode that show is on (see currentEpisode), with where it was left. */
-export function continueWatching(user: User) {
+/** `exclude` is the shows to leave out -- a hidden one has no business in the Queue (see hidden.ts in server.ts). */
+export function continueWatching(user: User, exclude?: Set<number>) {
   const f = ratingClause(user)
   const shows = db.prepare(`SELECT r.series_id AS id, r.series AS name, MAX(i.updated_at) AS u FROM interests i JOIN releases r ON r.torrent_id = i.torrent_id ${META_JOIN}r.series_id
     WHERE i.user_id = ? AND i.released_at IS NULL AND ((i.watched_at IS NULL AND i.position > ?) OR i.watched_at > ?) AND ${f.sql}
@@ -123,6 +129,7 @@ export function continueWatching(user: User) {
   const out: any[] = []
   for (const s of shows) {
     if (out.length >= 12) break
+    if (exclude?.has(s.id)) continue
     if (!seasonsOf(s.id) || !canViewSeries(user, s.id)) continue
     const eps = buildEpisodes(s.id, user.id)
     const k = currentEpisode(eps)

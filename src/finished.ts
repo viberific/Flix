@@ -70,18 +70,34 @@ export function returningShows(userId: number, finished = finishedShows(userId),
     WHERE i.user_id = ? AND r.series_id IS NOT NULL AND (i.watched_at IS NOT NULL OR i.released_at IS NOT NULL)
       AND COALESCE(pf.season, r.season) IS NOT NULL
     GROUP BY r.series_id`).all(userId) as { id: number; last: number; pos: number }[]).map((r) => [r.id, r]))
-  const fresh = db.prepare(`SELECT r.season * 10000 + CASE WHEN r.is_pack = 0 THEN COALESCE(r.episode_end, r.episode, 0) ELSE 0 END AS pos, r.time AS time
-    FROM releases r WHERE r.series_id = ? AND r.season IS NOT NULL AND r.time > ? AND r.time > ?
-      AND r.dead_at IS NULL AND COALESCE(r.seeders, 0) > 0`)
   for (const id of finished) {
     const seen = reached.get(id)
     if (!seen) continue
-    let newest = 0
-    for (const r of fresh.all(id, seen.last, at - RETURN_DAYS * 86400) as { pos: number; time: number }[]) {
-      // A pack of the season they were in (S*10000) is behind any episode of it they watched; a later season's is ahead.
-      if (r.pos > seen.pos) newest = Math.max(newest, r.time)
-    }
+    // A pack of the season they were in (S*10000) is behind any episode of it they watched; a later season's is ahead.
+    const newest = newerReleases(id, seen.pos, seen.last, at - RETURN_DAYS * 86400).reduce((m, r) => Math.max(m, r.time), 0)
     if (newest) out.set(id, newest)
   }
   return out
+}
+
+/**
+ * Where a release sits in its show, as one number: season * 10000 + episode, and a season pack counts as the START of its
+ * season, so it is behind any episode of that season already watched. NULL for a release with no season.
+ */
+export const RELEASE_POS = `COALESCE(r.season, 0) * 10000 + CASE WHEN r.is_pack = 0 THEN COALESCE(r.episode_end, r.episode, 0) ELSE 0 END`
+
+/**
+ * The releases of a show that are FURTHER ALONG than `pos` and were uploaded to BTN after `since` (and after `floor`, if
+ * given), and that could actually be played: not dead, still seeded.
+ *
+ * This is the one definition of "there is something new in this show" in Flix -- what brings a finished show back to the
+ * home screen (returningShows above) and what brings a deleted show out of hiding (hidden.ts). "Further along", not just
+ * "newer", so a re-encode or a complete-season pack of what was already there is not news. A release's own `fetched_at` is
+ * NOT used: a catalog sync refreshes it on rows Flix already had, which would make every sync look like news.
+ */
+export function newerReleases(seriesId: number, pos: number, since: number, floor = 0): { pos: number; time: number }[] {
+  const rows = db.prepare(`SELECT ${RELEASE_POS} AS pos, r.time AS time FROM releases r
+    WHERE r.series_id = ? AND r.season IS NOT NULL AND r.time > ? AND r.time > ?
+      AND r.dead_at IS NULL AND COALESCE(r.seeders, 0) > 0`).all(seriesId, since, floor) as { pos: number; time: number }[]
+  return rows.filter((r) => r.pos > pos)
 }

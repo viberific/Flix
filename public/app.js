@@ -3291,7 +3291,7 @@ function downloadsPanel(data, root) {
     <p class="dim lead">Everything Flix has pulled from BroadcasTheNet. BTN wants each torrent seeded until its <b>seeding goal</b> is met: <b>${req.minHours} hours or a ${req.minRatio}:1 ratio</b>, whichever comes first. Flix will not delete one before that, even if you ask. After that it is removed once nobody is watching it and either someone has finished it or its “Leaving soon” window has run out. Whole-season downloads finish even if you only watch part of them, so they can be seeded.</p>
     <h2 class="sec">Storage</h2><div class="panel" id="tstorage"><div id="tmeter"></div><div id="tchart" class="chart-wrap"></div><div id="tinfo"></div></div>
     <div id="trep"></div>
-    <h2 class="sec">Downloads</h2><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thist"></div>`
+    <h2 class="sec">Downloads</h2><div class="tsum" id="tsum"></div><div id="tlist"></div><div id="thidden"></div><div id="thist"></div>`
   // Shared by the lists in storage() and by the Delete show dialog, which runs outside it: kept inside storage(), the
   // dialog's own call threw before it opened, so Delete show did nothing at all.
   const eps = (n) => `${n} episode${n === 1 ? '' : 's'}`
@@ -3346,8 +3346,7 @@ function downloadsPanel(data, root) {
       ${groups.length ? `<ul class="fg">${groups.map(showRow).join('')}</ul>` : ''}`
     const space = `${finishedView}
       ${wait.length ? `<div class="dim sm cap">Still seeding (can’t be removed yet)</div><ul class="trows">${wait.map((x) => row(x, { note: `${Math.max(0, req.minHours - x.seedHours).toFixed(0)} h more seeding, or ratio ${x.ratio.toFixed(2)} of ${req.minRatio}:1` })).join('')}</ul>` : ''}`
-    $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''
-    // What is using the disk, biggest first, and where each one stands against BTN's seeding goal: the five biggest were
+    $('#tmeter').innerHTML = disk ? `<div class="meter wide ${state[0] === 'ok' ? 'met' : ''}"><span><b>${gb(disk.free)}</b> free of ${gb(disk.total)} (${pct}%) <em class="state ${state[0]}">${state[1]}</em></span><div class="m"><i style="width:${100 - pct}%"></i></div></div>` : ''    // What is using the disk, biggest first, and where each one stands against BTN's seeding goal: the five biggest were
     // listed with no state at all, so the one holding 30 GB could be finished seeding (and safe to remove) or hours short of
     // it with nothing saying which. A finished one gets the same Remove action as the lists above; a still-seeding one says
     // what is left and gets no button, because the app never offers a removal that would break BTN's rule.
@@ -3375,6 +3374,13 @@ function downloadsPanel(data, root) {
     $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
     wire($('#tinfo'))
+    // Shows deleted on purpose. Their cards are off every screen until something new turns up in one, so this is the only
+    // place they can be seen -- and the only place to bring one back before then.
+    const hid = d.hidden ?? []
+    $('#thidden').innerHTML = hid.length ? `<div class="sub-h">Hidden shows</div>
+      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">Deleted on purpose, so they are kept off the home screen, search and Discover. One comes back on its own when a new episode of it turns up, with its watch history intact; <b>Restore</b> brings it back now.</p>
+      <ul class="trows">${hid.map((x) => `<li class="trow tgrp"><div class="tgrp-body">${tposter(x.seriesId)}<span class="tgrp-txt"><b>${esc(x.series)}</b><span class="dim sm">Hidden ${ago(x.hiddenAt)}</span></span></div><span class="size"></span><span class="tacts"><button class="btn sm-btn" data-resh="${x.seriesId}" data-name="${esc(x.series)}">Restore</button></span></li>`).join('')}</ul>` : ''
+    wire($('#thidden'))
   }
   let chartData = null, lastHealth = data.health
   // Deleting, and the second press that confirms it, in one place. Every render makes new buttons -- this area is rebuilt
@@ -3421,7 +3427,7 @@ function downloadsPanel(data, root) {
     if (!ok) { b.focus({ preventScroll: true }); return }
     try {
       const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gall), season: null, mode: 'all' })
-      flashNote(`Deleted ${r.removed} episode${r.removed === 1 ? '' : 's'}${r.queued ? `; ${r.queued} more go${r.queued === 1 ? 'es' : ''} once seeded` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
+      flashNote(`Deleted ${r.removed} episode${r.removed === 1 ? '' : 's'}${r.queued ? `; ${r.queued} more go${r.queued === 1 ? 'es' : ''} once seeded` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}` + (r.hidden ? `. ${b.dataset.name} is hidden until a new episode turns up — Restore it any time under Settings → Torrents → Hidden shows` : ''))
       draw(await api('/api/admin/downloads')); loadChart()
     } catch (e) { flashNote(e.message) }
   }
@@ -3438,6 +3444,9 @@ function downloadsPanel(data, root) {
     el.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => onRemove(b) })
     el.querySelectorAll('[data-gdel]').forEach((b) => { b.onclick = () => onGroupRemove(b) })
     el.querySelectorAll('[data-gall]').forEach((b) => { b.onclick = () => onShowDelete(b) })
+    el.querySelectorAll('[data-resh]').forEach((b) => { b.onclick = async () => {
+      try { await api('/api/admin/hidden/restore', { seriesId: Number(b.dataset.resh) }); flashNote(`${b.dataset.name} is back`); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { flashNote(e.message) }
+    } })
     el.querySelectorAll('[data-gexp]').forEach((b) => { b.onclick = () => onToggle(b) })
     el.querySelectorAll('[data-ws]').forEach((b) => { b.onclick = async () => {
       try { await api(`/api/admin/downloads/${b.dataset.ws}/when-seeded`, { on: b.getAttribute('aria-pressed') !== 'true' }); draw(await api('/api/admin/downloads')) } catch (e) { flashNote(e.message) }

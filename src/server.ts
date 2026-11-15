@@ -31,8 +31,9 @@ import { parseEpisodeTag } from './btn/parse.ts'
 import { artPathSql, getArt, getCastPhoto, getPosterThumb, getStill, POSTER_WIDTHS } from './art.ts'
 import { episodeInfoFor, queueEpisodeInfo } from './episodeinfo.ts'
 import { buildEpisodes, continueWatching, currentEpisode, episodeOfFile } from './episodes.ts'
-import { listable, seasonsOf, unsyncedCount } from './seasons.ts'
+import { catalogChanged, listable, seasonsOf, unsyncedCount } from './seasons.ts'
 import { unplayableSeries, unavailableSeries } from './candidates.ts'
+import { hiddenList, hiddenSeries, hiddenShows, hideSeries, unhideSeries } from './hidden.ts'
 import { ensurePackFiles } from './packs.ts'
 import { diskInfo, freeFloor, health, lastBackup, startBackups } from './health.ts'
 import { ROW_SIZE, curateHome } from './home.ts'
@@ -183,9 +184,10 @@ const seriesCols = `series_id AS id, series AS name, ${artPathSql('series_poster
 const notFound = (m = 'Series not found') => Object.assign(new Error(m), { statusCode: 404 })
 
 /** Only shows whose first season is complete are listed; see seasons.ts. */
-const hidden = () => unplayableSeries()
-// A show with nothing that plays without converting is not listed while Flix is set never to convert the picture:
-// a poster leading to a dead end is worse than no poster. See unplayableSeries().
+// A show with nothing that plays without converting is not listed while Flix is set never to convert the picture: a poster
+// leading to a dead end is worse than no poster (unplayableSeries). And a show the admin deleted on purpose is hidden
+// whatever its catalog says, until something new turns up in it. See hidden.ts, where the two sets are merged and cached.
+const hidden = () => hiddenShows()
 const isListed = (r: { id: number }) => listable().has(r.id) && !hidden().has(r.id)
 
 /** Read a show's whole catalog from BTN if we have not yet (a show is not listed until then). Failures just leave it unlisted. */
@@ -351,7 +353,7 @@ app.get('/api/home', auth, async (req) => {
   const listed = db.prepare('SELECT series_id, seen_at FROM my_list WHERE user_id = ? ORDER BY added_at DESC').all(uid) as { series_id: number; seen_at: number | null }[]
   // hasNew: something was uploaded for a show on the list since the viewer last opened its page
   // A show in Continue Watching is not shown again anywhere else on the screen.
-  const resume = new Set<number>(continueWatching(req.user!).map((c: any) => c.seriesId))
+  const resume = new Set<number>(continueWatching(req.user!, hiddenSeries()).map((c: any) => c.seriesId))
   // Ready to Watch: every show with at least one download on the server, newest download first. Shows already in Continue
   // Watching are drawn there instead; a downloaded show on My List is drawn here, in the top rail, rather than in the list.
   const ready = (db.prepare(`SELECT r.series_id AS id, MAX(d.added_at) AS at FROM downloads d JOIN releases r ON r.torrent_id = d.torrent_id
@@ -426,12 +428,14 @@ app.post('/api/mylist', auth, async (req) => {
   const { seriesId, on } = req.body as any
   const id = Number(seriesId)
   if (!Number.isInteger(id) || !canViewSeries(req.user, id) || !seasonsOf(id)) throw notFound()
+  // Putting a show on the list is the person asking for it back: a hidden one stops being hidden.
+  if (on) unhideSeries(id)
   if (on) db.prepare('INSERT OR IGNORE INTO my_list (user_id, series_id, added_at, seen_at) VALUES (?,?,?,(SELECT MAX(time) FROM releases WHERE series_id = ?))').run(req.user!.id, id, now(), id)
   else db.prepare('DELETE FROM my_list WHERE user_id = ? AND series_id = ?').run(req.user!.id, id)
   return { inList: !!on }
 })
 
-app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!) }))
+app.get('/api/continue', auth, async (req) => ({ items: continueWatching(req.user!, hiddenSeries()) }))
 
 /** Season packs already watched by others and about to be removed, which this person never opened (see updateLeaving in retention.ts). */
 app.get('/api/leaving', auth, async (req) => ({ items: leavingSoonFor(req.user!) }))
@@ -1127,7 +1131,7 @@ app.get('/api/admin/downloads', admin, async () => {
       ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, seedNote: seedNote(k.seed), deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id), windowPassed: k.windowPassed, notWatched: k.notWatched })
   }
   // The finished-seeding view itself: only torrents that hold the whole thing and have met BTN's seeding goal are in it.
-  return { requirements: config.seed, downloads: out, finished: groupFinished(out), disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir }
+  return { requirements: config.seed, downloads: out, finished: groupFinished(out), disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir, hidden: hiddenList() }
 })
 /** A viewer tapped "Something's wrong", or playback failed on its own. Quiet duplicates are dropped. */
 app.post('/api/report', auth, async (req) => {
@@ -1273,7 +1277,21 @@ app.post('/api/admin/downloads/group-delete', admin, async (req) => {
   const queue = db.prepare(`UPDATE downloads SET remove_when_seeded = 1 WHERE torrent_id = ? AND state = 'active'`)
   for (const id of plan.queued) queue.run(id)
   if (!removed && !plan.queued.length) throw Object.assign(new Error(`Nothing was removed: ${failed.join('; ')}`), { statusCode: 409 })
-  return { removed, freed, failed, queued: plan.queued.length, kept: mode === 'all' ? [] : plan.kept }
+  // Delete show means the person wants the show gone, not just its files. The release rows stay -- they are the catalog,
+  // and a purge would be undone by the next BTN sync -- so without a hidden row the cards came straight back, which is
+  // exactly what happened on the box at 0.3.116. Only mode 'all' over the whole show: removing the watched episodes of a
+  // season is a cleanup, not "I am done with this". See hidden.ts for when it comes back.
+  const hide = mode === 'all' && season === null
+  if (hide) hideSeries(seriesId, req.user!.id)
+  return { removed, freed, failed, queued: plan.queued.length, kept: mode === 'all' ? [] : plan.kept, hidden: hide }
+})
+/** Bring a hidden show back before it has anything new in it: the Restore beside it in Settings. */
+app.post('/api/admin/hidden/restore', admin, async (req) => {
+  const seriesId = Number((req.body as any)?.seriesId)
+  if (!Number.isInteger(seriesId)) throw Object.assign(new Error('Which show? No show was given'), { statusCode: 400 })
+  if (!unhideSeries(seriesId)) throw Object.assign(new Error('That show is not hidden any more'), { statusCode: 404 })
+  catalogChanged() // the listings cached the hidden set against the catalog version
+  return { hidden: false }
 })
 const userRow = (u: any) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, created_at: u.created_at, allowed: parseAllowed(u.allowed_ratings), hasPin: !!u.pin_hash, hasPassword: !!u.pass_hash, avatar: u.avatar ?? null })
 const adminCount = () => (db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 1').get() as any).c as number

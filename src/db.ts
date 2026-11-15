@@ -78,6 +78,17 @@ CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, torrent_id INTEGER, series_id INTEGER, label TEXT,
   kind TEXT NOT NULL, message TEXT, created_at INTEGER NOT NULL, resolved_at INTEGER
 );
+-- Shows the admin deleted on purpose (Delete show). Deleting the downloads left the releases behind, and every screen is
+-- built from releases, so the show came straight back on the next sync. A row here keeps it off every list until something
+-- new turns up in it; pos and max_time are what the catalog held when it was hidden, which is what "new" is measured
+-- against (see hidden.ts and finished.ts). The watch history is deliberately NOT touched: it is what says where to resume.
+CREATE TABLE IF NOT EXISTS hidden_series (
+  series_id INTEGER PRIMARY KEY,
+  hidden_at INTEGER NOT NULL,
+  hidden_by INTEGER,
+  pos INTEGER NOT NULL DEFAULT 0,        -- season * 10000 + episode of the latest thing it had
+  max_time INTEGER NOT NULL DEFAULT 0    -- newest release upload time it had
+);
 `)
 try { db.exec('ALTER TABLE users ADD COLUMN pin_hash TEXT') } catch { /* already present */ }
 // Wrong guesses at a profile's PIN, pruned as they go out of date. On disk rather than in memory, so restarting the app
