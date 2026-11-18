@@ -728,7 +728,11 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const q = qualities.includes(qualityOf((req.query as any).q)) ? qualityOf((req.query as any).q) : 0
   // The picture and container it takes, AND sound it can decode. Dropping the second half in 0.3.48 served raw bytes for
   // any MKV whose audio was E-AC-3 — the commonest WEB-DL there is — and the episode played silently.
-  const direct = !q && directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
+  // "x=1": this device has already tried to decode the file as it is and could not (PIPELINE_ERROR_DECODE in the log, the
+  // same error twice and then a dead episode). Asking again for the same bytes can only fail again, so the picture is
+  // converted -- direct play, the repack and a copied picture are all skipped.
+  const force = (req.query as any).x === '1'
+  const direct = !q && !force && directPlay(p, can) && audioDirect(p, can) && a === 0 // another audio track needs a repack, which is only done for the first one
   const base = `/api/stream/${t}/${f}`
   const token = tvToken(req.user!.id)
   // CC is one switch for one subtitle: the best English one in the file or beside it, else one from the web
@@ -741,7 +745,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const copyFor = copyPictureFor(p, can)
   // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
   // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
-  const remux = !direct && !q && a === 0 && copyFor
+  const remux = !direct && !q && !force && a === 0 && copyFor
     ? (cast ? await remuxPlayback(+t, +f, p, () => closed, CAST_WAIT_MS) : !!offlineReadyPath(+t, +f))
     : false
   if (!direct && !remux) {
@@ -750,7 +754,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     // converted -- E-AC-3, every AMZN WEB-DL there is) and converted on the CPU where it does not (HEVC on a player
     // without a decoder, 10-bit H.264). Either way the playlist is whole from the start, so the episode can be seeked
     // anywhere at once: a copied picture is cut on the file's own keyframes once the file is complete.
-    const encode = !copyFor || q > 0
+    const encode = !copyFor || q > 0 || force
     const seg = q ? `hls-q/${q}/${a}` : encode ? `hls-x/${a}` : a ? `hls-a/${a}` : 'hls'
     // Made here, not on the playlist's first request, so the keyframe read (a few seconds, once per file) happens while
     // the player shows its wait, rather than inside a request the player gives up on after ten.

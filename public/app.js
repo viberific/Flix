@@ -1519,6 +1519,8 @@ function playView(seriesId, season, label) {
     let meta = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
+    // This device could not decode the file as it is: from then on, for this episode, /info is asked for a converted picture.
+    let convertPic = false
     // A play that never starts on a file that is all here: asked again once (see attach).
     let stuckT = null, stuckRetried = false
     // An element whose source is taken away on purpose reports an error for it: that one is ours, not playback's.
@@ -2319,7 +2321,7 @@ function playView(seriesId, season, label) {
       // (2026-11-04, four quality recoveries on torrent 2273108), so only the last ask is allowed to fill `info` in.
       const seq = ++infoSeq
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', convertPic ? 'x=1' : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
       const got = await api(`${base}/info${q ? '?' + q : ''}`)
       if (seq !== infoSeq || !alive) return
       info = got
@@ -2533,6 +2535,21 @@ function playView(seriesId, season, label) {
           if (!alive) return
           if (ignoreError) { ignoreError = false; return }
           if (!v.currentSrc && !v.getAttribute('src') && !v.srcObject) return // no source at all is not playback going wrong
+          // MEDIA_ERR_DECODE: this device cannot decode these bytes (PIPELINE_ERROR_DECODE in the log, twice three seconds
+          // apart and then a dead episode, because the retry below asked for the very same file). Once, ask the box to
+          // convert the picture instead; that plays on anything.
+          const fam = sourceFamily()
+          if (v.error?.code === 3 && !convertPic && fam !== 'encode' && fam !== 'encode-small') {
+            convertPic = true
+            $('#msg').textContent = 'Converting this episode for this device…'
+            const land = resumeTarget()
+            noteRecover('decode', land, v.currentTime)
+            v.removeAttribute('src')
+            ignoreError = true
+            try { v.load() } catch { /* nothing to unload */ }
+            loadInfo(info.audioIndex ?? 0, land).catch((e) => fail(e.message))
+            return
+          }
           if (!fileRetry) {
             fileRetry = true
             $('#msg').textContent = 'Trying that again…'
@@ -2592,7 +2609,13 @@ function playView(seriesId, season, label) {
         // it; swapMedia() below hands any re-attach the live clock.
         // No CEA-608 captions from inside the picture: they arrived as a second, unlabelled captions track of their own,
         // which is how the CC list ended up with two entries ticked at once.
-        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true, ...(openAt > 5 ? { startPosition: openAt } : {}) })
+        // fragLoadPolicy: the box answers a segment only once it has been cut, and waits up to two minutes for one (see
+        // vodSegment). hls.js gave up on the first byte after ten seconds -- "fragLoadTimeOut, Timeout after 10000ms | seg 0"
+        // in the log, an episode dead before it started on a box busy cutting the one before -- so it waits 45 now, and a
+        // retry after a timeout carries on rather than starting the wait over with the same short fuse.
+        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true,
+          fragLoadPolicy: { default: { maxTimeToFirstByteMs: 45_000, maxLoadTimeMs: 120_000, timeoutRetry: { maxNumRetry: 3, retryDelayMs: 0, maxRetryDelayMs: 0 }, errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 } } },
+          ...(openAt > 5 ? { startPosition: openAt } : {}) })
         hls.loadSource(url); hls.attachMedia(v)
         let mediaFixes = 0
         // An undefined start is hls.js's own "no position given"; anything above five seconds is a place to open at.
@@ -2614,6 +2637,16 @@ function playView(seriesId, season, label) {
           // The box was still cutting this file's pieces a moment ago. A cold start feeds the player as it goes and hls.js runs
           // out of patience long before ffmpeg is done, so the retry budget is spent on a build that was going to arrive.
           if (coldGrace(d.type === Hls.ErrorTypes.MEDIA_ERROR ? swapMedia : () => hls.startLoad(liveOrNothing()))) return
+          // A copied picture this device keeps failing to decode: once, the converted one instead of the error screen.
+          const fam = sourceFamily()
+          if (d.type === Hls.ErrorTypes.MEDIA_ERROR && !convertPic && fam !== 'encode' && fam !== 'encode-small') {
+            convertPic = true
+            const land = resumeTarget()
+            noteRecover('decode', land, v?.currentTime ?? 0)
+            hls?.destroy(); hls = null
+            loadInfo(info.audioIndex ?? 0, land).catch((e) => fail(e.message))
+            return
+          }
           hls?.destroy(); hls = null
           // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(resumeTarget()) } else fail('Something went wrong playing this. Go back and try again.')
