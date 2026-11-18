@@ -2094,11 +2094,11 @@ function playView(seriesId, season, label) {
       sendReport('auto', why)
       report()
       avoid.push(play.torrentId); tries++; started = false
-      // A new copy has to play to show its first frame and take the wait screen down; a pause from the old one does not carry.
-      userPaused = false
       // The old source's intro hold must not fire on the new one: it took the wait screen down while the new file was still
       // being fetched, and left `holding` set for a picture that had never been held.
       clearTimeout(holdT); holding = false
+      // A new copy has to play to show its first frame and take the wait screen down; a pause from the old one does not carry.
+      userPaused = false
       clearInterval(timer); clearTimeout(subT); clearTimeout(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
       // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
       // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
