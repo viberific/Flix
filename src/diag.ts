@@ -13,7 +13,7 @@
  * Nothing here may ever take playback down: every write is best-effort and a failure turns the file off
  * rather than throwing.
  */
-import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
 
@@ -30,11 +30,11 @@ export interface DiagEvent {
   d?: Record<string, unknown>
 }
 
-/** Events kept in memory. At a few an hour this is weeks; at a hitch a second it is still a long evening. */
-const RING = 3000
-/** Size at which the file is rotated, and how many old ones are kept (so the folder stays under ~8 MB). */
-const FILE_MAX = 2 << 20
-const FILE_KEEP = 3
+/** Events kept in memory. The log is verbose now (every play's whole story), so the ring and the files are larger. */
+const RING = 8000
+/** Size at which the file is rotated, and how many old ones are kept (so the folder stays under ~36 MB). */
+const FILE_MAX = 6 << 20
+const FILE_KEEP = 5
 
 const ring: DiagEvent[] = []
 let dropped = 0
@@ -130,4 +130,34 @@ export function diagFiles(): { name: string; bytes: number }[] {
 export function timer(): () => number {
   const at = Date.now()
   return () => Date.now() - at
+}
+
+/**
+ * What may never reach the log: a television's signed token in a path (/api/tv/<token>/...), the internal key, a BTN key or
+ * passkey in a URL, a cookie. Applied to every string that comes from outside this file's own sentences.
+ */
+export function redact(s: unknown): string {
+  let out = String(s ?? '')
+  if (config.internalKey) out = out.split(config.internalKey).join('***')
+  if (config.btn?.apiKey) out = out.split(config.btn.apiKey).join('***')
+  return out
+    .replace(/\/api\/tv\/[^/\s?]+/g, '/api/tv/***')
+    .replace(/([?&](?:passkey|authkey|key|token|apikey|api_key)=)[^&\s]+/gi, '$1***')
+    .replace(/(cookie|authorization)(["':=\s]+)[^\s"',;]+/gi, '$1$2***')
+}
+
+/** An error as the log needs it: its message, its kind, and the top of its stack (where it was thrown). */
+export function errInfo(e: any, lines = 5): Record<string, unknown> {
+  if (e == null) return { error: String(e) }
+  const stack = typeof e.stack === 'string' ? e.stack.split('\n').slice(1, 1 + lines).map((x: string) => redact(x.trim())).join(' | ') : undefined
+  return { error: redact(e.message ?? e).slice(0, 400), name: e.name ?? e.constructor?.name, code: e.code ?? e.statusCode ?? undefined, ...(stack ? { stack: stack.slice(0, 700) } : {}) }
+}
+
+/** Every file of the log, oldest first, as one text: what an admin downloads to send on. */
+export function diagAll(): string {
+  const age = (x: string) => (x === 'flix.log' ? 0 : Number(x.split('.').pop()) || 0) // flix.log.5 is the oldest, flix.log the newest
+  const names = diagFiles().map((f) => f.name).sort((a, b) => age(b) - age(a))
+  const parts: string[] = []
+  for (const n of names) { try { parts.push(readFileSync(join(dir(), n), 'utf8')) } catch { /* rotated away just now */ } }
+  return parts.join('')
 }

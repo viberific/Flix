@@ -234,7 +234,7 @@ html.tv .disc-lb { font-size: 13px; }
 .player { touch-action: manipulation; position: fixed; inset: 0; z-index: 60; background: #000; overflow: hidden; }
 .player video { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; object-fit: contain; }
 .p-top { position: absolute; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; gap: 14px; color: #fff;
-  padding: max(16px, env(safe-area-inset-top, 0px)) var(--gutter-r) 40px var(--gutter); background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent); transition: opacity .5s var(--ease), transform .5s var(--ease); }
+  padding: max(16px, env(safe-area-inset-top, 0px)) var(--gutter-r) 64px var(--gutter); background: linear-gradient(to bottom, rgba(0,0,0,.82), rgba(0,0,0,.45) 55%, transparent); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .player.idle .p-top { opacity: 0; transform: translateY(-14px); pointer-events: none; } .player.idle { cursor: none; }
 /* Paused is a menu, not a film: the title and the certificate stay up even if the idle timer had just put the bar away
    when the viewer hit pause (the wake() that follows cannot always win the race against the class that hid it). */
@@ -953,7 +953,7 @@ svg.inl { width: 1.1em; height: 1.1em; vertical-align: -.2em; }
 .lp-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .lp-name { font-weight: 600; text-decoration: none; color: var(--fg); }
 .lp-name:hover { text-decoration: underline; }
-.lp-when { color: var(--dim); font-size: 12px; margin-right: auto; }
+.lp-when { color: var(--dim); font-size: 12px; margin-right: 6px; }
 .lp-list .btn { padding: 6px 12px; font-size: 13px; }
 .lp-list .btn.lp-keep { border-color: var(--accent); }
 .lp-acts { display: inline-flex; gap: 8px; flex: none; }
@@ -1197,7 +1197,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .player video::-webkit-media-text-track-container { transition: none; } }
 
 /* On a phone the health strip is one line (the whole message is one tap away in Settings), so it does not eat a fifth of the screen on every page. */
-@media (max-width: 560px) { .hbanner .hbmain { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: normal; } }
+@media (max-width: 560px) { .hbanner .hbmain { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: normal; } }
 
 /* A phone's settings tabs run past the edge: the last one fades out so it reads as a row that scrolls, and the row ends with
    room enough that the last tab is fully visible once scrolled to. */
@@ -1214,3 +1214,154 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    hangs under where the logo was. */
 .p-wait:not(:has(> .mark)) > .p-under { grid-row: 1 / -1; align-self: center; padding-top: 0; }
 .empty .btn + .btn { margin-left: 8px; }
+
+/* ---------- polish pass (2026-11-18) ---------- */
+/* Billboard: what the show is, under its name. */
+.hero .hmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; color: color-mix(in srgb, var(--fg) 80%, transparent); font-size: 15px; min-height: 22px; margin: 2px 0 8px; }
+.hero .hmeta .chip { color: var(--fg); }
+.hero .hov { max-width: 56ch; margin: 0 0 22px; color: color-mix(in srgb, var(--fg) 78%, transparent); font-size: 16px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hero .hov:empty { margin-bottom: 14px; }
+@media (max-width: 640px) { .hero .hmeta { font-size: 13.5px; } .hero .hov { font-size: 14.5px; margin-bottom: 18px; } }
+
+/* Leaving soon: the answer buttons sit beside the show they are about, not across the page from it. */
+.lp { max-width: 760px; }
+
+/* A row that scrolls on fades out at its right edge, so it reads as more to come rather than cut off. */
+.rowwrap.more .row-scroll { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 72px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 72px), transparent); }
+
+/* The Queue: groups flow side by side on a wide screen (Continue no longer holds a whole line for two cards), and each group is
+   a swipeable rail on a phone instead of a two-column grid as tall as five screens. */
+.queue-wrap { display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 44px; }
+.queue-wrap > .qsec { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.qgrid { display: flex; flex-wrap: wrap; gap: 26px 18px; }
+.qgrid > .qcard { width: 168px; flex: none; }
+.qgrid > .qcard.wide { width: calc(168px * 2 + 18px); }
+.qgrid > .qcard.empty { width: 168px; }
+@media (max-width: 640px) {
+  .queue-wrap { display: block; }
+  .qgrid { flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; margin: 0 calc(var(--gutter-r) * -1) 0 calc(var(--gutter) * -1); padding: 4px var(--gutter-r) 10px var(--gutter); scroll-padding-inline: var(--gutter) var(--gutter-r); gap: 14px; }
+  .qgrid::-webkit-scrollbar { display: none; }
+  .qgrid > .qcard { width: 134px; scroll-snap-align: start; }
+  .qgrid > .qcard.wide { width: 260px; }
+  .qgrid > .qcard.empty { width: 134px; }
+}
+
+/* Show page: episodes come first; the trailer and the cast share a line after them on a wide screen. */
+.btn-sub { font-weight: 500; opacity: .82; font-size: .86em; margin-left: 2px; }
+.btn-sub::before { content: '· '; }
+.s-extra { margin-top: 18px; }
+@media (min-width: 1000px) { .s-extra.two { display: grid; grid-template-columns: minmax(0, 620px) minmax(0, 1fr); gap: 40px; align-items: start; } .s-extra.two .cast { flex-wrap: wrap; overflow: visible; } }
+.ep .eo { max-width: 78ch; }
+.ep .eleft { color: var(--fg); font-weight: 600; }
+.pill-ck { color: var(--ok, #3ccf8e); font-weight: 700; }
+.pill[aria-selected=true] .pill-ck { color: inherit; }
+.pill-dot { display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+
+/* Player, on a phone: play/pause and the skips move to the middle of the picture, where a thumb expects them, and the bar
+   underneath keeps only the times and the options. A row of eight stops across 390 pixels put the length on top of the
+   skip button. */
+@media (max-width: 640px) {
+  html:not(.car) .p-c { position: absolute; left: 0; right: 0; bottom: calc(50dvh - 34px); gap: 40px; pointer-events: none; }
+  html:not(.car) .p-c > * { pointer-events: auto; }
+  html:not(.car) .p-c .p-btn { width: 50px; height: 50px; background: rgba(0,0,0,.32); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  html:not(.car) .p-c .p-btn svg { width: 26px; height: 26px; }
+  html:not(.car) .p-c .p-btn.big { width: 70px; height: 70px; }
+  html:not(.car) .p-c .p-btn.big svg { width: 32px; height: 32px; }
+  html:not(.car) .p-row { grid-template-columns: auto minmax(0, 1fr); }
+}
+
+/* Settings and Profile: a Save with nothing to save is a plain button until its form is changed. */
+.btn.primary.idle { color: var(--fg); background: color-mix(in srgb, var(--surface) 80%, transparent); border: 1px solid var(--line); box-shadow: none; }
+@media (hover: hover) { .btn.primary.idle:hover { background: var(--surface-2); box-shadow: none; } }
+.chart-empty { margin: 4px 0 2px; }
+.auth-hint { margin: -4px 2px 2px; font-size: 13px; }
+
+/* Keyboard shortcuts box. */
+.keys-box { max-width: 420px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; margin: 14px 0 18px; align-items: center; }
+.keys dt { white-space: nowrap; color: var(--dim); font-size: 13px; } .keys dd { margin: 0; font-size: 14px; }
+.keys kbd { display: inline-block; min-width: 22px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--line); border-bottom-width: 2px; background: var(--surface-2); color: var(--fg); font: 600 12px/1.4 inherit; text-align: center; }
+
+/* Reduced motion, everywhere: entrances, glows that slide, and hovers that move all settle at once. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
+}
+.keys-box .keys { text-align: left; } .keys dt { text-align: right; }
+.empty-acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 18px; } .empty-acts .btn + .btn { margin-left: 0; }
+.prefrow + .prefrow { margin-top: 12px; }
+#disc { scroll-margin-top: 84px; }
+.hero .actions .btn svg { flex: none; }
+
+/* ---------- polish pass 2 (2026-11-18) ---------- */
+/* Paused: the card names the show above the episode, and the top bar's title fades while the card is up. */
+.p-info-show { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.72); text-shadow: 0 1px 14px rgba(0,0,0,.8); }
+.p-info-show[hidden] { display: none; }
+.player .p-top .p-title { transition: opacity .3s var(--ease); }
+.player.pinfo-up .p-top .p-title { opacity: 0; }
+/* A page for a show that is gone: a heading, a line, and the way on. */
+.gone-h { display: block; color: var(--fg); font-size: 20px; margin-bottom: 6px; }
+/* Family: an allowed rating is a filled pill with a tick, a blocked one is plain, so who can watch what reads at a glance. */
+.rpill { display: inline-flex; align-items: center; gap: 5px; }
+.rpill[aria-pressed="true"] { background: linear-gradient(100deg, var(--accent), var(--accent-2)); color: var(--accent-fg, #fff); border-color: transparent; }
+.rpill[aria-pressed="true"]::before { content: '✓'; font-size: 11px; }
+.rpill[aria-pressed="false"] { background: transparent; color: var(--dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--dim) 60%, transparent); }
+.presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; }
+.presets .dim { margin-right: 4px; }
+.preset { border: 1px solid var(--line); background: var(--surface-2); color: var(--fg); padding: 6px 14px; border-radius: 99px; font: inherit; font-weight: 600; cursor: pointer; transition: background .2s, border-color .2s; }
+.preset:hover { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.preset[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--surface-2)); }
+/* A person: name and access on the left, one Manage button on the right. */
+.person { grid-template-columns: minmax(0, 1fr) auto; }
+.person .who { grid-column: 1; grid-row: 1; }
+.person .rcell { grid-column: 1; grid-row: 2; padding-left: 56px; }
+.person .pact { grid-column: 2; grid-row: 1 / span 2; align-self: start; position: relative; }
+.person .pwrow { grid-column: 1 / -1; }
+form.person .rcell, form.person > * { padding-left: 0; grid-column: auto; grid-row: auto; }
+.pmore { padding: 8px 14px; }
+.pmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 200px; display: flex; flex-direction: column; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.pmenu[hidden] { display: none; }
+.pmenu button { text-align: left; background: none; border: 0; color: var(--fg); font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+.pmenu button:hover, .pmenu button:focus-visible { background: var(--surface-2); }
+.pmenu button.danger { color: var(--bad); }
+@media (max-width: 760px) { .person { grid-template-columns: minmax(0, 1fr) auto; } .person .rcell { padding-left: 0; grid-column: 1 / -1; } }
+/* Who's watching, managing: the tiles wobble a little and carry a remove mark. */
+.who-manage { margin-top: -8px; }
+.who-hint { max-width: 44ch; text-align: center; margin: -20px 0 0; font-size: 14px; }
+.managing .who-tile[data-n] .who-av { position: relative; animation: whoJiggle .5s ease-in-out infinite alternate; }
+.managing .who-tile[data-n] .who-av::after { content: '✕'; position: absolute; top: -8px; right: -8px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; background: var(--bad); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+.managing a.who-tile { opacity: .35; pointer-events: none; }
+@keyframes whoJiggle { from { transform: rotate(-1.5deg); } to { transform: rotate(1.5deg); } }
+@media (max-width: 560px) { .pmore .pm-l { display: none; } .pmore { padding: 8px 12px; font-size: 18px; line-height: 1; } }
+
+/* ---------- player: previous / next episode, and the clock (layout B, 2026-11-18) ---------- */
+/* Above the bar on the right: a quiet pill for the episode before, a white one naming the one after. */
+.p-eps { display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 10px; }
+.p-eps[hidden] { display: none; }
+.p-btn.p-ep { width: auto; height: 44px; border-radius: 99px; display: inline-flex; align-items: center; gap: 9px; font: 600 14px/1.15 inherit; font-family: inherit; opacity: 1; }
+.p-btn.p-ep svg { width: 18px; height: 18px; flex: none; }
+.p-btn.p-ep.prev { padding: 0 16px 0 12px; border: 1px solid rgba(255,255,255,.24); background: rgba(10,12,16,.45); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: rgba(255,255,255,.92); }
+.p-btn.p-ep.next { padding: 0 12px 0 18px; background: #fff; color: #111; max-width: min(340px, 60vw); }
+.p-btn.p-ep.next:hover { background: #f0f1f4; }
+.p-btn.p-ep.prev:hover { background: rgba(255,255,255,.14); }
+.p-ep-t { display: flex; flex-direction: column; gap: 2px; text-align: left; min-width: 0; }
+.p-ep-t small { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #5b6170; }
+.p-ep-t b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-btn.p-ep:disabled { opacity: .38; cursor: default; }
+.p-btn.p-ep:focus-visible, html.tv .p-btn.p-ep:focus { transform: scale(1.06); outline: 3px solid var(--accent); outline-offset: 3px; }
+html.tv .p-btn.p-ep.prev:focus { background: #fff; color: #111; }
+.player.casting .p-eps { display: none; }
+/* Play / pause: a solid white circle, the one thing on the bar that is never missed. */
+.p-btn.big { background: #fff; color: #111; backdrop-filter: none; opacity: 1; }
+.p-btn.big:hover { background: #f0f1f4; }
+/* The clock: elapsed on the left with the end time beside it, what is left on the right. */
+.p-l { align-items: baseline; gap: 12px; }
+.p-ends { font-size: 12px; color: rgba(255,255,255,.62); white-space: nowrap; }
+@media (max-width: 640px) {
+  .p-btn.p-ep { height: 40px; font-size: 13px; }
+  .p-btn.p-ep.next { max-width: 62vw; }
+  .p-ends { display: none; }
+}
+@media (max-width: 640px) { html:not(.car) .p-c .p-btn.big { background: #fff; color: #111; backdrop-filter: none; } }
+html.tv .p-btn.big { background: #fff; color: #111; }
+/* A phone held upright: the paused card sits in the space above the picture, clear of the play buttons in its middle. */
+@media (max-width: 640px) { html:not(.tv):not(.car) .player .p-info { top: 84px; bottom: calc(50dvh + 48px); justify-content: flex-end; } }

@@ -27,12 +27,59 @@ async function wentThroughGate() {
 const gated = (msg) => Object.assign(new Error(msg), { gate: true })
 const GATE_MSG = 'Umbrel signed you out. This app sits behind Umbrel’s own login; sign in to Umbrel, then open Flix again.'
 
+/* ---------- the player's side of the log ----------
+ * Everything the box's log needs to tell one viewing from another and to say what the device was doing: a page-load id
+ * (sid) and a player id (pid) on every line, the device once per page load, and the player's state at the moment of each
+ * event. Sent with fetch keepalive, never through api() (whose own failures are logged here), throttled per kind so a burst
+ * cannot flood the box, and never allowed to throw.
+ */
+const LOG_SID = Math.random().toString(36).slice(2, 10)
+let logHelloSent = false
+let logPlayer = null // set by playView: { pid, state() } -- the open player's own answer to "where are you?"
+const logSeen = new Map()
+function clog(kind, data = {}, ctx = {}) {
+  try {
+    const now = Date.now(), seen = logSeen.get(kind) ?? { n: 0, at: now }
+    if (now - seen.at > 60_000) { seen.n = 0; seen.at = now }
+    if (++seen.n > 30 && !/error|fail/.test(kind)) return // 30 a minute of one kind is the story; errors always go
+    logSeen.set(kind, seen)
+    let st = {}
+    try { st = logPlayer?.state?.() ?? {} } catch { /* the player is half torn down */ }
+    const body = { kind, sid: LOG_SID, pid: logPlayer?.pid ?? null, ...data, ctx: { route: location.hash.slice(0, 80), ...st, ...ctx } }
+    fetch('/api/diag/client', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), keepalive: true, cache: 'no-store' }).catch(() => {})
+  } catch { /* logging must never break the page */ }
+}
+/** What this device is, once per page load: the line every other line of this sid is read against. */
+function logHello() {
+  const c = navigator.connection
+  clog('hello', {}, {
+    ua: navigator.userAgent, tv: isTv, car: isCar, touch: matchMedia('(pointer: coarse)').matches, screen: `${screen.width}x${screen.height}`,
+    viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio, lang: navigator.language, canPlay: CAN_PLAY, hls: !!window.Hls?.isSupported?.(),
+    standalone: matchMedia('(display-mode: standalone)').matches, shell: typeof shell !== 'undefined' ? !!shell : null, online: navigator.onLine,
+    net: c?.effectiveType ?? null, downMbps: c?.downlink ?? null, mem: navigator.deviceMemory ?? null, cores: navigator.hardwareConcurrency ?? null,
+  })
+}
+// A script error or a promise nobody caught, with where it came from: these left no trace before.
+addEventListener('error', (e) => { if (e.error || e.message) clog('jserror', {}, { message: String(e.message || e.error?.message).slice(0, 300), source: String(e.filename || '').split('/').pop(), line: e.lineno, col: e.colno, stack: String(e.error?.stack || '').split('\n').slice(0, 5).join(' | ').slice(0, 600) }) })
+addEventListener('unhandledrejection', (e) => { const r = e.reason; clog('jserror', {}, { message: String(r?.message ?? r).slice(0, 300), unhandled: true, stack: String(r?.stack || '').split('\n').slice(0, 5).join(' | ').slice(0, 600) }) })
+// The page going behind something and coming back: a phone locking mid-episode explains a stall that follows.
+document.addEventListener('visibilitychange', () => { if (logPlayer) clog('visibility', {}, { hidden: document.hidden }) })
+// The page being too busy to answer (the "controls stuck" reports): any task over a second while an episode is open.
+try { new PerformanceObserver((l) => { for (const e of l.getEntries()) if (logPlayer && e.duration > 1000) clog('longtask', {}, { ms: Math.round(e.duration) }) }).observe({ type: 'longtask', buffered: false }) } catch { /* not this browser */ }
+
 async function api(path, body, method, timeoutMs) {
+  const apiT0 = Date.now()
   let res
+  if (path === '/api/diag/client' && body && !body.sid) {
+    let st = {}
+    try { st = logPlayer?.state?.() ?? {} } catch { /* torn down */ }
+    body = { ...body, sid: LOG_SID, pid: logPlayer?.pid ?? null, ctx: { ...st, ...(body.ctx ?? {}) } }
+  }
   try {
     res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, cache: 'no-store',
       signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
   } catch (e) {
+    if (path !== '/api/diag/client') clog('apierror', {}, { path: path.split('?')[0].slice(0, 120), ms: Date.now() - apiT0, network: e.name || 'error', online: navigator.onLine })
     if (e.name === 'TimeoutError') throw new Error('The Flix server took too long to answer.')
     if (await wentThroughGate()) throw gated(GATE_MSG)
     if (!navigator.onLine) throw new Error('This device looks offline.')
@@ -46,6 +93,9 @@ async function api(path, body, method, timeoutMs) {
     throw new Error(`Flix answered ${res.status}${res.statusText ? ' ' + res.statusText : ''}.`)
   }
   const data = await res.json().catch(() => ({}))
+  const took = Date.now() - apiT0
+  if (res.status >= 500) clog('apierror', {}, { path: path.split('?')[0].slice(0, 120), status: res.status, ms: took, said: String(data.error ?? '').slice(0, 200) })
+  else if (took > 5000 && !path.startsWith('/api/diag')) clog('slowapi', {}, { path: path.split('?')[0].slice(0, 120), status: res.status, ms: took })
   if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, pin: !!data.pin, gated: !!data.gated, after: data.after ?? null })
   return data
 }
@@ -133,7 +183,12 @@ async function swap(fn) {
   let ran = false
   const once = () => { if (!ran) { ran = true; fn() } }
   // Not on a television: the cross-fade snapshots the whole screen twice, and on a TV's chip that is a stutter on every page.
-  if (!rmq.matches && !isTv && document.startViewTransition) {
+  // Never into, out of or between episodes either: while a view transition runs the screen is a frozen snapshot of the old
+  // page, and one that stalls (see the guard below) left the controls of a starting episode -- or of the one Up next had
+  // just left -- stuck on screen while a <video> was being torn down and another opened underneath. The player has its own
+  // entrance (the logo), so the cross-fade bought nothing there.
+  const player = location.hash.startsWith('#/play/') || location.hash.startsWith('#/offplay/') || !!document.querySelector('.player')
+  if (!rmq.matches && !isTv && !player && document.startViewTransition) {
     // A view transition can stall (the new page is built but never painted until something else happens), so never wait on one for long.
     const guard = setTimeout(once, 400)
     try { await document.startViewTransition(once).updateCallbackDone } catch { /* fall through */ }
@@ -349,13 +404,14 @@ function renderTop() {
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}${canDownload ? '<a href="#/downloads">Downloads</a>' : ''}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}${canDownload ? '<a href="#/downloads">Downloads</a>' : ''}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${!isTv && !isCar && matchMedia('(hover: hover) and (pointer: fine)').matches ? '<button id="keys">Keyboard shortcuts</button>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
       store.set('profiles', profiles().filter((p) => p.name !== me.name)); me = null
       if (profiles().length) go('#/profiles'); else route()
     }
+    const ks = $('#keys'); if (ks) ks.onclick = () => showShortcuts()
     const sw = $('#sw'); if (sw) sw.onclick = () => { try { sessionStorage.removeItem('flix.picked') } catch { /* ignore */ } go('#/profiles') }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
     // A remote lands on the first entry; Up and Down walk the list (see focusStops); Back closes it.
@@ -466,6 +522,12 @@ const CAN_PLAY = (() => {
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
 addEventListener('click', () => { for (const m of document.querySelectorAll('.menu:not(.out)')) closeMenu(m) })
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
+// "/" goes to the search field from anywhere outside the player, the way most sites do.
+addEventListener('keydown', (e) => {
+  if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || e.target.isContentEditable) return
+  const q = $('#q'); if (!q || top.hidden || $('.player') || $('.pin-modal')) return
+  e.preventDefault(); q.focus(); q.select()
+})
 
 /* ---------- profiles ("Who's watching?") ---------- */
 // Each profile used on this device keeps its own long-lived sign-in in local storage, so switching never asks for a password.
@@ -497,8 +559,20 @@ function profilesView() {
     top.hidden = true
     const ps = profiles()
     app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av${AV_ART[p.avatar] ? ' has-art' : ''}" style="--h:${hue(p.name)}">${avSvg(p.avatar) || esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
-      <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div></div>`
+      <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div>
+      <button class="btn who-manage" id="wm" aria-pressed="false">Manage profiles</button><p class="dim who-hint" id="wh" hidden>Tap a profile to take it off this device. It stays on Flix, and can be added back with its password or a sign-in link.</p></div>`
+    // Manage: tapping a profile takes it off this device's list instead of opening it. Nothing on the server changes.
+    const wrap = $('.who-wrap'), wm = $('#wm')
+    wm.onclick = () => { const on = !wrap.classList.contains('managing'); wrap.classList.toggle('managing', on); wm.setAttribute('aria-pressed', String(on)); wm.textContent = on ? 'Done' : 'Manage profiles'; $('#wh').hidden = !on }
     app.querySelectorAll('.who-tile[data-n]').forEach((b) => b.onclick = async () => {
+      if (wrap.classList.contains('managing')) {
+        const ok = await askConfirm({ title: `Remove ${b.dataset.n} from this device?`, body: `<p>${esc(b.dataset.n)} stays on Flix. To use this profile here again, sign in with its password or a sign-in link.</p>`, confirm: 'Remove from device' })
+        if (!ok) return
+        store.set('profiles', profiles().filter((x) => x.name !== b.dataset.n))
+        if (me?.name === b.dataset.n) { await api('/api/logout', {}).catch(() => {}); me = null }
+        if (!profiles().length) return go('#/signin')
+        return swap(profilesView()).then(() => $('#wm')?.click())
+      }
       const p = ps.find((x) => x.name === b.dataset.n)
       let pin, msg = ''
       for (;;) {
@@ -561,6 +635,21 @@ function askConfirm({ title, body, confirm }) {
   })
 }
 
+/** The player's keys, in the PIN box's frame (so Escape and a click outside close it). */
+function showShortcuts() {
+  const keys = [['/', 'Search'], ['Space or K', 'Play / pause'], ['← or J', 'Back 10 seconds'], ['→ or L', 'Forward 10 seconds'], ['0 to 9', 'Jump to 0% … 90% of the episode'], ['F', 'Full screen'], ['Z', 'Fill the screen / fit it'], ['Esc', 'Leave the player']]
+  const m = document.createElement('div'); m.className = 'pin-modal'
+  m.innerHTML = `<div class="pin-box keys-box" role="dialog" aria-modal="true" aria-labelledby="kst"><b id="kst">Keyboard shortcuts</b>
+    <dl class="keys">${keys.map(([k, d]) => `<dt>${k.split(' or ').map((x) => `<kbd>${esc(x)}</kbd>`).join(' or ')}</dt><dd>${esc(d)}</dd>`).join('')}</dl>
+    <div class="row-form"><button type="button" class="btn" id="pc">Close</button></div></div>`
+  document.body.appendChild(m)
+  const end = () => m.remove()
+  $('#pc', m).onclick = end
+  m.addEventListener('click', (e) => { if (e.target === m) end() })
+  m.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); end() } })
+  $('#pc', m).focus()
+}
+
 function joinView(token) {
   return () => {
     top.hidden = true
@@ -576,7 +665,7 @@ function authView(needsSetup) {
     app.innerHTML = `<div class="auth-wrap"><form class="auth"><div class="brand">${I.logo}<span>Flix</span></div>
       <h1 style="text-align:center">${needsSetup ? 'Create the admin account' : 'Welcome back'}</h1>
       <input class="field" name="name" placeholder="Username" autocomplete="username" value="${esc(signinHint)}" required>
-      <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password (8+ characters)' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required' : ''}>
+      <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required minlength="8" aria-describedby="pwh"' : ''}>${needsSetup ? '<p class="dim sm auth-hint" id="pwh">At least 8 characters. You add the rest of the family after this, in Settings.</p>' : ''}
       <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
     // OK on the username moves on to the password rather than submitting half a form (a remote's keyboard ends with OK).
     const nameIn = $('input[name=name]'), passIn = $('input[name=password]')
@@ -648,9 +737,9 @@ function queueHtml(st) {
   const group = (name, cards, k = '', hide = false) => `<section class="qsec"${k ? ` data-k="${k}"` : ''}${hide ? ' hidden' : ''}><h3 class="qg">${name}</h3><div class="grid qgrid"${k ? ` data-k="${k}"` : ''}>${cards.join('')}</div></section>`
   const resume = st.resume.map((c, i) => i ? qcard(contTile(c, i), c.seriesId) : qcard(wideTile(c, i), c.seriesId).replace('class="qcard"', 'class="qcard wide"'))
   const ready = st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id))
-  return `<h2 class="sec queue-h">Queue</h2>${resume.length ? group('Continue', resume) : ''}${ready.length ? group('Ready to Watch', ready) : ''}`
+  return `<h2 class="sec queue-h">Queue</h2><div class="queue-wrap">${resume.length ? group('Continue', resume) : ''}${ready.length ? group('Ready to Watch', ready) : ''}`
     + group('Your list', st.list.map((s, i) => qcard(tile(s, i), s.id, 'list')), 'list')
-    + group(st.title, st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')), 'sugg', !st.sugg.length)
+    + group(st.title, st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')), 'sugg', !st.sugg.length) + '</div>'
 }
 function wireRows(root) {
   const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
@@ -658,7 +747,7 @@ function wireRows(root) {
     const sc = $('.row-scroll', w), l = $('.arrow.l', w), r = $('.arrow.r', w)
     l.onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: smooth() })
     r.onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: smooth() })
-    const edges = () => { l.classList.toggle('off', sc.scrollLeft < 8); r.classList.toggle('off', sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 8) }
+    const edges = () => { const end = sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 8; l.classList.toggle('off', sc.scrollLeft < 8); r.classList.toggle('off', end); w.classList.toggle('more', !end) }
     sc.addEventListener('scroll', edges, { passive: true }); edges()
     // Rows already on screen use the normal rise; rows further down cascade in when scrolled to.
     if (io && w.getBoundingClientRect().top > innerHeight * 0.9) { w.classList.add('reveal'); io.observe(w); const h = w.previousElementSibling; if (h?.matches('h2.sec')) { h.classList.add('rv'); io.observe(h) } }
@@ -695,7 +784,10 @@ function wireQueue(root, st) {
   // Suggestions fill whole rows: one left alone on a row of its own read as a mistake, so past the first row a part-filled
   // last row is left out. They are only suggestions; adding one brings the next one up.
   const trim = () => {
-    const cards = [...boxes.sugg.children], cols = getComputedStyle(boxes.sugg).gridTemplateColumns.split(' ').filter(Boolean).length || 1
+    // How many fit on a line, measured: the groups wrap as flex rows now (a rail on a phone, where every card is on one line).
+    const cards = [...boxes.sugg.children]
+    cards.forEach((el) => el.classList.remove('qtrim'))
+    const top0 = cards[0]?.offsetTop, cols = cards.filter((el) => el.offsetTop === top0).length || 1
     const keep = cards.length > cols ? cards.length - (cards.length % cols) : cards.length
     cards.forEach((el, i) => el.classList.toggle('qtrim', i >= keep))
   }
@@ -765,7 +857,7 @@ function leavingPrompt(show) {
   if (!show.length) return ''
   return `<section class="lp rise" id="lp" role="group" aria-labelledby="lp-t">
     <div class="lp-head"><h2 id="lp-t">Leaving soon</h2><button class="lp-x" id="lp-x" aria-label="Not now">×</button></div>
-    <p class="lp-sub">Finished and seeded, but ${show.length === 1 ? 'nobody has' : 'nobody here has'} opened ${show.length === 1 ? 'it' : 'them'} yet. Say what you want and it is remembered.</p>
+    <p class="lp-sub">${show.length === 1 ? 'This is' : 'These are'} on the server, but nobody here has opened ${show.length === 1 ? 'it' : 'them'} yet. Keep ${show.length === 1 ? 'it' : 'one'} for later, or let it go to free up space. If nobody keeps ${show.length === 1 ? 'it' : 'one'}, it is removed when its days run out.</p>
     <ul class="lp-list">${show.map((l) => `<li data-t="${l.torrentId}">
       <a class="lp-name" href="#/series/${l.seriesId}">${esc(l.series || l.label || 'This download')}${l.season ? ' · S' + l.season : ''}</a>
       <span class="lp-when">${lpDays(l)}</span>
@@ -815,8 +907,8 @@ async function homeView(q, local = false) {
     if (!q && featured) {
       const s = featured
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">Featured</div>
-        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${isTv ? 'Press OK to see episodes' : 'Tap to see episodes'}</p>
-        <div class="actions rise" style="--i:3"><a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><div class="hmeta rise" id="hmeta" style="--i:2"></div><p class="hov rise" id="hov" style="--i:2"></p>
+        <div class="actions rise" style="--i:3"><a class="btn primary" id="hwatch" href="#/series/${s.id}">${I.play} <span>Watch now</span></a>
         <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
         ${isTv ? '' : `<a class="btn" href="#/series/${s.id}">${I.info} Details</a>`}</div></div></section>`
     } else html += '<div class="page-top"></div>'
@@ -841,7 +933,7 @@ async function homeView(q, local = false) {
       const tiles = series.map(tile).join('')
       html += `<h2 class="sec" style="margin-top:0" data-live="${esc(key)}">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
         (series.length ? `<div class="grid">${again ? tiles.replaceAll('tile rise"', 'tile"') : tiles}</div>`
-          : `<div class="empty fill">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
+          : `<div class="empty fill">No shows match “${esc(q)}”.<br><span class="dim" style="font-size:14px">Check the spelling, or browse everything Flix has.</span><div class="empty-acts"><a class="btn" href="#/">Clear search</a><a class="btn primary" href="#/" id="tobrowse">Browse all shows</a></div></div>`)
     }
     else {
       for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
@@ -890,6 +982,9 @@ async function homeView(q, local = false) {
       }
     if (queue) wireQueue(app, queue)
     wireLeavingPrompt()
+    const tb = $('#tobrowse'); if (tb) tb.onclick = () => { try { sessionStorage.setItem('flix.toDisc', '1') } catch { /* ignore */ } }
+    let toDisc = false; try { toDisc = sessionStorage.getItem('flix.toDisc') === '1'; sessionStorage.removeItem('flix.toDisc') } catch { /* ignore */ }
+    if (!q && toDisc) requestAnimationFrame(() => $('#disc')?.scrollIntoView({ block: 'start', behavior: 'instant' }))
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
     // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
     artShow?.stop?.()
@@ -904,6 +999,16 @@ async function homeView(q, local = false) {
       const stopTrailer = heroTrailer($('.hero'), hs.id)
       if (stopTrailer) { const prev = cleanup; cleanup = () => { prev?.(); stopTrailer() } }
     }
+    // The billboard's details and its episode come from the show itself, after the page has drawn: the row data has no
+    // summary, and Play should start the same episode the show page's Resume would.
+    if (hs) api('/api/series/' + hs.id).then(({ series: sd, episodes, current }) => {
+      if (!$('#hwatch')) return
+      const bits = [sd.rating && sd.rating !== 'Unrated' ? `<span class="chip">${esc(sd.rating)}</span>` : '', sd.score ? `<span class="star">★ ${esc(sd.score.toFixed(1))}</span>` : '', sd.year ? `<span>${sd.year}</span>` : '', sd.genres?.length ? `<span>${esc(sd.genres.slice(0, 3).join(' · '))}</span>` : '']
+      $('#hmeta').innerHTML = bits.filter(Boolean).join('')
+      $('#hov').textContent = sd.overview || ''
+      const { resume, hero: ep } = nextEpisode(episodes, current)
+      if (ep) { const w = $('#hwatch'); w.href = playHref(hs.id, ep); $('span', w).textContent = `${resume ? 'Resume' : 'Play'} ${epShort(ep)}` }
+    }).catch(() => {})
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
@@ -1081,6 +1186,20 @@ const ytApi = () => ytLoading ??= new Promise((ok, no) => {
   window.onYouTubeIframeAPIReady = ok
   document.head.append(sc)
 })
+/**
+ * The episode a show opens on: the one this person is in (the server's `current`), else the first available episode not yet
+ * watched. Shared by the show page's Resume and the billboard's Play, so both start the same episode.
+ */
+function nextEpisode(episodes, current) {
+  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available) : null
+  return { resume, hero: resume ?? episodes.find((e) => !e.watched && e.available) }
+}
+/** "S1:E3", or the release's own label when the episode has no number. */
+const epShort = (e) => (e.season != null && e.episode != null ? `S${e.season}:E${e.episode}` : e.label)
+const playHref = (id, e) => `#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`
+/** Minutes left in a part-watched episode, or 0 when it has not been started (or is done). */
+const minsLeft = (e) => (e.position > 30 && !e.watched && e.duration ? Math.max(1, Math.ceil((e.duration - e.position) / 60)) : 0)
+
 async function seriesView(id) {
   const { series, episodes, leavesAt, current } = await api('/api/series/' + id)
   const seasons = new Map()
@@ -1088,10 +1207,9 @@ async function seriesView(id) {
   // The episode this person is on, as the server worked it out: the one played last, or the one after it once that is
   // finished. Not "the first episode with some progress", which brought back an episode abandoned in its credits weeks
   // ago after the ones that followed it had been watched.
-  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available) : null
   // The hero never offers something the order rule forbids. A resume is always allowed (that episode was started);
   // otherwise it is the first episode that may be started and has not been watched, so Play Now cannot dead-end.
-  const hero = resume ?? episodes.find((e) => !e.watched && e.available)
+  const { hero } = nextEpisode(episodes, current)
   const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
   const wantedN = (list) => list.filter((e) => e.available && !e.watched).length
@@ -1100,7 +1218,7 @@ async function seriesView(id) {
   // otherwise the page fell back to the first unwatched episode, which is season 1 of a long show.
   const curKey = current ? (current.season ?? 'x') : null
   let cur = curKey !== null && seasons.has(curKey) ? curKey : hero ? (hero.season ?? 'x') : keys[keys.length - 1]
-  const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+  const go1 = (e) => go(playHref(id, e))
   const saved = new Set(canDownload ? (await dl.list()).map((m) => m.id) : [])
   return () => {
     
@@ -1109,14 +1227,14 @@ async function seriesView(id) {
       <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating"><span class="star">★ ${esc(series.score.toFixed(1))}</span> IMDb</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play'} ${esc(epShort(hero))}${minsLeft(hero) ? `<span class="btn-sub">${minsLeft(hero)} min left</span>` : ''}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
-      ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
-      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
-      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Put every episode of the season you are looking at on the server" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${'Torrent All'}</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Fetch every episode of this season to the server, so each one starts at once" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Fetch every episode to the server, so each one starts at once">${I.dl} <span>Get all episodes ready</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => { const list = seasons.get(k), seen = list.every((e) => e.watched || !e.available) && list.some((e) => e.watched), here = curKey !== null && k === curKey && !seen; return `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}"${seen ? ' title="Watched"' : here ? ' title="You are watching this season"' : ''}>${k === 'x' ? 'Episodes' : 'Season ' + k}${seen ? '<span class="pill-ck" aria-label="watched"> ✓</span>' : here ? '<i class="pill-dot" aria-hidden="true"></i>' : ''}</button>` }).join('')}</div><div class="eps" id="eps"></div>
+      ${series.trailerId || series.cast.length ? `<div class="s-extra${series.trailerId && series.cast.length ? ' two' : ''}">${series.trailerId ? `<section><h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div></section>` : ''}
+      ${series.cast.length ? `<section><h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div></section>` : ''}</div>` : ''}</div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const canSave = (e) => canDownload && e?.available && !(e.isPack && e.episode === null)
     // The ring fills as the episode is saved; tapping it once arms a stop, a second tap cancels.
@@ -1147,7 +1265,7 @@ async function seriesView(id) {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
-          <span class="es">${((rest) => (e.title ? `<span class="elab">${esc(e.label)}${rest ? ' · ' : ''}</span>` : '') + rest)([e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · '))}</span>
+          <span class="es">${((rest) => (e.title ? `<span class="elab">${esc(e.label)}${rest ? ' · ' : ''}</span>` : '') + rest)([minsLeft(e) ? `<b class="eleft">${minsLeft(e)} min left</b>` : e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · '))}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
         <span class="eside">${e.available ? '' : `<span class="lock" aria-label="Not available yet" title="Not available yet">${I.lock}</span>`}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => {
@@ -1185,10 +1303,10 @@ async function seriesView(id) {
       b.disabled = true; label.textContent = 'Starting…'
       try {
         const r = await api(`/api/series/${id}/download-all`, body())
-        b.classList.add('done'); b.innerHTML = `${I.saved} <span>${r.episodes ? `Downloading ${r.episodes} episode${r.episodes === 1 ? '' : 's'}` : 'Nothing left to download'}</span>`
+        b.classList.add('done'); b.innerHTML = `${I.saved} <span>${r.episodes ? `Getting ${r.episodes} episode${r.episodes === 1 ? '' : 's'} ready` : 'All episodes are ready'}</span>`
       } catch (e) { b.disabled = false; label.textContent = idle(); flashNote(e.message) }
     }
-    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => 'Torrent All')
+    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => 'Get all episodes ready')
     // The season button follows the season pill, and only shows when that season has something left to fetch.
     const hseason = $('#hseason')
     const paintSeasonBtn = () => {
@@ -1196,9 +1314,9 @@ async function seriesView(id) {
       // Shown only when it fetches something the other button would not: this season has something left, and so does another one.
       hseason.hidden = !wanted(seasons.get(cur) ?? []) || wantedN(seasons.get(cur) ?? []) === wantedN(episodes)
       hseason.disabled = false; hseason.classList.remove('done')
-      hseason.innerHTML = `${I.dl} <span>Torrent Season</span>`
+      hseason.innerHTML = `${I.dl} <span>Get season ready</span>`
     }
-    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => `Torrent Season`)
+    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => 'Get season ready')
     paintSeasonBtn()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
@@ -1311,6 +1429,8 @@ const qAsk = () => { const s = qSetting(); return s === 'auto' ? autoQuality : s
 
 /** "S01E03" reads as "E03" in a short note, the way it is said out loud; anything else is left alone. */
 const ICON = {
+  prevEp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5v14"/><path d="M18 6 9 12l9 6z" fill="currentColor"/></svg>',
+  nextEp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 5v14"/><path d="M6 6l9 6-9 6z" fill="currentColor"/></svg>',
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>',
@@ -1401,13 +1521,14 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
-        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
+        <div class="p-info" id="pinfo" hidden><span class="p-info-show" id="pis"></span><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
           ${isCar ? `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>` : ''}
           ${isCar ? '<div class="p-sync" id="psync"><span>Sound delay</span><button class="p-btn" id="psyncm" aria-label="Show the picture sooner">−</button><b id="psyncv"></b><button class="p-btn" id="psyncp" aria-label="Hold the picture back longer">+</button></div>' : ''}
+          ${isCar ? '' : `<div class="p-eps" id="peps" hidden><button class="p-btn p-ep prev" id="pprev" aria-label="Previous episode">${ICON.prevEp}<span></span></button><button class="p-btn p-ep next" id="pnext" aria-label="Next episode"><span class="p-ep-t"><small>Next episode</small><b></b></span>${ICON.nextEp}</button></div>`}
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
-          <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
+          <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span><span class="p-ends" id="pends"></span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
@@ -1419,8 +1540,30 @@ function playView(seriesId, season, label) {
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
+    /**
+     * The viewer pressed pause, and nothing but the viewer pressing play may start the picture again. The <video> carries
+     * `autoplay`, and every reload of its source (a recovery, a quality step-down, a seek that had to be restarted, hls.js
+     * re-attaching after a decoder error) resets the element's autoplay latch -- so a paused show used to start playing on
+     * its own the moment the reloaded source had buffered enough. While this is set the element's autoplay is off and the
+     * player's own play() calls stand down.
+     */
+    let userPaused = false
+    let userActAt = 0, selfAt = 0 // when the viewer last pressed play/pause, and when this player last reloaded its own source
+    const userPause = () => { if (!v) return; userActAt = Date.now(); userPaused = true; v.autoplay = false; v.pause(); clog('userpause') }
+    const userPlay = () => { if (!v) return Promise.resolve(); userActAt = Date.now(); userPaused = false; v.autoplay = true; clog('userplay'); return v.play() }
     top.hidden = true
     const pl = $('#pl')
+    // This opening of the player, in the log: an id for every line it sends, and its state at the moment of each one.
+    const openedAt = Date.now(), pid = Math.random().toString(36).slice(2, 8)
+    let closeWhy = 'navigated away'
+    const bufAhead = () => { try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 0.2 && v.currentTime <= v.buffered.end(i)) return Math.round((v.buffered.end(i) - v.currentTime) * 10) / 10 } catch { /* none */ } return 0 }
+    logPlayer = { pid, state: () => ({
+      series: +seriesId, season, label, torrent: play?.torrentId ?? null, file: play?.fileIndex ?? null, mode: info?.mode ?? null, family: sourceFamily(),
+      quality: info?.quality ?? null, convert: convertPic, t: v ? Math.round(v.currentTime * 10) / 10 : null, dur: v && Number.isFinite(v.duration) ? Math.round(v.duration) : null,
+      rs: v?.readyState ?? null, ns: v?.networkState ?? null, paused: v ? v.paused : null, ahead: v ? bufAhead() : null, started, holding, userPaused,
+      casting: castingOnly, sinceOpenMs: Date.now() - openedAt, hidden: document.hidden,
+    }) }
+    clog('open', {}, { from: (playerOrigin || '').slice(0, 60) })
     // In the car the player takes the whole screen, the corner under the car's own buttons included: the picture stays clear
     // of them and the panel beside it starts below them (see html.car in style.css, and FlixScreen for the other half).
     if (isCar) try { window.FlixCar?.immersive(true) } catch { /* an older app */ }
@@ -1438,6 +1581,8 @@ function playView(seriesId, season, label) {
     let meta = null
     let play = null, info = null, t0 = Date.now(), tries = 0, started = false, prefetched = false, lastSave = 0
     let fileRetry = false
+    // This device could not decode the file as it is: from then on, for this episode, /info is asked for a converted picture.
+    let convertPic = false
     // A play that never starts on a file that is all here: asked again once (see attach).
     let stuckT = null, stuckRetried = false
     // An element whose source is taken away on purpose reports an error for it: that one is ours, not playback's.
@@ -1481,7 +1626,7 @@ function playView(seriesId, season, label) {
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
     // started only by the player's own idle timer (manual mode), and any input at all brings the film back at once.
     let idleArt = null, artRun = 0
-    // The list of shows is asked for as soon as the show is paused, so that 30 seconds later the artwork is already
+    // The list of shows is asked for as soon as the show is paused, so that a minute later the artwork is already
     // on its way rather than only then starting a request.
     let homeP = null
     const warmArt = () => (homeP ??= api('/api/home').catch(() => { homeP = null; return null }))
@@ -1498,7 +1643,7 @@ function playView(seriesId, season, label) {
     // playing?" -- so the artwork slid over a show that was playing and had simply not been touched for three seconds.
     // `started` keeps it away during the loading screen, and paint() (which wakes while paused) keeps re-arming this
     // timer for as long as the show is stopped, so the artwork still arrives on a paused show left alone.
-    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 30000); armQuiet() }
+    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 60000); armQuiet() }
     // The bar goes away while the show plays: five seconds with no input and the top bar and the control bar fade out with
     // the cursor, and any pointer move, tap, key or remote press brings them straight back and starts the five again.
     // A class of its own -- NOT `idle`, whose timer arms the paused-state artwork slideshow: hiding the bar in the middle
@@ -1621,7 +1766,7 @@ function playView(seriesId, season, label) {
     const waitBtns = () => [...pl.querySelectorAll('#wait a[href], #wait button')].filter((x) => !x.closest('[hidden]') && x.offsetParent !== null && getComputedStyle(x).visibility !== 'hidden')
     const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
     const key = (e) => {
-      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
+      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || document.querySelector('.pin-modal')) return
       const k = e.key
       // On the black screen the arrows walk its buttons instead of seeking a picture that is not there: on the failure card
       // Right went 10 seconds forward instead of reaching Back. Up from the first one reaches the top bar.
@@ -1702,9 +1847,9 @@ function playView(seriesId, season, label) {
         return
       }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
-      if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
-      else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
-      else if (k === 'MediaPause') { e.preventDefault(); v.pause() }
+      if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? userPlay().catch(() => {}) : userPause() }
+      else if (k === 'MediaPlay') { e.preventDefault(); userPlay().catch(() => {}) }
+      else if (k === 'MediaPause') { e.preventDefault(); userPause() }
       // Held or pressed again and again, a skip key moves a marker along the bar with the picture for that moment over it,
       // and the picture itself jumps once, where the presses stop: one seek, not one per press.
       else if (k === 'MediaRewind' || k === 'ArrowLeft' || k === 'j') { e.preventDefault(); nudge(-10) }
@@ -1795,7 +1940,7 @@ function playView(seriesId, season, label) {
       // episode at HAVE_CURRENT_DATA (2), and asking for 3 here started a perfectly good picture over ten seconds after
       // every seek, with the spinner back up for the reload.
       const going = () => el.readyState >= 3 || el.ended || (!el.paused && el.currentTime > t + 0.5)
-      const resume = () => { if (live() && wasPlaying && el.paused && !holding) el.play().catch(() => {}) }
+      const resume = () => { if (live() && wasPlaying && el.paused && !holding && !userPaused) el.play().catch(() => {}) }
       el.addEventListener('seeked', resume, { once: true })
       setTimeout(() => {
         if (!live()) return
@@ -1821,7 +1966,10 @@ function playView(seriesId, season, label) {
       const d = totalT(), t = nowT(), pct = d ? Math.min(100, (t / d) * 100) : 0
       if (!$('#pprog')) return
       $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
-      $('#ptime').textContent = fmtT(t); $('#pdur').textContent = fmtT(d)
+      $('#ptime').textContent = fmtT(t); $('#pdur').textContent = d ? '−' + fmtT(Math.max(0, d - t)) : '0:00'
+      // When it would finish if it carried on now: worth a glance on a paused show, so it is there whichever state it is in.
+      const ends = d && d - t > 30 ? `Ends ${new Date(Date.now() + (d - t) * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''
+      if ($('#pends') && $('#pends').textContent !== ends) $('#pends').textContent = ends
       $('#pseek').setAttribute('aria-valuenow', String(Math.round(pct)))
       // The range the playhead is in, not the last one: after a seek the last range is somewhere else entirely.
       try {
@@ -1853,10 +2001,15 @@ function playView(seriesId, season, label) {
       const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
       const show = paused && !castingOnly && started
       card.hidden = !show
+      // While this card is up it says what is playing, so the top bar's own title steps aside rather than say it twice.
+      pl.classList.toggle('pinfo-up', show)
       if (!show) return
       const s = meta?.series
-      const head = play?.episodeTitle ? `${play.title} · ${play.episodeTitle}` : (play?.seriesName || play?.title || '')
+      const showName = play?.seriesName || s?.name || ''
+      const head = play?.episodeTitle ? `${play.title} · ${play.episodeTitle}` : (play?.title || showName)
       if ($('#pit').textContent !== head) $('#pit').textContent = head
+      const sn = head === showName ? '' : showName
+      $('#pis').textContent = sn; $('#pis').hidden = !sn
       const rate = s?.rating && s.rating !== 'Unrated' ? s.rating : ''
       const r = $('#pir'); r.hidden = !rate; r.textContent = rate
       const ep = meta?.episodes?.find((e) => e.label === play?.title && e.season === (season === 'x' ? null : +season))
@@ -1991,7 +2144,7 @@ function playView(seriesId, season, label) {
         nudge(e.key === 'ArrowRight' ? 15 : -15)
         wake()
       })
-      $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) v.play().catch(() => {}); else v.pause() }; wake() }
+      $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) userPlay().catch(() => {}); else userPause() }; wake() }
       $('#pbw').onclick = () => { nudge(-10); wake() }
       $('#pfw').onclick = () => { nudge(10); wake() }
       $('#pfull').onclick = () => { if (carWide()) setCarMax(!carMax); else setFill(!fill); paint() }
@@ -2017,6 +2170,36 @@ function playView(seriesId, season, label) {
       if (el) { el.hidden = !rate; el.textContent = rate }
       meta = s
       fillPause()
+      fillEpisodeButtons()
+    }
+    /**
+     * Previous and next episode, above the bar on the right: a quiet pill naming the one before, a white one naming the one
+     * after. Next is the server's own choice (play.next, the same one Up next offers) when it has one, else the following
+     * playable episode in the show's order. Either end of the show greys its button out rather than hiding it, so nothing
+     * moves between episodes. Moving on keeps the place in this episode (it is not marked watched) and replaces it in the
+     * history, so Back still goes to the show.
+     */
+    function fillEpisodeButtons() {
+      const box = $('#peps'); if (!box || !meta?.episodes?.length || !play) return
+      const list = meta.episodes.filter((e) => e.available)
+      const here = meta.episodes.findIndex((e) => e.label === play.title && (e.season ?? null) === (season === 'x' ? null : +season))
+      const prev = here > 0 ? [...meta.episodes.slice(0, here)].reverse().find((e) => e.available) : null
+      const after = here >= 0 ? meta.episodes.slice(here + 1).find((e) => e.available) : null
+      const next = play.next ? meta.episodes.find((e) => e.label === play.next.label && (e.season ?? null) === (play.next.season ?? null)) ?? { ...play.next, available: true } : after
+      box.hidden = list.length < 2
+      const name = (e) => `${epShort(e)}${e.title ? ' · ' + e.title : ''}`
+      const pb = $('#pprev'), nb = $('#pnext')
+      pb.disabled = !prev; $('span', pb).textContent = prev ? epShort(prev) : 'First episode'
+      pb.setAttribute('aria-label', prev ? `Previous episode: ${name(prev)}` : 'No previous episode')
+      nb.disabled = !next; $('b', nb).textContent = next ? name(next) : 'Last episode'
+      nb.setAttribute('aria-label', next ? `Next episode: ${name(next)}` : 'No next episode')
+      const to = (e) => async () => {
+        if (!e) return
+        closeWhy = `${e === prev ? 'previous' : 'next'} episode button`; clog('nav', {}, { via: e === prev ? 'prev' : 'next', to: e.label })
+        await Promise.race([report(), new Promise((res) => setTimeout(res, 1200))])
+        location.replace(`#/play/${seriesId}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+      }
+      pb.onclick = to(prev); nb.onclick = to(next)
     }
     addEventListener('keydown', key)
     // The app was in the background and has been brought back to the front. Android keeps the page exactly as it was, and
@@ -2048,6 +2231,8 @@ function playView(seriesId, season, label) {
       try { el.pause(); el.querySelectorAll('track').forEach((t) => t.remove()); el.removeAttribute('src'); el.load() } catch { /* already gone */ }
     }
     cleanup = () => {
+      clog('close', {}, { why: closeWhy, watchedSec: startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0 })
+      if (logPlayer?.pid === pid) logPlayer = null
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
@@ -2066,6 +2251,8 @@ function playView(seriesId, season, label) {
 
     function fail(msg) {
       if (!alive) return
+      // The screen a viewer sees, with everything the player knew: until now this left only the generic sentence behind.
+      clog('fail', {}, { message: String(msg).slice(0, 300), said: friendly(msg, haveFrac >= 1).slice(0, 200), fileRetry, convertPic, tries, recoveries, coldTries, mediaError: v?.error?.code ?? null, mediaMessage: String(v?.error?.message ?? '').slice(0, 200), haveFrac: Math.round(haveFrac * 100) / 100 })
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearTimeout(subT); hls?.destroy(); hls = null
       $('.mark')?.remove(); restoreWait()
@@ -2087,6 +2274,8 @@ function playView(seriesId, season, label) {
       // The old source's intro hold must not fire on the new one: it took the wait screen down while the new file was still
       // being fetched, and left `holding` set for a picture that had never been held.
       clearTimeout(holdT); holding = false
+      // A new copy has to play to show its first frame and take the wait screen down; a pause from the old one does not carry.
+      userPaused = false
       clearInterval(timer); clearTimeout(subT); clearTimeout(haveT); haveT = null; clearTimeout(stuckT); hls?.destroy(); hls = null; if (v) { releaseVideo(v); v.remove(); v = null }
       // Nothing about the old file carries over to the new one. Its "on the box" share kept the bar (and the drag-to-seek
       // that a whole file allows) at the old file's level, the old poll kept running beside the new one's, and its credits
@@ -2099,9 +2288,17 @@ function playView(seriesId, season, label) {
       restoreWait(); $('#msg').textContent = 'Finding a faster source…'
       t0 = Date.now(); begin()
     }
-    $('#rep').onclick = () => {
-      if (tries >= 3) { sendReport('manual', 'Reported with no other source left'); $('#rep').hidden = true; return }
-      sendReport('manual', 'Viewer tapped Something’s wrong'); switchSource('Viewer tapped Something’s wrong')
+    // One tap used to swap the copy at once, so a stray tap reloaded the episode with no word of why. It asks now, and says
+    // what happened.
+    $('#rep').onclick = async () => {
+      const last = tries >= 3
+      const ok = await askConfirm(last
+        ? { title: 'Report a problem?', body: '<p>There is no other copy of this episode to try. Flix will tell the admin this one is not playing well.</p>', confirm: 'Report it' }
+        : { title: 'Try a different copy?', body: '<p>Flix will switch to another copy of this episode, carry on from the same moment, and tell the admin this one had a problem.</p>', confirm: 'Try another copy' })
+      wake()
+      if (!ok || !alive) return
+      if (last) { sendReport('manual', 'Reported with no other source left'); $('#rep').hidden = true; flashNote('Reported. Thanks for letting us know.'); return }
+      sendReport('manual', 'Viewer tapped Something’s wrong'); flashNote('Trying another copy…'); switchSource('Viewer tapped Something’s wrong')
     }
 
     /**
@@ -2158,7 +2355,9 @@ function playView(seriesId, season, label) {
 
     async function begin() {
       try {
+        const askedAt = Date.now()
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
+        clog('watch', {}, { ms: Date.now() - askedAt, position: Math.round(Number(play.position) || 0), playQuality: play.quality ?? null, next: play.next?.label ?? null, avoid })
         if (!alive) return
         // A different episode: the position kept for the last one says nothing about this one.
         held = 0
@@ -2167,6 +2366,7 @@ function playView(seriesId, season, label) {
         savedPos = Number(play.position) > 5 ? Number(play.position) : 0
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
         $('#rep').hidden = false
+        fillEpisodeButtons()
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
         // The wait screen's numbers, once a second until the picture starts -- and then no more: this used to keep asking
@@ -2190,10 +2390,12 @@ function playView(seriesId, season, label) {
       // (2026-11-04, four quality recoveries on torrent 2273108), so only the last ask is allowed to fill `info` in.
       const seq = ++infoSeq
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', convertPic ? 'x=1' : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const infoAskedAt = Date.now()
       const got = await api(`${base}/info${q ? '?' + q : ''}`)
       if (seq !== infoSeq || !alive) return
       info = got
+      clog('info', {}, { ms: Date.now() - infoAskedAt, asked: q.replace(/cv=[^&]*/, '').slice(0, 60), seekable: !!got.seekable, converting: !!got.converting, qualities: got.qualities ?? [], subs: (got.subs ?? []).length, audioTracks: (got.audio ?? []).length })
       // The audio language chosen on this device wins over the file's default track, and with no choice made yet that is
       // English: an anime release's first track is usually Japanese, with the English dub second. Subtitles stay on either way.
       if (!a) {
@@ -2234,7 +2436,7 @@ function playView(seriesId, season, label) {
      * nothing, which is also why there is no Web Audio tap: routing the sound through an AudioContext to measure it
      * would change the very pipeline being measured, and break a television and a cast receiver.
      */
-    let driftT = null, frameMt = null, rvfcOn = false, skewBase = [], driftOver = 0, driftSentAt = 0
+    let driftT = null, frameMt = null, rvfcOn = false, skewBase = [], driftOver = 0, driftSentAt = 0, resyncAt = 0
     const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1] }
     function startDrift() {
       clearInterval(driftT)
@@ -2247,13 +2449,29 @@ function playView(seriesId, season, label) {
       driftT = setInterval(sampleDrift, 1000)
     }
     function sampleDrift() {
-      if (!alive || !v || frameMt == null || v.paused || v.readyState < 2 || !(v.currentTime > 1)) return
+      // A hidden page draws no frames while the sound plays on (a phone's screen off, the app behind another): the gap
+      // there is the browser resting the picture, not drift, and it filled the log with "drift" that nobody could see.
+      if (document.hidden) { driftOver = 0; return }
+      if (!alive || !v || frameMt == null || v.paused || v.seeking || v.readyState < 2 || !(v.currentTime > 1)) return
       const skew = v.currentTime - frameMt
       // The source's own latency, taken once: before it is known there is nothing to compare against.
       if (skewBase.length < 10) { skewBase.push(skew); return }
       const driftMs = Math.round((skew - median(skewBase)) * 1000)
       if (Math.abs(driftMs) <= 150) { driftOver = 0; return }
-      if (++driftOver < 2 || Date.now() - driftSentAt < 10_000) return
+      ++driftOver
+      // Measured and never mended: 340 "drift" lines in the box's log, every one of them left as it was. Picture and sound
+      // that stay a quarter of a second or more apart for three seconds running are put back together by asking the element
+      // for the moment it is already at -- a seek realigns the decoders -- at most once a minute, and the source's latency is
+      // taken again afterwards, because a seek can change it.
+      if (Math.abs(driftMs) >= 250 && driftOver >= 3 && Date.now() - resyncAt > 60_000) {
+        resyncAt = Date.now(); driftOver = 0
+        const at = v.currentTime
+        api('/api/diag/client', { kind: 'resync', at: Math.round(at * 10) / 10, driftMs, family: sourceFamily(), audio: sourceAudio(), torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null }).catch(() => {})
+        try { v.currentTime = at; guardSeek(at, true) } catch { /* not seekable right now */ }
+        skewBase = []
+        return
+      }
+      if (driftOver < 2 || Date.now() - driftSentAt < 10_000) return
       driftSentAt = Date.now()
       api('/api/diag/client', { kind: 'drift', at: Math.round(v.currentTime * 10) / 10, driftMs, height: v.videoHeight || null,
         readyState: v.readyState, paused: !!v.paused, family: sourceFamily(), audio: sourceAudio(),
@@ -2261,6 +2479,7 @@ function playView(seriesId, season, label) {
     }
     function attach(startAt) {
       if (castingOnly) return // the TV has it; nothing plays here
+      selfAt = Date.now()
       /**
        * A source is never swapped UNDER a running pipeline. Destroying the playlist and setting the next one left the
        * element's own audio output carrying the clock of the source that had gone, and picture and sound then ran at
@@ -2293,6 +2512,7 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
+        v.autoplay = !userPaused
         if (fill || carMax) v.style.objectFit = 'cover'
         carPic?.mount($('#vw'))
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
@@ -2304,10 +2524,11 @@ function playView(seriesId, season, label) {
           if (started) return
           started = true
           startedAt = Date.now()
+          clog('firstframe', {}, { ms: startedAt - openedAt })
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; if (!userPaused) v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }
         v.addEventListener('playing', firstFrame, { once: true })
@@ -2351,7 +2572,13 @@ function playView(seriesId, season, label) {
         // The picture coming back must always take the artwork with it: paint() runs on play and pause and wakes while
         // paused, but a play event that finds no pause in between (a resume after a stall, a source swap) would
         // otherwise leave the artwork sitting over a show that is playing again.
-        v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
+        // Paused or started by anything but the viewer, once the episode is under way: a reload, a stall the browser gave up
+        // on, a TV's own remote, autoplay after a source swap ("it resumes on its own after I pause" is this line).
+        // Only what nobody asked for is written: a pause while the viewer had it playing (not a reload this player started, not
+        // the intro hold), and a play while the viewer had paused it.
+        v.addEventListener('pause', () => { if (alive && started && !holding && !userPaused && !v.ended && !v.seeking && Date.now() - selfAt > 1500 && Date.now() - userActAt > 800) clog('autopause') })
+        v.addEventListener('play', () => { if (alive && started && userPaused && Date.now() - userActAt > 800) clog('autoplay', {}, { whilePausedByViewer: true }) })
+        v.addEventListener('play', () => { if (!holding) { userPaused = false; v.autoplay = true }; artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
         let lastT = -1
         v.ontimeupdate = () => {
           // Playing for real: not paused, a picture to show, and the clock has moved on since the last tick.
@@ -2403,6 +2630,21 @@ function playView(seriesId, season, label) {
           if (!alive) return
           if (ignoreError) { ignoreError = false; return }
           if (!v.currentSrc && !v.getAttribute('src') && !v.srcObject) return // no source at all is not playback going wrong
+          // MEDIA_ERR_DECODE: this device cannot decode these bytes (PIPELINE_ERROR_DECODE in the log, twice three seconds
+          // apart and then a dead episode, because the retry below asked for the very same file). Once, ask the box to
+          // convert the picture instead; that plays on anything.
+          const fam = sourceFamily()
+          if (v.error?.code === 3 && !convertPic && fam !== 'encode' && fam !== 'encode-small') {
+            convertPic = true
+            $('#msg').textContent = 'Converting this episode for this device…'
+            const land = resumeTarget()
+            noteRecover('decode', land, v.currentTime)
+            v.removeAttribute('src')
+            ignoreError = true
+            try { v.load() } catch { /* nothing to unload */ }
+            loadInfo(info.audioIndex ?? 0, land).catch((e) => fail(e.message))
+            return
+          }
           if (!fileRetry) {
             fileRetry = true
             $('#msg').textContent = 'Trying that again…'
@@ -2462,7 +2704,13 @@ function playView(seriesId, season, label) {
         // it; swapMedia() below hands any re-attach the live clock.
         // No CEA-608 captions from inside the picture: they arrived as a second, unlabelled captions track of their own,
         // which is how the CC list ended up with two entries ticked at once.
-        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true, ...(openAt > 5 ? { startPosition: openAt } : {}) })
+        // fragLoadPolicy: the box answers a segment only once it has been cut, and waits up to two minutes for one (see
+        // vodSegment). hls.js gave up on the first byte after ten seconds -- "fragLoadTimeOut, Timeout after 10000ms | seg 0"
+        // in the log, an episode dead before it started on a box busy cutting the one before -- so it waits 45 now, and a
+        // retry after a timeout carries on rather than starting the wait over with the same short fuse.
+        hls = new Hls({ maxBufferLength: 90, backBufferLength: 60, startFragPrefetch: true, enableCEA708Captions: false, renderTextTracksNatively: true,
+          fragLoadPolicy: { default: { maxTimeToFirstByteMs: 45_000, maxLoadTimeMs: 120_000, timeoutRetry: { maxNumRetry: 3, retryDelayMs: 0, maxRetryDelayMs: 0 }, errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 } } },
+          ...(openAt > 5 ? { startPosition: openAt } : {}) })
         hls.loadSource(url); hls.attachMedia(v)
         let mediaFixes = 0
         // An undefined start is hls.js's own "no position given"; anything above five seconds is a place to open at.
@@ -2484,6 +2732,16 @@ function playView(seriesId, season, label) {
           // The box was still cutting this file's pieces a moment ago. A cold start feeds the player as it goes and hls.js runs
           // out of patience long before ffmpeg is done, so the retry budget is spent on a build that was going to arrive.
           if (coldGrace(d.type === Hls.ErrorTypes.MEDIA_ERROR ? swapMedia : () => hls.startLoad(liveOrNothing()))) return
+          // A copied picture this device keeps failing to decode: once, the converted one instead of the error screen.
+          const fam = sourceFamily()
+          if (d.type === Hls.ErrorTypes.MEDIA_ERROR && !convertPic && fam !== 'encode' && fam !== 'encode-small') {
+            convertPic = true
+            const land = resumeTarget()
+            noteRecover('decode', land, v?.currentTime ?? 0)
+            hls?.destroy(); hls = null
+            loadInfo(info.audioIndex ?? 0, land).catch((e) => fail(e.message))
+            return
+          }
           hls?.destroy(); hls = null
           // An HDR copy the device cannot decode (or a source that turned out not to be HDR) drops back to the 1080p cut rather than failing.
           if (canHdr) { info.useHdrOff = true; canHdr = false; attach(resumeTarget()) } else fail('Something went wrong playing this. Go back and try again.')
@@ -2530,7 +2788,8 @@ function playView(seriesId, season, label) {
           el.addEventListener('timeupdate', noRewind)
         }
       }
-      v.play?.().catch(() => {})
+      // A reload under a show the viewer paused stays paused: it lands on the same frame and waits for them.
+      if (!userPaused) v.play?.().catch(() => {})
       // A finished file that has not started playing half a minute after it was handed over is stuck, not slow: nothing
       // is being waited for. Ask /info once more (a fresh link, and the box's fresh view of the file) and play that.
       clearTimeout(stuckT)
@@ -2708,6 +2967,7 @@ function playView(seriesId, season, label) {
       const onward = async () => {
         if (moving) return
         moving = true
+        closeWhy = left <= 0 ? 'up next countdown' : 'up next play now'; clog('nav', {}, { via: left <= 0 ? 'countdown' : 'upnext', to: nx.label })
         clearInterval(cdT)
         await Promise.race([report(true), new Promise((r) => setTimeout(r, 1500))])
         location.replace(target)
@@ -2736,6 +2996,7 @@ function playView(seriesId, season, label) {
     }
 
     function onEnded() {
+      closeWhy = 'finished'; clog('ended', {}, { next: play?.next?.label ?? null })
       report(true)
       if (!play.next) return leavePlayer()
       showUpNext()
@@ -2919,6 +3180,7 @@ function stallBlamesLine(stallMs, lateMs) {
         if (qSetting() !== 'auto' || castingOnly || !alive || qSwitching) return
         const next = (info.qualities || []).find((h) => h < (info.quality || Infinity))
         if (!next) return
+        clog('stepdown', {}, { from: info.quality ?? 'original', to: next })
         autoQuality = next
         flashNote(`Slow connection: switched to ${next}p`)
         switchQuality()
@@ -3182,32 +3444,39 @@ async function settingsView(section = 'torrents') {
   return () => {
     app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Settings</h1>${addressHint()}
       <nav class="snav" aria-label="Settings sections"><div class="pills">${SETTINGS_PILLS.map(([id, l]) => `<a class="pill" href="#/settings/${id}" data-s="${id}">${l}</a>`).join('')}</div></nav>
-      <section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
+      <style id="sshow"></style><section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
     downloadsPanel(downloads, $('#s-torrents')); familyPanel(family, $('#s-family')); settingsPanel(conns, $('#s-conn'))
+    quietSaves(app)
     const pills = [...app.querySelectorAll('.snav .pill')]
-    const jump = (id, smoothly) => { const el = document.getElementById('s-' + id); if (el) el.scrollIntoView({ block: 'start', behavior: smoothly ? 'smooth' : 'instant' }) }
-    pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); jump(p.dataset.s, !rmq.matches) })
-    // Highlight the section being read: the last one whose top has scrolled up under the pills.
-    const onScroll = () => {
-      // A section is the one being read once its top is within a short reach under the tab bar, measured from the bar itself
-      // (it is taller on a phone), so arriving on a section that settled a little lower still lights its own tab.
-      let cur = SETTINGS_PILLS[0][0], line = (app.querySelector('.snav')?.getBoundingClientRect().bottom ?? 120) + 110
-      let best = -Infinity
-      for (const [id] of SETTINGS_PILLS) { const t = document.getElementById('s-' + id)?.getBoundingClientRect().top; if (t != null && t <= line && t > best) { best = t; cur = id } }
-      // At the foot of the page the last sections can never scroll up to the bar: the one asked for (its tab, or the link
-      // that opened it) stays lit while it is on screen, else the last one.
-      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
-        const asked = location.hash.split('/')[2], at = document.getElementById('s-' + asked)?.getBoundingClientRect()
-        cur = at && at.top < innerHeight && at.bottom > 0 ? asked : SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
-      }
-      pills.forEach((p) => { const on = p.dataset.s === cur; p.setAttribute('aria-selected', String(on)); if (on && p.scrollIntoView) { const box = p.parentElement; box.scrollTo({ left: p.offsetLeft - (box.clientWidth - p.offsetWidth) / 2, behavior: 'auto' }) } })
+    /*
+     * A tab shows its own section and nothing else: the page used to stack all eight, 5,000 pixels of them, and the tabs only
+     * scrolled it. Which section is up is a rule in #sshow rather than `hidden` on the sections, because the connection
+     * panels redraw themselves (keepFocus) and a redraw would bring the hidden ones back.
+     */
+    const CONN = ['btn', 'ratings', 'tmdb', 'playback', 'qb', 'subs']
+    const show = (id) => {
+      const ids = id === 'playback' ? ['playback', 'pace'] : [id]
+      $('#sshow').textContent = `#app .ssec { display: none; } ${[...ids, ...(CONN.includes(id) ? ['conn'] : [])].map((x) => `#app #s-${x}`).join(', ')} { display: block; }`
+      pills.forEach((p) => p.setAttribute('aria-selected', String(p.dataset.s === id)))
+      const on = pills.find((p) => p.dataset.s === id), box = on?.parentElement
+      if (on && box) box.scrollTo({ left: on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2, behavior: 'auto' })
     }
-    addEventListener('scroll', onScroll, { passive: true })
-    const prev = cleanup; cleanup = () => { prev?.(); removeEventListener('scroll', onScroll) }
-    if (section !== 'torrents') requestAnimationFrame(() => jump(section, false))
-    onScroll()
+    pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); show(p.dataset.s); window.scrollTo({ top: 0, behavior: 'instant' }) })
+    show(section)
     if (isTv) (pills.find((p) => p.dataset.s === section) || pills[0])?.focus({ preventScroll: true }) // a remote starts on the section bar
   }
+}
+
+/**
+ * Save buttons that have nothing to save are plain buttons: a page of eight glowing primaries had nothing to say which one
+ * mattered. Typing (or ticking, or choosing) in a form lights its own Save up. Delegated, so a panel that redraws keeps it.
+ */
+function quietSaves(root) {
+  const mark = () => root.querySelectorAll('form button.btn.primary:not([type=button])').forEach((b) => { if (!b.closest('form').dataset.dirty) b.classList.add('idle') })
+  mark()
+  root.addEventListener('input', (e) => { const f = e.target.closest?.('form'); if (!f) return; f.dataset.dirty = '1'; f.querySelectorAll('button.btn.primary').forEach((b) => b.classList.remove('idle')) })
+  root.addEventListener('submit', (e) => { const f = e.target; setTimeout(() => { delete f.dataset.dirty; if (f.isConnected) f.querySelectorAll('button.btn.primary:not([type=button])').forEach((b) => b.classList.add('idle')) }, 800) })
+  new MutationObserver(mark).observe(root, { childList: true, subtree: true })
 }
 
 const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const mins = Math.round(sec / 60), h = Math.floor(mins / 60), m = mins % 60; return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
@@ -3248,6 +3517,8 @@ function storageChart(el, h) {
   const narrow = W < 520
   const fmt = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
   const first = pts.findIndex((p) => p[1] > 0)
+  // An empty year is a flat line across a 220-pixel box: one sentence says it.
+  if (first === -1) { el.innerHTML = '<p class="dim sm chart-empty">Nothing has been downloaded in the last 12 months.</p>'; return }
   const summary = first === -1 ? 'Nothing has been downloaded in the last 12 months.' : `Now ${unit(pts[pts.length - 1][1])}; the most was ${unit(max)} over the last 12 months.`
   el.innerHTML = `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Space used by downloads over the last 12 months. ${esc(summary)}">
       ${yTicks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="ax" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${unit(v)}</text>`).join('')}
@@ -3372,7 +3643,8 @@ function downloadsPanel(data, root) {
       <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)} anyway">${trash}<span>Remove anyway</span></button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
     $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
-      <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
+      <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>
+      <div class="dim sm" style="margin-top:8px">The diagnostic log records every play, error and slow moment. <a href="/api/admin/diag/download" download>Download the log</a> to send it on when something goes wrong.</div>`
     wire($('#tinfo'))
     // Shows deleted on purpose. Their cards are off every screen until something new turns up in one, so this is the only
     // place they can be seen -- and the only place to bring one back before then.
@@ -3482,9 +3754,9 @@ function downloadsPanel(data, root) {
     const act = d.downloads.filter((x) => x.state === 'active'), gone = d.downloads.filter((x) => x.state !== 'active')
     const dl = act.filter((x) => !x.missing && x.left > 0), seed = act.filter((x) => !x.missing && x.left === 0 && !x.seedMet), done = act.filter((x) => !x.missing && x.left === 0 && x.seedMet), miss = act.filter((x) => x.missing)
     storage(d, lastHealth)
-    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding'], [done.length, 'goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
+    $('#tsum').innerHTML = act.length ? [[dl.length, 'downloading'], [seed.length, 'seeding'], [done.length, 'goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('') : ''
     const sec = (title, list, kind) => list.length ? `<div class="sub-h">${title}</div><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
-    $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
+    $('#tlist').innerHTML = (act.length ? '' : '<p class="dim sm">Nothing downloaded yet. Press play on an episode and it shows up here.</p>')
       + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
     // The list redraws every 15 seconds; one that was opened to read stays open.
     const histOpen = !!$('#thist details')?.open
@@ -3531,10 +3803,11 @@ function familyPanel(data, root) {
         <div class="who"><span class="avatar${AV_ART[u.avatar] ? ' has-art' : ''}" style="width:44px;height:44px;cursor:default">${avSvg(u.avatar) || esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}${u.hasPassword ? '' : ' · No password'}</div></div></div>
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
-        <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
-        <button class="btn" data-act="invite" style="padding:8px 14px">Sign-in link</button>
-        <button class="btn" data-act="pin" style="padding:8px 14px">${u.hasPin ? 'Change PIN' : 'Set PIN'}</button>
-        ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
+        <div class="pact"><button class="btn pmore" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Manage ${esc(u.name)}"><span class="pm-l">Manage</span> <span aria-hidden="true">⋯</span></button>
+        <div class="pmenu" role="menu" hidden><button data-act="pw" role="menuitem">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
+        <button data-act="invite" role="menuitem">Sign-in link</button>
+        <button data-act="pin" role="menuitem">${u.hasPin ? 'Change PIN' : 'Set PIN'}</button>
+        ${u.id === me.id ? '' : `<button data-act="role" role="menuitem">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button data-act="rm" role="menuitem" class="danger">Remove</button>`}</div></div>
         <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div>
         <div class="pwrow pinrow" hidden><input class="field" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="4 to 8 digits" autocomplete="off"><button class="btn primary" data-act="pinsave" style="padding:10px 16px">Save</button>${u.hasPin ? '<button class="btn" data-act="pinclear" style="padding:10px 16px">Remove PIN</button>' : ''}
         <span class="dim" style="flex-basis:100%;font-size:13px">Asked when someone switches to ${esc(u.name)} on a shared device, so kids can’t open an adult’s profile. A password or sign-in link still works.</span></div>
@@ -3544,7 +3817,7 @@ function familyPanel(data, root) {
       <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password"></div>
         <p class="dim" style="font-size:13px;margin:0">Kids (not an admin, and not allowed TV-MA) don’t need a password: leave it empty and they sign in with just their name.</p>
         <div><div class="dim" style="font-size:13px;margin-bottom:8px">Can watch:</div>${ratingPills(all, all, 'id="newr"')}
-        <div class="row-form" style="margin-top:10px">${Object.keys(PRESETS).map((k) => `<button type="button" class="btn" data-preset="${k}" style="padding:7px 14px">${k}</button>`).join('')}</div></div>
+        <div class="presets"><span class="dim">Quick pick</span>${Object.keys(PRESETS).map((k) => `<button type="button" class="preset" data-preset="${k}" aria-pressed="false">${k}</button>`).join('')}</div></div>
         <div class="row-form"><label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add person</button><span id="um" class="dim" role="status"></span></div></form>`
     wire()
   }
@@ -3558,8 +3831,20 @@ function familyPanel(data, root) {
         try { await patch(id, { allowedRatings: all.filter((x) => next.includes(x)) }); const l = $('.who .dim', card); if (l) l.textContent = u().allowed ? 'Limited' : 'Everything' }
         catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); flashNote(e.message) }
       })
+      const more = $('.pmore', card), menu = $('.pmenu', card)
+      const shut = () => { menu.hidden = true; more.setAttribute('aria-expanded', 'false') }
+      more.onclick = (e) => {
+        e.stopPropagation()
+        root.querySelectorAll('.pmenu').forEach((m) => { if (m !== menu) { m.hidden = true; m.parentElement.querySelector('.pmore')?.setAttribute('aria-expanded', 'false') } })
+        menu.hidden = !menu.hidden; more.setAttribute('aria-expanded', String(!menu.hidden))
+        if (!menu.hidden) menu.querySelector('button')?.focus({ preventScroll: true })
+      }
+      menu.addEventListener('click', (e) => e.stopPropagation())
+      menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); shut(); more.focus() } })
       card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
         const act = b.dataset.act
+        // Everything in the menu but a first tap on Remove (which asks for a second) is done with the menu.
+        if (b.closest('.pmenu') && !(act === 'rm' && b.dataset.sure !== '1')) shut()
         if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = ''; $('[data-act=pw]', card).textContent = 'Reset password' } catch (e) { msg.textContent = e.message } }
         else if (act === 'pin') { const row = $('.pinrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
@@ -3577,14 +3862,22 @@ function familyPanel(data, root) {
         else if (act === 'share') navigator.share({ title: 'Flix', text: `Sign in to Flix as ${u().name}`, url: $('.invrow input', card).value }).catch(() => {})
         else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { flashNote(e.message) } }
         else if (act === 'rm') {
-          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
+          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = `Tap again to remove ${u().name}`; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
           try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { flashNote(e.message) }
         }
       })
     })
+    // A click anywhere else closes an open Manage menu.
+    if (!root.dataset.menus) { root.dataset.menus = '1'; addEventListener('click', () => root.querySelectorAll('.pmenu:not([hidden])').forEach((m) => { m.hidden = true; m.parentElement.querySelector('.pmore')?.setAttribute('aria-expanded', 'false') })) }
     const nr = $('#newr')
-    nr.querySelectorAll('.rpill').forEach((b) => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')))
-    root.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => { const set = PRESETS[b.dataset.preset] ?? all; nr.querySelectorAll('.rpill').forEach((p) => p.setAttribute('aria-pressed', String(set.includes(p.dataset.r)))) })
+    // Which quick pick the ratings now amount to, if any: changing a pill by hand moves the highlight (or clears it).
+    const litPreset = () => {
+      const on = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r).join()
+      root.querySelectorAll('[data-preset]').forEach((b) => b.setAttribute('aria-pressed', String((PRESETS[b.dataset.preset] ?? all).join() === on)))
+    }
+    nr.querySelectorAll('.rpill').forEach((b) => b.onclick = () => { b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')); litPreset() })
+    root.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => { const set = PRESETS[b.dataset.preset] ?? all; nr.querySelectorAll('.rpill').forEach((p) => p.setAttribute('aria-pressed', String(set.includes(p.dataset.r)))); litPreset() })
+    litPreset()
     $('#uf').onsubmit = async (e) => {
       e.preventDefault(); const f = new FormData(e.target)
       const picked = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r)
@@ -3815,14 +4108,20 @@ function profileView() {
       <h2 class="sec" style="margin-top:0">Your creature</h2>
       <div class="avgrid">${AVATARS.map((id) => `<button class="avpick" data-av="${id}" aria-pressed="${me.avatar === id}" aria-label="${id}">${avSvg(id)}</button>`).join('')}</div>
       <p class="dim" id="avmsg" style="margin:8px 0 0;font-size:14px">Tap one to use it beside your name.</p>
-      <h2 class="sec">Home screen</h2>
-      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', !isTv) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard, on this device. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
+      <h2 class="sec">On this device</h2>
+      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', !isTv) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
+      <label class="prefrow"><input type="checkbox" id="psting"${store.get('sting', true) !== false ? ' checked' : ''}><span><b>Play the Flix sound</b><span class="dim"> when an episode opens.</span></span></label>
       <h2 class="sec">Name</h2>
-      <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
+      <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn">Save name</button><div class="err" id="nerr" role="alert"></div></form>
       <h2 class="sec">Password</h2>
-      <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
+      <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
 
     $('#pprev').onchange = (e) => store.set('previews', e.target.checked)
+    $('#psting').onchange = (e) => store.set('sting', e.target.checked)
+    // Save name is only offered once the name is actually different.
+    const nIn = $('#nform input[name=name]'), nBtn = $('#nform button')
+    const nSync = () => { nBtn.disabled = !nIn.value.trim() || nIn.value.trim() === me.name }
+    nIn.addEventListener('input', nSync); nSync()
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
       const before = me.avatar
@@ -3844,7 +4143,7 @@ function profileView() {
         const old = me.name; me = r.user
         rememberProfile(old)
         renderTop()
-        err.textContent = 'Name saved.'; err.classList.add('ok')
+        err.textContent = 'Name saved.'; err.classList.add('ok'); nSync()
       } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
     }
     $('#pform').onsubmit = async (e) => {
@@ -3998,7 +4297,7 @@ async function healthBanner() {
   const seen = hbDismissed()
   // banner === false: Settings-only issues (reported problems) never get a strip over the page.
   const bad = (h?.issues ?? []).filter((i) => i.level !== 'info' && i.banner !== false && !seen.has(hbKey(i)))
-  if (!bad.length || $('.player')) return
+  if (!bad.length || $('.player') || location.hash.startsWith('#/settings')) return
   const first = bad[0]
   const el = document.createElement('div')
   el.id = 'hb'; el.className = 'hbanner ' + first.level + (location.hash.startsWith('#/settings') ? ' static' : '')
@@ -4289,6 +4588,7 @@ async function route() {
   }
   me = st.user
   myState = st
+  if (me && !logHelloSent) { logHelloSent = true; logHello() }
   if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
   else if (me) syncProfileAvatar()
   renderTop()
@@ -4323,8 +4623,16 @@ async function route() {
   } catch (e) {
     clearTimeout(slow)
     if (token === navToken) {
-      app.innerHTML = `<div class="pad page-msg"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
-      $('#retry').onclick = () => route()
+      // A show that is gone (or not for this profile) will not come back on a retry: Home is the way on, said plainly and not
+      // in the error colour. Anything else -- a server that did not answer, a timeout -- is worth trying again.
+      if (e.status === 404) {
+        const notYet = /not available yet/i.test(e.message)
+        app.innerHTML = `<div class="pad page-msg"><div class="empty fill"><b class="gone-h">${notYet ? 'This show isn’t ready yet' : 'This show isn’t here any more'}</b><span class="dim">${notYet ? 'Flix is still checking which of its seasons can be played. Try it again in a few minutes.' : 'It may have been removed from Flix, or it isn’t available on this profile.'}</span><div class="empty-acts"><a class="btn primary" href="#/" id="retry">Home</a><a class="btn" href="#/" id="tobrowse">Browse all shows</a></div></div></div>`
+        $('#tobrowse').onclick = () => { try { sessionStorage.setItem('flix.toDisc', '1') } catch { /* ignore */ } }
+      } else {
+        app.innerHTML = `<div class="pad page-msg"><div class="empty err">${esc(e.message)}<div class="empty-acts"><button class="btn primary" id="retry">Try again</button><a class="btn" href="#/">Home</a></div></div></div>`
+        $('#retry').onclick = () => route()
+      }
       if (isTv) $('#retry').focus({ preventScroll: true })
     }
   }
@@ -4402,7 +4710,9 @@ function watchStalls(v, getPlay) {
   let waitingSince = 0
   const send = (kind, extra) => {
     const now = Date.now()
-    if (now - last < 1500) return // a stall fires waiting, stalled and suspend in a burst; one report is the story
+    // A stall fires waiting, stalled and suspend in a burst; one report is the story. An error is never the burst: it went
+    // out under the same 1.5 s rule, and an error that came straight after a stall was dropped from the log.
+    if (kind !== 'error' && now - last < 1500) return
     last = now
     const ahead = (() => { try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime && v.currentTime <= v.buffered.end(i)) return Math.round((v.buffered.end(i) - v.currentTime) * 10) / 10; return 0 } catch { return 0 } })()
     api('/api/diag/client', { kind, at: Math.round(v.currentTime * 10) / 10, bufferedAhead: ahead, height: v.videoHeight || null, width: v.videoWidth || null, paused: v.paused, readyState: v.readyState, torrentId: getPlay?.()?.torrentId ?? null, fileIndex: getPlay?.()?.fileIndex ?? null, ...extra }).catch(() => {})
@@ -4410,7 +4720,8 @@ function watchStalls(v, getPlay) {
   v.addEventListener('waiting', () => { waitingSince = Date.now(); send('stall') })
   v.addEventListener('stalled', () => send('stalled'))
   v.addEventListener('seeking', () => send('seek'))
-  v.addEventListener('error', () => send('error', { code: v.error?.code ?? null, message: String(v.error?.message ?? '').slice(0, 120) }))
+  v.addEventListener('error', () => send('error', { code: v.error?.code ?? null, message: String(v.error?.message ?? '').slice(0, 300),
+    ctx: { networkState: v.networkState, src: String(v.currentSrc || '').split('?')[0].split('/').slice(-3).join('/'), duration: Number.isFinite(v.duration) ? Math.round(v.duration) : null, buffered: (() => { try { const r = []; for (let i = 0; i < v.buffered.length && i < 6; i++) r.push(`${v.buffered.start(i).toFixed(1)}-${v.buffered.end(i).toFixed(1)}`); return r } catch { return [] } })() } }))
   v.addEventListener('playing', () => { if (waitingSince && Date.now() - waitingSince > 400) send('recovered', { stalledForMs: Date.now() - waitingSince }); waitingSince = 0 })
   // A resolution the browser settled on well below the file's told us it fell back to a lower rendition.
   let lowest = null
