@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
-import { SEARCH_NORM_SQL, searchNorm, searchRank } from './search.ts'
+import { searchScore } from './search.ts'
 import { createInvite, createUser, hasPin, pinOk, setPin, hashPassword, login, logout, newSession, redeemInvite, requireAdmin, requireUser, sessionUser, setOwnPassword, setSessionCookie, tvToken, userCount, userFor, userForTvToken, renameUser, setAvatar, isChild, hasPassword } from './auth.ts'
 import { RATINGS, META_JOIN, canViewSeries, cleanAllowed, getRating, parseAllowed, queueRating, ratingClause, refreshRatings, startRatingSweeper } from './ratings.ts'
 import { qb } from './qb.ts'
@@ -194,11 +194,31 @@ const isListed = (r: { id: number }) => listable().has(r.id) && !hidden().has(r.
 const ensureSynced = (id: number) => syncSeries(id).then(() => ensureNet(id)).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(`series sync failed: ${e.message}`) })
 
 const btnSearched = new Map<string, number>()
+/**
+ * Every show's name, for search to match against in this process: forgiving matching (typos, initials, words in any order;
+ * see search.ts) cannot be a LIKE. A few thousand short strings, read once a minute, and again after a BTN search has
+ * brought new shows in.
+ */
+let searchNames: { at: number; rows: { id: number; name: string }[] } = { at: 0, rows: [] }
+function searchIndex() {
+  if (Date.now() - searchNames.at > 60_000) searchNames = { at: Date.now(), rows: db.prepare('SELECT series_id AS id, MAX(series) AS name FROM releases GROUP BY series_id').all() as any[] }
+  return searchNames.rows
+}
+/** The ids that match a query, best first: at most 400, which is more than the page ever shows. */
+function searchIds(q: string) {
+  return searchIndex().map((r) => [r.id, searchScore(r.name ?? '', q)] as const).filter((x) => x[1] !== null)
+    .sort((a, b) => a[1]! - b[1]!).slice(0, 400).map(([id]) => id)
+}
+
 app.get('/api/series', auth, async (req) => {
   const { q, local } = req.query as { q?: string; local?: string }
   const f = ratingClause(req.user)
-  const query = () => db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score FROM releases ${META_JOIN}releases.series_id
-      WHERE ${f.sql}${q ? ` AND ${SEARCH_NORM_SQL} LIKE ?` : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(q ? [`%${searchNorm(q)}%`] : [])) as any[]
+  const query = () => {
+    const ids = q ? searchIds(q) : null
+    if (ids && !ids.length) return []
+    return db.prepare(`SELECT ${seriesCols}, MAX(COALESCE(m.m_rating, 'Unrated')) AS rating, MAX(m.m_score) AS score FROM releases ${META_JOIN}releases.series_id
+      WHERE ${f.sql}${ids ? ` AND series_id IN (${ids.map(() => '?').join(',')})` : ''} GROUP BY series_id ORDER BY latest DESC LIMIT 400`).all(...f.params, ...(ids ?? [])) as any[]
+  }
   // `local` answers from what Flix already knows, instantly; the page follows up without it to bring in BTN's results.
   // A term searched on BTN in the last few minutes is not asked again.
   const term = q?.trim().toLowerCase() ?? ''
@@ -206,6 +226,7 @@ app.get('/api/series', auth, async (req) => {
     btnSearched.set(term, Date.now())
     if (btnSearched.size > 500) btnSearched.delete(btnSearched.keys().next().value!)
     await searchBtn(q!.trim()).catch((e) => { if (!(e instanceof RateLimitError)) app.log.warn(e.message) })
+    searchNames.at = 0 // what BTN just brought in is searchable at once
     // A search only brings back some of a show's releases; read the rest of the top few matches (and their language and season lengths) so their seasons can be judged.
     const read = db.prepare('SELECT EXISTS(SELECT 1 FROM series_sync WHERE series_id = ?1) AND EXISTS(SELECT 1 FROM series_net WHERE series_id = ?1) AS ok')
     const unsynced = query().filter((r) => !(read.get(r.id) as any).ok).slice(0, 5)
@@ -215,7 +236,7 @@ app.get('/api/series', auth, async (req) => {
   // isBrowsableService). It opens and plays if it is already in My List or being watched, which is the person's own doing.
   const net = netInfo()
   const rows = query().filter(isListed).filter((r) => isBrowsableService(net.get(r.id)?.streamer))
-    .map((r, i) => [r, searchRank(r.name ?? '', q ?? ''), i] as const).sort((x, y) => x[1] - y[1] || x[2] - y[2]).map(([r]) => r).slice(0, 100)
+    .map((r, i) => [r, q ? searchScore(r.name ?? '', q) ?? 99 : 0, i] as const).sort((x, y) => x[1] - y[1] || x[2] - y[2]).map(([r]) => r).slice(0, 100)
   rows.filter((r) => r.rating === 'Unrated' || r.score == null).forEach((r) => queueRating(r.id))
   return { series: rows }
 })
