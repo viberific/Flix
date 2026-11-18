@@ -1419,6 +1419,16 @@ function playView(seriesId, season, label) {
     flixSting()
     const INTRO_MS = 4000, introAt = Date.now()
     let holding = false, holdT = null
+    /**
+     * The viewer pressed pause, and nothing but the viewer pressing play may start the picture again. The <video> carries
+     * `autoplay`, and every reload of its source (a recovery, a quality step-down, a seek that had to be restarted, hls.js
+     * re-attaching after a decoder error) resets the element's autoplay latch -- so a paused show used to start playing on
+     * its own the moment the reloaded source had buffered enough. While this is set the element's autoplay is off and the
+     * player's own play() calls stand down.
+     */
+    let userPaused = false
+    const userPause = () => { if (!v) return; userPaused = true; v.autoplay = false; v.pause() }
+    const userPlay = () => { if (!v) return Promise.resolve(); userPaused = false; v.autoplay = true; return v.play() }
     top.hidden = true
     const pl = $('#pl')
     // In the car the player takes the whole screen, the corner under the car's own buttons included: the picture stays clear
@@ -1481,7 +1491,7 @@ function playView(seriesId, season, label) {
     // artwork, panning right to left, one fading into the next -- the same slideshow the home screen idles into, but
     // started only by the player's own idle timer (manual mode), and any input at all brings the film back at once.
     let idleArt = null, artRun = 0
-    // The list of shows is asked for as soon as the show is paused, so that 30 seconds later the artwork is already
+    // The list of shows is asked for as soon as the show is paused, so that a minute later the artwork is already
     // on its way rather than only then starting a request.
     let homeP = null
     const warmArt = () => (homeP ??= api('/api/home').catch(() => { homeP = null; return null }))
@@ -1498,7 +1508,7 @@ function playView(seriesId, season, label) {
     // playing?" -- so the artwork slid over a show that was playing and had simply not been touched for three seconds.
     // `started` keeps it away during the loading screen, and paint() (which wakes while paused) keeps re-arming this
     // timer for as long as the show is stopped, so the artwork still arrives on a paused show left alone.
-    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 30000); armQuiet() }
+    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 60000); armQuiet() }
     // The bar goes away while the show plays: five seconds with no input and the top bar and the control bar fade out with
     // the cursor, and any pointer move, tap, key or remote press brings them straight back and starts the five again.
     // A class of its own -- NOT `idle`, whose timer arms the paused-state artwork slideshow: hiding the bar in the middle
@@ -1702,9 +1712,9 @@ function playView(seriesId, season, label) {
         return
       }
       // TV remotes: OK (when no button has focus) and the play/pause, rewind and fast-forward keys work too.
-      if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? v.play() : v.pause() }
-      else if (k === 'MediaPlay') { e.preventDefault(); v.play() }
-      else if (k === 'MediaPause') { e.preventDefault(); v.pause() }
+      if (k === ' ' || k === 'k' || k === 'MediaPlayPause' || (k === 'Enter' && !e.target.closest?.('a, button'))) { e.preventDefault(); v.paused ? userPlay().catch(() => {}) : userPause() }
+      else if (k === 'MediaPlay') { e.preventDefault(); userPlay().catch(() => {}) }
+      else if (k === 'MediaPause') { e.preventDefault(); userPause() }
       // Held or pressed again and again, a skip key moves a marker along the bar with the picture for that moment over it,
       // and the picture itself jumps once, where the presses stop: one seek, not one per press.
       else if (k === 'MediaRewind' || k === 'ArrowLeft' || k === 'j') { e.preventDefault(); nudge(-10) }
@@ -1795,7 +1805,7 @@ function playView(seriesId, season, label) {
       // episode at HAVE_CURRENT_DATA (2), and asking for 3 here started a perfectly good picture over ten seconds after
       // every seek, with the spinner back up for the reload.
       const going = () => el.readyState >= 3 || el.ended || (!el.paused && el.currentTime > t + 0.5)
-      const resume = () => { if (live() && wasPlaying && el.paused && !holding) el.play().catch(() => {}) }
+      const resume = () => { if (live() && wasPlaying && el.paused && !holding && !userPaused) el.play().catch(() => {}) }
       el.addEventListener('seeked', resume, { once: true })
       setTimeout(() => {
         if (!live()) return
@@ -1991,7 +2001,7 @@ function playView(seriesId, season, label) {
         nudge(e.key === 'ArrowRight' ? 15 : -15)
         wake()
       })
-      $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) v.play().catch(() => {}); else v.pause() }; wake() }
+      $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) userPlay().catch(() => {}); else userPause() }; wake() }
       $('#pbw').onclick = () => { nudge(-10); wake() }
       $('#pfw').onclick = () => { nudge(10); wake() }
       $('#pfull').onclick = () => { if (carWide()) setCarMax(!carMax); else setFill(!fill); paint() }
@@ -2084,6 +2094,8 @@ function playView(seriesId, season, label) {
       sendReport('auto', why)
       report()
       avoid.push(play.torrentId); tries++; started = false
+      // A new copy has to play to show its first frame and take the wait screen down; a pause from the old one does not carry.
+      userPaused = false
       // The old source's intro hold must not fire on the new one: it took the wait screen down while the new file was still
       // being fetched, and left `holding` set for a picture that had never been held.
       clearTimeout(holdT); holding = false
@@ -2293,6 +2305,7 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
+        v.autoplay = !userPaused
         if (fill || carMax) v.style.objectFit = 'cover'
         carPic?.mount($('#vw'))
         // Flix has no volume of its own: the phone's buttons and the television's remote are the volume. Full and unmuted
@@ -2307,7 +2320,7 @@ function playView(seriesId, season, label) {
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; v.play().catch(() => {}); wake() }
+          const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; if (!userPaused) v.play().catch(() => {}); wake() }
           if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }
         v.addEventListener('playing', firstFrame, { once: true })
@@ -2351,7 +2364,7 @@ function playView(seriesId, season, label) {
         // The picture coming back must always take the artwork with it: paint() runs on play and pause and wakes while
         // paused, but a play event that finds no pause in between (a resume after a stall, a source swap) would
         // otherwise leave the artwork sitting over a show that is playing again.
-        v.addEventListener('play', () => { artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
+        v.addEventListener('play', () => { if (!holding) { userPaused = false; v.autoplay = true }; artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
         let lastT = -1
         v.ontimeupdate = () => {
           // Playing for real: not paused, a picture to show, and the clock has moved on since the last tick.
@@ -2530,7 +2543,8 @@ function playView(seriesId, season, label) {
           el.addEventListener('timeupdate', noRewind)
         }
       }
-      v.play?.().catch(() => {})
+      // A reload under a show the viewer paused stays paused: it lands on the same frame and waits for them.
+      if (!userPaused) v.play?.().catch(() => {})
       // A finished file that has not started playing half a minute after it was handed over is stuck, not slow: nothing
       // is being waited for. Ask /info once more (a fresh link, and the box's fresh view of the file) and play that.
       clearTimeout(stuckT)
