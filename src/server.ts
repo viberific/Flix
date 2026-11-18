@@ -1205,7 +1205,7 @@ app.post('/api/diag/client', auth, async (req) => {
     // match the video" cannot be told from a plain stall in the log.
     family: b.family == null ? null : String(b.family).slice(0, 12), audio: b.audio == null ? null : String(b.audio).slice(0, 24),
     destroyed: b.destroyed == null ? null : !!b.destroyed, driftMs: Number.isFinite(Number(b.driftMs)) ? Number(b.driftMs) : null,
-  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' || kind === 'recover' || kind === 'drift' ? 'warn' : 'info')
+  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' || kind === 'recover' || kind === 'drift' || kind === 'resync' ? 'warn' : 'info')
   return { ok: true }
 })
 app.get('/api/admin/reports', admin, async () => ({

@@ -1,4 +1,22 @@
 import { freemem } from 'node:os'
+
+/**
+ * Memory the box can still give, in MB. process.availableMemory() is the container's own answer -- inside a memory-limited
+ * container, freemem() is the whole host's, which can say "plenty" while this container is about to be killed -- and
+ * freemem() (MemAvailable on Linux, page cache included) is the fallback on a Node without it.
+ */
+export function availableMb() {
+  const n = typeof (process as any).availableMemory === 'function' ? Number((process as any).availableMemory()) : NaN
+  return Math.round((Number.isFinite(n) && n > 0 ? Math.min(n, freemem()) : freemem()) / 1048576)
+}
+/** "Short of memory" is said once when it starts and once when it ends, not once a minute while it lasts (637 lines). */
+let shortSince = 0
+function shortOfMemory(where: string) {
+  const free = availableMb(), need = config.hls.minFreeMb, short = free < need
+  if (short && !shortSince) { shortSince = Date.now(); diag('prebuild', 'not building ahead: the box is short of memory', { freeMb: free, needMb: need, where }) }
+  else if (!short && shortSince) { diag('prebuild', 'memory is back: building ahead again', { freeMb: free, shortForMin: Math.round((Date.now() - shortSince) / 60_000) }); shortSince = 0 }
+  return short
+}
 import { join } from 'node:path'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
@@ -154,7 +172,7 @@ export async function prebuildHead(torrentId: number, fileIndex: number): Promis
     if (Date.now() - (headAsked.get(key) ?? 0) < 60_000 || isSetAside(torrentId, fileIndex)) return 'none'
     headAsked.set(key, Date.now())
     if (headAsked.size > 500) headAsked.delete(headAsked.keys().next().value!)
-    if (Math.round(freemem() / 1048576) < config.hls.minFreeMb) return 'none'
+    if (shortOfMemory('next episode')) return 'none'
     const fi = await fileInfo(torrentId, fileIndex).catch(() => null)
     if (!fi || fi.file.progress < 1) return 'none' // still arriving: a copied picture is only cut from a whole file
     const source = join(fi.layout.savePath, fi.file.name)
@@ -174,6 +192,11 @@ export async function prebuildHead(torrentId: number, fileIndex: number): Promis
 }
 
 let running = false
+/** "Not building ahead while something plays" once per play, not once a minute for the length of the episode (7,369 lines). */
+let quietSaid = 0
+function quietWhilePlaying() {
+  if (Date.now() - quietSaid > 30 * 60_000) { quietSaid = Date.now(); diag('prebuild', 'not building ahead while something plays', {}) }
+}
 
 /**
  * One tick: keep the cache under its cap, then start the next copy if the box is in a state to afford it. Called after a
@@ -182,25 +205,30 @@ let running = false
 export async function prebuildTick(): Promise<void> {
   if (!config.hls.prebuild || running) return
   running = true
+  // Which step threw: the log kept only the message, and a message such as "fetch failed" or "ENOENT" names no step.
+  let step = 'evict'
   try {
     // The room is made every tick, not only when something is about to be built: a cache left over the cap is the thing
     // that fills the disk quietly.
     const cap = Math.round(config.hls.cacheMaxGb * 1e9)
     const freed = evictHls(cap)
     if (freed.removed.length) diag('prebuild', 'evicted copies to stay under the cache cap', { freedMb: Math.round(freed.freed / 1e6), leftMb: Math.round(freed.left / 1e6), capGb: config.hls.cacheMaxGb })
-    const freeMb = Math.round(freemem() / 1048576)
-    if (freeMb < config.hls.minFreeMb) return diag('prebuild', 'not building ahead: the box is short of memory', { freeMb, needMb: config.hls.minFreeMb })
+    step = 'memory'
+    if (shortOfMemory('queue')) return
     // Nothing is built while somebody is watching: the disk it reads is the disk the player reads.
-    if (hlsBusy() || playingNow()) return diag('prebuild', 'not building ahead while something plays', {})
+    step = 'busy'
+    if (hlsBusy() || playingNow()) return quietWhilePlaying()
+    step = 'candidates'
     const list = await prebuildCandidates()
     if (!list.length) return
     // The lock is read again here, not only at the top of the tick: waiting for the file list is where a play can have
     // started, and the rule is that nothing else reads the disk the player reads.
     if (playingNow()) return diag('prebuild', 'not building ahead: a play started while the queue was being read', {})
     // One at a time, newest download first: it is the one about to be watched.
+    step = 'build'
     await prebuildOne(list[0].torrentId, list[0].fileIndex)
   } catch (e: any) {
-    diag('prebuild', 'prebuild tick failed', { why: String(e?.message ?? e).slice(0, 160) })
+    diag('prebuild', 'prebuild tick failed', { step, why: String(e?.message ?? e).slice(0, 160), at: String(e?.stack ?? '').split('\n')[1]?.trim().slice(0, 160) ?? null })
   } finally {
     running = false
   }

@@ -1,5 +1,6 @@
 import { statfsSync, mkdirSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { gpuPresent } from './encode.ts'
 import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { btnState } from './btn/client.ts'
@@ -102,6 +103,9 @@ export async function health(): Promise<Issue[]> {
     else if (d.free < freeFloor(d)) out.push({ level: 'info', title: 'New shows paused', detail: `${pct}% of storage is free; new shows wait until it is above ${config.minFreePct}%.` })
     else if (config.auto.enabled && pct < config.auto.pausePct) out.push({ level: 'info', title: 'Pre-downloading is paused', detail: `${pct}% of storage is free; the next episode is not fetched ahead of time below ${config.auto.pausePct}%.` })
   }
+  // Started without the graphics device (the box's log had six starts like that): every conversion then runs on the CPU,
+  // several times slower, which is when a starting episode waits for its first pieces. Said where it will be seen.
+  if (config.transcode.hardware && !gpuPresent()) out.push({ level: 'warn', title: 'Converting without the graphics chip', detail: 'Flix started without access to /dev/dri, so episodes that need converting are done on the CPU and can be slow to start. Give the app the GPU permission (on Umbrel: the app’s settings), then restart it.', link: '#/settings/playback' })
   const reported = (db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved_at IS NULL AND created_at > ?').get(now() - 7 * 86400) as any).n as number
   // Settings only: a reported problem is something to read through when you are already in Settings, not a banner over every page.
   if (reported) out.push({ level: 'warn', banner: false, title: `${reported} playback problem${reported === 1 ? '' : 's'} reported`, detail: 'Someone tapped “Something’s wrong”, or an episode failed to start. “Reported problems” below lists which, and each can be resolved there.', link: '#/settings/torrents' })

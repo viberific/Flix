@@ -2365,7 +2365,7 @@ function playView(seriesId, season, label) {
      * nothing, which is also why there is no Web Audio tap: routing the sound through an AudioContext to measure it
      * would change the very pipeline being measured, and break a television and a cast receiver.
      */
-    let driftT = null, frameMt = null, rvfcOn = false, skewBase = [], driftOver = 0, driftSentAt = 0
+    let driftT = null, frameMt = null, rvfcOn = false, skewBase = [], driftOver = 0, driftSentAt = 0, resyncAt = 0
     const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1] }
     function startDrift() {
       clearInterval(driftT)
@@ -2378,13 +2378,29 @@ function playView(seriesId, season, label) {
       driftT = setInterval(sampleDrift, 1000)
     }
     function sampleDrift() {
-      if (!alive || !v || frameMt == null || v.paused || v.readyState < 2 || !(v.currentTime > 1)) return
+      // A hidden page draws no frames while the sound plays on (a phone's screen off, the app behind another): the gap
+      // there is the browser resting the picture, not drift, and it filled the log with "drift" that nobody could see.
+      if (document.hidden) { driftOver = 0; return }
+      if (!alive || !v || frameMt == null || v.paused || v.seeking || v.readyState < 2 || !(v.currentTime > 1)) return
       const skew = v.currentTime - frameMt
       // The source's own latency, taken once: before it is known there is nothing to compare against.
       if (skewBase.length < 10) { skewBase.push(skew); return }
       const driftMs = Math.round((skew - median(skewBase)) * 1000)
       if (Math.abs(driftMs) <= 150) { driftOver = 0; return }
-      if (++driftOver < 2 || Date.now() - driftSentAt < 10_000) return
+      ++driftOver
+      // Measured and never mended: 340 "drift" lines in the box's log, every one of them left as it was. Picture and sound
+      // that stay a quarter of a second or more apart for three seconds running are put back together by asking the element
+      // for the moment it is already at -- a seek realigns the decoders -- at most once a minute, and the source's latency is
+      // taken again afterwards, because a seek can change it.
+      if (Math.abs(driftMs) >= 250 && driftOver >= 3 && Date.now() - resyncAt > 60_000) {
+        resyncAt = Date.now(); driftOver = 0
+        const at = v.currentTime
+        api('/api/diag/client', { kind: 'resync', at: Math.round(at * 10) / 10, driftMs, family: sourceFamily(), audio: sourceAudio(), torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null }).catch(() => {})
+        try { v.currentTime = at; guardSeek(at, true) } catch { /* not seekable right now */ }
+        skewBase = []
+        return
+      }
+      if (driftOver < 2 || Date.now() - driftSentAt < 10_000) return
       driftSentAt = Date.now()
       api('/api/diag/client', { kind: 'drift', at: Math.round(v.currentTime * 10) / 10, driftMs, height: v.videoHeight || null,
         readyState: v.readyState, paused: !!v.paused, family: sourceFamily(), audio: sourceAudio(),
