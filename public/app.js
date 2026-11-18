@@ -504,8 +504,20 @@ function profilesView() {
     top.hidden = true
     const ps = profiles()
     app.innerHTML = `<div class="who-wrap"><h1>Who’s watching?</h1><div class="who-grid">${ps.map((p, i) => `<button class="who-tile rise" style="--i:${i}" data-n="${esc(p.name)}"><span class="who-av${AV_ART[p.avatar] ? ' has-art' : ''}" style="--h:${hue(p.name)}">${avSvg(p.avatar) || esc(p.name[0].toUpperCase())}</span><span>${esc(p.name)}</span></button>`).join('')}
-      <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div></div>`
+      <a class="who-tile rise" style="--i:${ps.length}" href="#/signin"><span class="who-av add">+</span><span>Add profile</span></a></div>
+      <button class="btn who-manage" id="wm" aria-pressed="false">Manage profiles</button><p class="dim who-hint" id="wh" hidden>Tap a profile to take it off this device. It stays on Flix, and can be added back with its password or a sign-in link.</p></div>`
+    // Manage: tapping a profile takes it off this device's list instead of opening it. Nothing on the server changes.
+    const wrap = $('.who-wrap'), wm = $('#wm')
+    wm.onclick = () => { const on = !wrap.classList.contains('managing'); wrap.classList.toggle('managing', on); wm.setAttribute('aria-pressed', String(on)); wm.textContent = on ? 'Done' : 'Manage profiles'; $('#wh').hidden = !on }
     app.querySelectorAll('.who-tile[data-n]').forEach((b) => b.onclick = async () => {
+      if (wrap.classList.contains('managing')) {
+        const ok = await askConfirm({ title: `Remove ${b.dataset.n} from this device?`, body: `<p>${esc(b.dataset.n)} stays on Flix. To use this profile here again, sign in with its password or a sign-in link.</p>`, confirm: 'Remove from device' })
+        if (!ok) return
+        store.set('profiles', profiles().filter((x) => x.name !== b.dataset.n))
+        if (me?.name === b.dataset.n) { await api('/api/logout', {}).catch(() => {}); me = null }
+        if (!profiles().length) return go('#/signin')
+        return swap(profilesView()).then(() => $('#wm')?.click())
+      }
       const p = ps.find((x) => x.name === b.dataset.n)
       let pin, msg = ''
       for (;;) {
@@ -790,7 +802,7 @@ function leavingPrompt(show) {
   if (!show.length) return ''
   return `<section class="lp rise" id="lp" role="group" aria-labelledby="lp-t">
     <div class="lp-head"><h2 id="lp-t">Leaving soon</h2><button class="lp-x" id="lp-x" aria-label="Not now">×</button></div>
-    <p class="lp-sub">${show.length === 1 ? 'This is' : 'These are'} on the server, but nobody here has opened ${show.length === 1 ? 'it' : 'them'} yet. Keep ${show.length === 1 ? 'it' : 'one'} for later, or let ${show.length === 1 ? 'it' : 'it'} go to free up space.</p>
+    <p class="lp-sub">${show.length === 1 ? 'This is' : 'These are'} on the server, but nobody here has opened ${show.length === 1 ? 'it' : 'them'} yet. Keep ${show.length === 1 ? 'it' : 'one'} for later, or let it go to free up space. If nobody keeps ${show.length === 1 ? 'it' : 'one'}, it is removed when its days run out.</p>
     <ul class="lp-list">${show.map((l) => `<li data-t="${l.torrentId}">
       <a class="lp-name" href="#/series/${l.seriesId}">${esc(l.series || l.label || 'This download')}${l.season ? ' · S' + l.season : ''}</a>
       <span class="lp-when">${lpDays(l)}</span>
@@ -1452,7 +1464,7 @@ function playView(seriesId, season, label) {
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
-        <div class="p-info" id="pinfo" hidden><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
+        <div class="p-info" id="pinfo" hidden><span class="p-info-show" id="pis"></span><div class="p-info-h"><b id="pit"></b><span class="p-info-rate" id="pir" hidden></span></div><p class="p-info-m" id="pim" hidden></p><p class="p-info-o" id="pio" hidden></p><div class="p-info-c" id="pic" hidden></div></div>
         <div class="p-spin" id="pspin" hidden aria-hidden="true"><i class="ring"></i></div>
         <div class="p-ctl" id="pctl">
           ${isCar ? `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>` : ''}
@@ -1914,10 +1926,15 @@ function playView(seriesId, season, label) {
       const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
       const show = paused && !castingOnly && started
       card.hidden = !show
+      // While this card is up it says what is playing, so the top bar's own title steps aside rather than say it twice.
+      pl.classList.toggle('pinfo-up', show)
       if (!show) return
       const s = meta?.series
-      const head = play?.episodeTitle ? `${play.title} · ${play.episodeTitle}` : (play?.seriesName || play?.title || '')
+      const showName = play?.seriesName || s?.name || ''
+      const head = play?.episodeTitle ? `${play.title} · ${play.episodeTitle}` : (play?.title || showName)
       if ($('#pit').textContent !== head) $('#pit').textContent = head
+      const sn = head === showName ? '' : showName
+      $('#pis').textContent = sn; $('#pis').hidden = !sn
       const rate = s?.rating && s.rating !== 'Unrated' ? s.rating : ''
       const r = $('#pir'); r.hidden = !rate; r.textContent = rate
       const ep = meta?.episodes?.find((e) => e.label === play?.title && e.season === (season === 'x' ? null : +season))
@@ -3613,10 +3630,11 @@ function familyPanel(data, root) {
         <div class="who"><span class="avatar${AV_ART[u.avatar] ? ' has-art' : ''}" style="width:44px;height:44px;cursor:default">${avSvg(u.avatar) || esc(u.name[0].toUpperCase())}</span><div><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="chip">You</span>' : ''}${u.is_admin ? ' <span class="chip">Admin</span>' : ''}
         <div class="dim" style="font-size:13px">${u.is_admin ? 'Admins can watch everything' : u.allowed ? 'Limited' : 'Everything'}${u.hasPassword ? '' : ' · No password'}</div></div></div>
         <div class="rcell">${u.is_admin ? '<span class="dim">All ratings</span>' : ratingPills(all, onList(u))}</div>
-        <div class="pact"><button class="btn" data-act="pw" style="padding:8px 14px">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
-        <button class="btn" data-act="invite" style="padding:8px 14px">Sign-in link</button>
-        <button class="btn" data-act="pin" style="padding:8px 14px">${u.hasPin ? 'Change PIN' : 'Set PIN'}</button>
-        ${u.id === me.id ? '' : `<button class="btn" data-act="role" style="padding:8px 14px">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button class="btn" data-act="rm" style="padding:8px 14px">Remove</button>`}</div>
+        <div class="pact"><button class="btn pmore" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Manage ${esc(u.name)}"><span class="pm-l">Manage</span> <span aria-hidden="true">⋯</span></button>
+        <div class="pmenu" role="menu" hidden><button data-act="pw" role="menuitem">${u.hasPassword ? 'Reset password' : 'Set password'}</button>
+        <button data-act="invite" role="menuitem">Sign-in link</button>
+        <button data-act="pin" role="menuitem">${u.hasPin ? 'Change PIN' : 'Set PIN'}</button>
+        ${u.id === me.id ? '' : `<button data-act="role" role="menuitem">${u.is_admin ? 'Remove admin' : 'Make admin'}</button><button data-act="rm" role="menuitem" class="danger">Remove</button>`}</div></div>
         <div class="pwrow" hidden><input class="field" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"><button class="btn primary" data-act="pwsave" style="padding:10px 16px">Save</button><span class="dim msg"></span></div>
         <div class="pwrow pinrow" hidden><input class="field" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="4 to 8 digits" autocomplete="off"><button class="btn primary" data-act="pinsave" style="padding:10px 16px">Save</button>${u.hasPin ? '<button class="btn" data-act="pinclear" style="padding:10px 16px">Remove PIN</button>' : ''}
         <span class="dim" style="flex-basis:100%;font-size:13px">Asked when someone switches to ${esc(u.name)} on a shared device, so kids can’t open an adult’s profile. A password or sign-in link still works.</span></div>
@@ -3626,7 +3644,7 @@ function familyPanel(data, root) {
       <form id="uf" class="person"><div class="row-form"><input class="field" name="name" placeholder="Username" autocomplete="off" required><input class="field" name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password"></div>
         <p class="dim" style="font-size:13px;margin:0">Kids (not an admin, and not allowed TV-MA) don’t need a password: leave it empty and they sign in with just their name.</p>
         <div><div class="dim" style="font-size:13px;margin-bottom:8px">Can watch:</div>${ratingPills(all, all, 'id="newr"')}
-        <div class="row-form" style="margin-top:10px">${Object.keys(PRESETS).map((k) => `<button type="button" class="btn" data-preset="${k}" style="padding:7px 14px">${k}</button>`).join('')}</div></div>
+        <div class="presets"><span class="dim">Quick pick</span>${Object.keys(PRESETS).map((k) => `<button type="button" class="preset" data-preset="${k}" aria-pressed="false">${k}</button>`).join('')}</div></div>
         <div class="row-form"><label class="dim"><input type="checkbox" name="isAdmin"> Admin</label><button class="btn primary">Add person</button><span id="um" class="dim" role="status"></span></div></form>`
     wire()
   }
@@ -3640,8 +3658,20 @@ function familyPanel(data, root) {
         try { await patch(id, { allowedRatings: all.filter((x) => next.includes(x)) }); const l = $('.who .dim', card); if (l) l.textContent = u().allowed ? 'Limited' : 'Everything' }
         catch (e) { b.setAttribute('aria-pressed', String(cur.includes(r))); flashNote(e.message) }
       })
+      const more = $('.pmore', card), menu = $('.pmenu', card)
+      const shut = () => { menu.hidden = true; more.setAttribute('aria-expanded', 'false') }
+      more.onclick = (e) => {
+        e.stopPropagation()
+        root.querySelectorAll('.pmenu').forEach((m) => { if (m !== menu) { m.hidden = true; m.parentElement.querySelector('.pmore')?.setAttribute('aria-expanded', 'false') } })
+        menu.hidden = !menu.hidden; more.setAttribute('aria-expanded', String(!menu.hidden))
+        if (!menu.hidden) menu.querySelector('button')?.focus({ preventScroll: true })
+      }
+      menu.addEventListener('click', (e) => e.stopPropagation())
+      menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); shut(); more.focus() } })
       card.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
         const act = b.dataset.act
+        // Everything in the menu but a first tap on Remove (which asks for a second) is done with the menu.
+        if (b.closest('.pmenu') && !(act === 'rm' && b.dataset.sure !== '1')) shut()
         if (act === 'pw') { const row = $('.pwrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
         else if (act === 'pwsave') { try { await patch(id, { password: $('.pwrow input', card).value }); msg.textContent = 'Password changed. They were signed out.'; $('.pwrow input', card).value = ''; $('[data-act=pw]', card).textContent = 'Reset password' } catch (e) { msg.textContent = e.message } }
         else if (act === 'pin') { const row = $('.pinrow', card); row.hidden = !row.hidden; if (!row.hidden) $('input', row).focus() }
@@ -3659,14 +3689,22 @@ function familyPanel(data, root) {
         else if (act === 'share') navigator.share({ title: 'Flix', text: `Sign in to Flix as ${u().name}`, url: $('.invrow input', card).value }).catch(() => {})
         else if (act === 'role') { try { await patch(id, { isAdmin: !u().is_admin }); paint() } catch (e) { flashNote(e.message) } }
         else if (act === 'rm') {
-          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to remove'; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
+          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = `Tap again to remove ${u().name}`; setTimeout(() => { b.dataset.sure = ''; b.textContent = 'Remove' }, 4000); return }
           try { await api('/api/admin/users/' + id, null, 'DELETE'); users = users.filter((x) => x.id !== id); paint() } catch (e) { flashNote(e.message) }
         }
       })
     })
+    // A click anywhere else closes an open Manage menu.
+    if (!root.dataset.menus) { root.dataset.menus = '1'; addEventListener('click', () => root.querySelectorAll('.pmenu:not([hidden])').forEach((m) => { m.hidden = true; m.parentElement.querySelector('.pmore')?.setAttribute('aria-expanded', 'false') })) }
     const nr = $('#newr')
-    nr.querySelectorAll('.rpill').forEach((b) => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')))
-    root.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => { const set = PRESETS[b.dataset.preset] ?? all; nr.querySelectorAll('.rpill').forEach((p) => p.setAttribute('aria-pressed', String(set.includes(p.dataset.r)))) })
+    // Which quick pick the ratings now amount to, if any: changing a pill by hand moves the highlight (or clears it).
+    const litPreset = () => {
+      const on = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r).join()
+      root.querySelectorAll('[data-preset]').forEach((b) => b.setAttribute('aria-pressed', String((PRESETS[b.dataset.preset] ?? all).join() === on)))
+    }
+    nr.querySelectorAll('.rpill').forEach((b) => b.onclick = () => { b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')); litPreset() })
+    root.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => { const set = PRESETS[b.dataset.preset] ?? all; nr.querySelectorAll('.rpill').forEach((p) => p.setAttribute('aria-pressed', String(set.includes(p.dataset.r)))); litPreset() })
+    litPreset()
     $('#uf').onsubmit = async (e) => {
       e.preventDefault(); const f = new FormData(e.target)
       const picked = [...nr.querySelectorAll('.rpill')].filter((p) => p.getAttribute('aria-pressed') === 'true').map((p) => p.dataset.r)
@@ -4411,8 +4449,16 @@ async function route() {
   } catch (e) {
     clearTimeout(slow)
     if (token === navToken) {
-      app.innerHTML = `<div class="pad page-msg"><div class="empty err">${esc(e.message)}<br><br><button class="btn primary" id="retry">Try again</button> <a class="btn" href="#/">Home</a></div></div>`
-      $('#retry').onclick = () => route()
+      // A show that is gone (or not for this profile) will not come back on a retry: Home is the way on, said plainly and not
+      // in the error colour. Anything else -- a server that did not answer, a timeout -- is worth trying again.
+      if (e.status === 404) {
+        const notYet = /not available yet/i.test(e.message)
+        app.innerHTML = `<div class="pad page-msg"><div class="empty fill"><b class="gone-h">${notYet ? 'This show isn’t ready yet' : 'This show isn’t here any more'}</b><span class="dim">${notYet ? 'Flix is still checking which of its seasons can be played. Try it again in a few minutes.' : 'It may have been removed from Flix, or it isn’t available on this profile.'}</span><div class="empty-acts"><a class="btn primary" href="#/" id="retry">Home</a><a class="btn" href="#/" id="tobrowse">Browse all shows</a></div></div></div>`
+        $('#tobrowse').onclick = () => { try { sessionStorage.setItem('flix.toDisc', '1') } catch { /* ignore */ } }
+      } else {
+        app.innerHTML = `<div class="pad page-msg"><div class="empty err">${esc(e.message)}<div class="empty-acts"><button class="btn primary" id="retry">Try again</button><a class="btn" href="#/">Home</a></div></div></div>`
+        $('#retry').onclick = () => route()
+      }
       if (isTv) $('#retry').focus({ preventScroll: true })
     }
   }

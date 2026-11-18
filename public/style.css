@@ -1291,3 +1291,44 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .prefrow + .prefrow { margin-top: 12px; }
 #disc { scroll-margin-top: 84px; }
 .hero .actions .btn svg { flex: none; }
+
+/* ---------- polish pass 2 (2026-11-18) ---------- */
+/* Paused: the card names the show above the episode, and the top bar's title fades while the card is up. */
+.p-info-show { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.72); text-shadow: 0 1px 14px rgba(0,0,0,.8); }
+.p-info-show[hidden] { display: none; }
+.player .p-top .p-title { transition: opacity .3s var(--ease); }
+.player.pinfo-up .p-top .p-title { opacity: 0; }
+/* A page for a show that is gone: a heading, a line, and the way on. */
+.gone-h { display: block; color: var(--fg); font-size: 20px; margin-bottom: 6px; }
+/* Family: an allowed rating is a filled pill with a tick, a blocked one is plain, so who can watch what reads at a glance. */
+.rpill { display: inline-flex; align-items: center; gap: 5px; }
+.rpill[aria-pressed="true"] { background: linear-gradient(100deg, var(--accent), var(--accent-2)); color: var(--accent-fg, #fff); border-color: transparent; }
+.rpill[aria-pressed="true"]::before { content: '✓'; font-size: 11px; }
+.rpill[aria-pressed="false"] { background: transparent; color: var(--dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--dim) 60%, transparent); }
+.presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; }
+.presets .dim { margin-right: 4px; }
+.preset { border: 1px solid var(--line); background: var(--surface-2); color: var(--fg); padding: 6px 14px; border-radius: 99px; font: inherit; font-weight: 600; cursor: pointer; transition: background .2s, border-color .2s; }
+.preset:hover { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.preset[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--surface-2)); }
+/* A person: name and access on the left, one Manage button on the right. */
+.person { grid-template-columns: minmax(0, 1fr) auto; }
+.person .who { grid-column: 1; grid-row: 1; }
+.person .rcell { grid-column: 1; grid-row: 2; padding-left: 56px; }
+.person .pact { grid-column: 2; grid-row: 1 / span 2; align-self: start; position: relative; }
+.person .pwrow { grid-column: 1 / -1; }
+form.person .rcell, form.person > * { padding-left: 0; grid-column: auto; grid-row: auto; }
+.pmore { padding: 8px 14px; }
+.pmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 200px; display: flex; flex-direction: column; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.pmenu[hidden] { display: none; }
+.pmenu button { text-align: left; background: none; border: 0; color: var(--fg); font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+.pmenu button:hover, .pmenu button:focus-visible { background: var(--surface-2); }
+.pmenu button.danger { color: var(--bad); }
+@media (max-width: 760px) { .person { grid-template-columns: minmax(0, 1fr) auto; } .person .rcell { padding-left: 0; grid-column: 1 / -1; } }
+/* Who's watching, managing: the tiles wobble a little and carry a remove mark. */
+.who-manage { margin-top: -8px; }
+.who-hint { max-width: 44ch; text-align: center; margin: -20px 0 0; font-size: 14px; }
+.managing .who-tile[data-n] .who-av { position: relative; animation: whoJiggle .5s ease-in-out infinite alternate; }
+.managing .who-tile[data-n] .who-av::after { content: '✕'; position: absolute; top: -8px; right: -8px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; background: var(--bad); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+.managing a.who-tile { opacity: .35; pointer-events: none; }
+@keyframes whoJiggle { from { transform: rotate(-1.5deg); } to { transform: rotate(1.5deg); } }
+@media (max-width: 560px) { .pmore .pm-l { display: none; } .pmore { padding: 8px 12px; font-size: 18px; line-height: 1; } }
