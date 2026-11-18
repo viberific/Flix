@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { createReadStream, existsSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os'
@@ -13,7 +13,7 @@ import { qb } from './qb.ts'
 import { searchBtn, startCrawler, syncLatest, syncSeries } from './catalog.ts'
 import { IpNotAuthorizedError, RateLimitError, btnCall } from './btn/client.ts'
 import { btnKeyStatus, clearQb, omdbKeyStatus, openSubtitlesKeyStatus, qbStatus, setBtnApiKey, setOmdbApiKey, setOpenSubtitlesApiKey, setQb, setPace, setTmdbApiKey, setTranscodeHardware, setTranscodeMode, setTranscodeProfile, paceStatus, tmdbKeyStatus, transcodeStatus } from './settings.ts'
-import { encoderInfo, encoderStatus } from './encode.ts'
+import { encoderInfo, encoderStatus, gpuPresent } from './encode.ts'
 import { bufferStatus, fileInfo, readRange, startPlayback, StreamTimeout } from './streaming.ts'
 import { enableNextFile } from './ahead.ts'
 import { recoverPace, setWatching, tick as paceTick } from './pace.ts'
@@ -42,20 +42,52 @@ import { fullInDays, storageHistory } from './storage.ts'
 import { autoFetch, autoNext, NEXT_EPISODE_AT, startAutoDownloads } from './autodl.ts'
 import { ensureNet, isBrowsableService, isHiddenService, netInfo, startNetworkCrawler } from './networks.ts'
 import { tasteOf, tasteSort } from './taste.ts'
-import { diag, diagCounts, diagFiles, diagTail, hitch } from './diag.ts'
+import { diag, diagAll, diagCounts, diagFiles, diagTail, errInfo, hitch, redact } from './diag.ts'
 import { holdersOf, keepFor, leavingSoonFor, letGoFor, pendingViewers, recheckMissingFiles, relocateDownloads, removeDownload, seedStatus, startSweeper, whyKept } from './retention.ts'
 import { episodeLabel, groupDeletePlan, groupFinished, seedNote, type GroupRow } from './seeding-groups.ts'
 import { qb as engine } from './qb.ts'
 import { getDetails, queueDetails, youtubeId } from './details.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+/** This build's version, from package.json, so every log line from a run can be tied to the code that wrote it. */
+const APP_VERSION = (() => { try { return String(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version) } catch { return 'unknown' } })()
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
 
-app.setErrorHandler((err: any, _req, reply) => {
+app.setErrorHandler((err: any, req: any, reply) => {
   const status = err instanceof RateLimitError ? 429 : err instanceof IpNotAuthorizedError ? 403 : err.statusCode ?? 500
   if (status >= 500) app.log.error(err)
+  // Into Flix's own log as well, with where it was thrown: the request log alone said a 500 happened, not why.
+  req.flixErr = { ...errInfo(err), status }
   reply.code(status).send({ error: err.message })
 })
+
+/*
+ * Every request that went wrong, and every one that was slow, in Flix's own log: method, path (tokens taken out), status,
+ * how long it took, who asked, and what the answer said. Explicit error answers (`reply.code(503).send(...)`) never reach
+ * the error handler, so their text is caught on the way out (onSend) and written with the rest (onResponse).
+ */
+const QUIET_4XX = new Set([401])
+const LONG_BY_DESIGN = /\/(raw|offline\/file)(\?|$)|\/api\/(events|art)\//
+app.addHook('onSend', async (req: any, reply, payload) => {
+  if (reply.statusCode >= 400 && typeof payload === 'string' && payload.length < 2000) req.flixBody = payload
+  return payload
+})
+app.addHook('onResponse', async (req: any, reply) => {
+  const url = String(req.url ?? '')
+  if (!url.startsWith('/api/') || url.startsWith('/api/diag/')) return
+  const status = reply.statusCode, ms = Math.round(reply.elapsedTime ?? 0)
+  const base = { method: req.method, path: redact(url).slice(0, 200), status, ms, user: req.user?.id ?? null }
+  let said: string | undefined
+  try { said = req.flixBody ? String(JSON.parse(req.flixBody).error ?? req.flixBody) : undefined } catch { said = req.flixBody }
+  if (status >= 500) diag('http', 'request failed', { ...base, said: said ? redact(said).slice(0, 300) : undefined, ...(req.flixErr ?? {}) }, 'error')
+  else if (status >= 400 && !QUIET_4XX.has(status)) diag('http', 'request refused', { ...base, said: said ? redact(said).slice(0, 300) : undefined, ...(req.flixErr ? { stack: req.flixErr.stack } : {}) }, 'warn')
+  else if (ms > 8000 && !LONG_BY_DESIGN.test(url)) diag('http', 'slow request', base, 'warn')
+})
+
+// A crash is written down before the process goes (the monitor does not change what happens next), and so is a promise
+// nobody caught and a warning Node raised.
+process.on('uncaughtExceptionMonitor', (e, origin) => diag('server', 'crashed', { origin, ...errInfo(e, 10) }, 'error'))
+process.on('warning', (w) => diag('server', 'node warning', errInfo(w, 3), 'warn'))
 
 /** True for a host that only exists on the home network: a private IPv4 literal, an mDNS .local name, whatever
  *  LAN_URL names, or a name listed in LAN_HOSTS. Those are served directly even when PUBLIC_URL is set, so a TV
@@ -534,6 +566,7 @@ const cleanIds = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).fil
 
 /** The one-tap path: pick the best source (1080p, else 4K) and start playing. `avoid` = sources that already failed for this viewer. */
 app.post('/api/watch', auth, async (req) => {
+  ;(req as any).flixT0 = Date.now()
   const { seriesId, season, label } = req.body as any
   const avoid = new Set(cleanIds((req.body as any).avoid))
   if (!canViewSeries(req.user, Number(seriesId))) throw notFound('That show is not available')
@@ -558,6 +591,7 @@ app.post('/api/watch', auth, async (req) => {
   // exact file. When the episode now comes from another release than the one it was started on, that is 0 and the episode
   // restarted: fall back to where the episode itself was left.
   const position = play.position > 5 || ep.watched ? play.position : ep.position
+  diag('play', 'opened an episode', { user: req.user!.id, series: Number(seriesId), label: ep.label, season: ep.season, torrent: ep.torrentId, file: play.fileIndex, quality: ep.quality, onServer: !!ep.onServer, pack: !!ep.isPack, avoid: [...avoid], position: Math.round(position), next: next?.label ?? null, ms: Math.round((Date.now() - (req as any).flixT0) || 0) })
   return { ...play, position, seriesName, quality: ep.quality, title: ep.label, episodeTitle: nameOf(ep), next: next ? { season: next.season, label: next.label, title: nameOf(next) } : null }
 })
 
@@ -703,6 +737,7 @@ const audioIdx = (v: unknown) => { const n = Number(v ?? 0); return Number.isInt
  */
 const CONVERT_OFF = 'This file would need converting, and converting is turned off. Flix plays files as they are.'
 app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
+  const t0 = Date.now()
   const { t, f } = req.params as any
   const a = audioIdx((req.query as any).a)
   // A cast is about to be handed to a TV, and a receiver keeps whatever timeline it was given when it loaded: it needs the
@@ -743,6 +778,14 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // player can offer the +/- control already knowing what it says without asking the server a second question.
   const subsList = cc ? [{ ...cc, offset: manualOffset(+t, +f, cc.sync) }] : []
   const copyFor = copyPictureFor(p, can)
+  // How this play was decided, written once per ask: the file as the box sees it, what the player said it decodes, and which
+  // way it went -- the line that turns "it would not play on the TV" into a codec, a profile and a choice.
+  const chose = (mode: string, extra: Record<string, unknown> = {}) => diag('play', 'chose how to play', {
+    torrent: +t, file: +f, user: req.user!.id, mode, ...extra, a, q, force, cast, complete,
+    video: p.videoCodec ?? null, audio: p.audioCodec ?? null, audioTrack: p.audio?.[a]?.lang ?? null, channels: p.audio?.[a]?.channels ?? null, container: p.container ?? null, height: p.height ?? null, pixFmt: p.pixFmt ?? null,
+    tenBit: !!p.tenBit, hdr: p.hdr, fps: p.fps ?? null, kbps: p.srcBitrate ? Math.round(p.srcBitrate / 1000) : null,
+    can: [...can].join(','), directOk: directPlay(p, can), audioOk: audioDirect(p, can), copyOk: !!copyFor, ms: Date.now() - t0,
+  })
   // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
   // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
   const remux = !direct && !q && !force && a === 0 && copyFor
@@ -758,7 +801,11 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     const seg = q ? `hls-q/${q}/${a}` : encode ? `hls-x/${a}` : a ? `hls-a/${a}` : 'hls'
     // Made here, not on the playlist's first request, so the keyframe read (a few seconds, once per file) happens while
     // the player shows its wait, rather than inside a request the player gives up on after ten.
-    try { await ensureHls(+t, +f, p, a, false, { complete, source, encode, maxHeight: q }) } catch (e: any) { throw Object.assign(new Error(e.message), { statusCode: 503 }) }
+    try { await ensureHls(+t, +f, p, a, false, { complete, source, encode, maxHeight: q }) } catch (e: any) {
+      diag('play', 'could not set up the playlist', { torrent: +t, file: +f, seg, encode, ...errInfo(e) }, 'error')
+      throw Object.assign(new Error(e.message), { statusCode: 503 })
+    }
+    chose('hls', { seg, encode, why: force ? 'device could not decode it' : q ? `smaller size ${q}p` : encode ? 'picture must be converted' : 'sound must be converted' })
     const ht = `/api/tv/${token}/${t}/${f}/${seg}`
     const mt = 'application/vnd.apple.mpegurl'
     return {
@@ -769,6 +816,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     }
   }
   const path = direct ? 'raw' : 'offline/file'
+  chose(direct ? 'direct' : 'file', { why: direct ? 'plays as it is' : 'the repacked file is ready' })
   // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
   // to it as one file served by byte range -- the plain MP4 as it is, anything else as the repacked MP4 -- because only a
   // file carries its whole length at once. A direct file still arriving is served as raw bytes as it always was.
@@ -1187,11 +1235,29 @@ app.get('/api/admin/diag', admin, async (req) => {
     events: tail,
   }
 })
+const CLIENT_ERRORS = new Set(['error', 'fail', 'jserror', 'mediaerror'])
+const CLIENT_WARNS = new Set(['stall', 'stalled', 'recover', 'drift', 'resync', 'stuck', 'apierror', 'slowapi', 'decode', 'cold', 'stepdown'])
+/** The whole log on disk, every rotated file oldest first, as one download an admin can send on. */
+app.get('/api/admin/diag/download', admin, async (_req, reply) => {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')
+  return reply.type('application/x-ndjson').header('content-disposition', `attachment; filename="flix-log-${stamp}.ndjson"`).header('cache-control', 'no-store').send(diagAll())
+})
 /** A viewer's player saying what it felt: a stall, a seek, a picture that fell back. Kept with the server's own stream events. */
 app.post('/api/diag/client', auth, async (req) => {
   const b = (req.body ?? {}) as any
-  const kind = String(b.kind ?? '').slice(0, 20)
+  const kind = String(b.kind ?? '').slice(0, 24)
   if (!kind) return { ok: false }
+  // The rest of what the player knew at that moment, as it chose to send it: kept as plain values only, a bounded number of
+  // them, strings cut short and scrubbed (see redact), so a player can describe itself fully without filling the log.
+  const ctx: Record<string, unknown> = {}
+  if (b.ctx && typeof b.ctx === 'object') {
+    for (const [k, v] of Object.entries(b.ctx).slice(0, 48)) {
+      if (!/^[a-zA-Z][\w.]{0,30}$/.test(k)) continue
+      if (typeof v === 'number' || typeof v === 'boolean' || v === null) ctx[k] = v
+      else if (typeof v === 'string') ctx[k] = redact(v).slice(0, 400)
+      else if (Array.isArray(v)) ctx[k] = v.slice(0, 12).map((x) => (typeof x === 'number' || typeof x === 'boolean' ? x : redact(x).slice(0, 80)))
+    }
+  }
   // The picture on screen ran dry: whatever is being cut ahead for the next episode gives the disk back at once.
   if (kind === 'stall' || kind === 'stalled') noteStall()
   const at = Number(b.at) || null
@@ -1205,7 +1271,9 @@ app.post('/api/diag/client', auth, async (req) => {
     // match the video" cannot be told from a plain stall in the log.
     family: b.family == null ? null : String(b.family).slice(0, 12), audio: b.audio == null ? null : String(b.audio).slice(0, 24),
     destroyed: b.destroyed == null ? null : !!b.destroyed, driftMs: Number.isFinite(Number(b.driftMs)) ? Number(b.driftMs) : null,
-  }, kind === 'error' ? 'error' : kind === 'stall' || kind === 'stalled' || kind === 'recover' || kind === 'drift' || kind === 'resync' ? 'warn' : 'info')
+    // Which page load (sid) and which opening of the player (pid) this came from, so one viewing reads as one story.
+    sid: b.sid == null ? null : String(b.sid).slice(0, 16), pid: b.pid == null ? null : String(b.pid).slice(0, 16), ...ctx,
+  }, CLIENT_ERRORS.has(kind) ? 'error' : CLIENT_WARNS.has(kind) ? 'warn' : 'info')
   return { ok: true }
 })
 app.get('/api/admin/reports', admin, async () => ({
@@ -1508,6 +1576,7 @@ export async function start() {
   }
   try {
     await app.listen({ port: config.port, host: process.env.HOST ?? '0.0.0.0' })
+    diag('server', 'started', { version: APP_VERSION, node: process.version, pid: process.pid, cpus: cpus().length, memMb: Math.round(totalmem() / 1048576), freeMb: Math.round(freemem() / 1048576), gpuDevice: gpuPresent(), hardware: config.transcode.hardware, dataDir: config.dataDir, downloadDir: config.downloadDir })
   } catch (e: any) {
     if (e.code === 'EADDRINUSE') app.log.fatal(`Port ${config.port} is already in use: another Flix (or other app) is still running. Stop it, or set PORT in .env.`)
     else app.log.fatal(`Could not start the web server: ${e.message}`)

@@ -27,12 +27,59 @@ async function wentThroughGate() {
 const gated = (msg) => Object.assign(new Error(msg), { gate: true })
 const GATE_MSG = 'Umbrel signed you out. This app sits behind Umbrel’s own login; sign in to Umbrel, then open Flix again.'
 
+/* ---------- the player's side of the log ----------
+ * Everything the box's log needs to tell one viewing from another and to say what the device was doing: a page-load id
+ * (sid) and a player id (pid) on every line, the device once per page load, and the player's state at the moment of each
+ * event. Sent with fetch keepalive, never through api() (whose own failures are logged here), throttled per kind so a burst
+ * cannot flood the box, and never allowed to throw.
+ */
+const LOG_SID = Math.random().toString(36).slice(2, 10)
+let logHelloSent = false
+let logPlayer = null // set by playView: { pid, state() } -- the open player's own answer to "where are you?"
+const logSeen = new Map()
+function clog(kind, data = {}, ctx = {}) {
+  try {
+    const now = Date.now(), seen = logSeen.get(kind) ?? { n: 0, at: now }
+    if (now - seen.at > 60_000) { seen.n = 0; seen.at = now }
+    if (++seen.n > 30 && !/error|fail/.test(kind)) return // 30 a minute of one kind is the story; errors always go
+    logSeen.set(kind, seen)
+    let st = {}
+    try { st = logPlayer?.state?.() ?? {} } catch { /* the player is half torn down */ }
+    const body = { kind, sid: LOG_SID, pid: logPlayer?.pid ?? null, ...data, ctx: { route: location.hash.slice(0, 80), ...st, ...ctx } }
+    fetch('/api/diag/client', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), keepalive: true, cache: 'no-store' }).catch(() => {})
+  } catch { /* logging must never break the page */ }
+}
+/** What this device is, once per page load: the line every other line of this sid is read against. */
+function logHello() {
+  const c = navigator.connection
+  clog('hello', {}, {
+    ua: navigator.userAgent, tv: isTv, car: isCar, touch: matchMedia('(pointer: coarse)').matches, screen: `${screen.width}x${screen.height}`,
+    viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio, lang: navigator.language, canPlay: CAN_PLAY, hls: !!window.Hls?.isSupported?.(),
+    standalone: matchMedia('(display-mode: standalone)').matches, shell: typeof shell !== 'undefined' ? !!shell : null, online: navigator.onLine,
+    net: c?.effectiveType ?? null, downMbps: c?.downlink ?? null, mem: navigator.deviceMemory ?? null, cores: navigator.hardwareConcurrency ?? null,
+  })
+}
+// A script error or a promise nobody caught, with where it came from: these left no trace before.
+addEventListener('error', (e) => { if (e.error || e.message) clog('jserror', {}, { message: String(e.message || e.error?.message).slice(0, 300), source: String(e.filename || '').split('/').pop(), line: e.lineno, col: e.colno, stack: String(e.error?.stack || '').split('\n').slice(0, 5).join(' | ').slice(0, 600) }) })
+addEventListener('unhandledrejection', (e) => { const r = e.reason; clog('jserror', {}, { message: String(r?.message ?? r).slice(0, 300), unhandled: true, stack: String(r?.stack || '').split('\n').slice(0, 5).join(' | ').slice(0, 600) }) })
+// The page going behind something and coming back: a phone locking mid-episode explains a stall that follows.
+document.addEventListener('visibilitychange', () => { if (logPlayer) clog('visibility', {}, { hidden: document.hidden }) })
+// The page being too busy to answer (the "controls stuck" reports): any task over a second while an episode is open.
+try { new PerformanceObserver((l) => { for (const e of l.getEntries()) if (logPlayer && e.duration > 1000) clog('longtask', {}, { ms: Math.round(e.duration) }) }).observe({ type: 'longtask', buffered: false }) } catch { /* not this browser */ }
+
 async function api(path, body, method, timeoutMs) {
+  const apiT0 = Date.now()
   let res
+  if (path === '/api/diag/client' && body && !body.sid) {
+    let st = {}
+    try { st = logPlayer?.state?.() ?? {} } catch { /* torn down */ }
+    body = { ...body, sid: LOG_SID, pid: logPlayer?.pid ?? null, ctx: { ...st, ...(body.ctx ?? {}) } }
+  }
   try {
     res = await fetch(path, { method: method ?? (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, cache: 'no-store',
       signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
   } catch (e) {
+    if (path !== '/api/diag/client') clog('apierror', {}, { path: path.split('?')[0].slice(0, 120), ms: Date.now() - apiT0, network: e.name || 'error', online: navigator.onLine })
     if (e.name === 'TimeoutError') throw new Error('The Flix server took too long to answer.')
     if (await wentThroughGate()) throw gated(GATE_MSG)
     if (!navigator.onLine) throw new Error('This device looks offline.')
@@ -46,6 +93,9 @@ async function api(path, body, method, timeoutMs) {
     throw new Error(`Flix answered ${res.status}${res.statusText ? ' ' + res.statusText : ''}.`)
   }
   const data = await res.json().catch(() => ({}))
+  const took = Date.now() - apiT0
+  if (res.status >= 500) clog('apierror', {}, { path: path.split('?')[0].slice(0, 120), status: res.status, ms: took, said: String(data.error ?? '').slice(0, 200) })
+  else if (took > 5000 && !path.startsWith('/api/diag')) clog('slowapi', {}, { path: path.split('?')[0].slice(0, 120), status: res.status, ms: took })
   if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, pin: !!data.pin, gated: !!data.gated, after: data.after ?? null })
   return data
 }
@@ -1498,10 +1548,22 @@ function playView(seriesId, season, label) {
      * player's own play() calls stand down.
      */
     let userPaused = false
-    const userPause = () => { if (!v) return; userPaused = true; v.autoplay = false; v.pause() }
-    const userPlay = () => { if (!v) return Promise.resolve(); userPaused = false; v.autoplay = true; return v.play() }
+    let userActAt = 0, selfAt = 0 // when the viewer last pressed play/pause, and when this player last reloaded its own source
+    const userPause = () => { if (!v) return; userActAt = Date.now(); userPaused = true; v.autoplay = false; v.pause(); clog('userpause') }
+    const userPlay = () => { if (!v) return Promise.resolve(); userActAt = Date.now(); userPaused = false; v.autoplay = true; clog('userplay'); return v.play() }
     top.hidden = true
     const pl = $('#pl')
+    // This opening of the player, in the log: an id for every line it sends, and its state at the moment of each one.
+    const openedAt = Date.now(), pid = Math.random().toString(36).slice(2, 8)
+    let closeWhy = 'navigated away'
+    const bufAhead = () => { try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 0.2 && v.currentTime <= v.buffered.end(i)) return Math.round((v.buffered.end(i) - v.currentTime) * 10) / 10 } catch { /* none */ } return 0 }
+    logPlayer = { pid, state: () => ({
+      series: +seriesId, season, label, torrent: play?.torrentId ?? null, file: play?.fileIndex ?? null, mode: info?.mode ?? null, family: sourceFamily(),
+      quality: info?.quality ?? null, convert: convertPic, t: v ? Math.round(v.currentTime * 10) / 10 : null, dur: v && Number.isFinite(v.duration) ? Math.round(v.duration) : null,
+      rs: v?.readyState ?? null, ns: v?.networkState ?? null, paused: v ? v.paused : null, ahead: v ? bufAhead() : null, started, holding, userPaused,
+      casting: castingOnly, sinceOpenMs: Date.now() - openedAt, hidden: document.hidden,
+    }) }
+    clog('open', {}, { from: (playerOrigin || '').slice(0, 60) })
     // In the car the player takes the whole screen, the corner under the car's own buttons included: the picture stays clear
     // of them and the panel beside it starts below them (see html.car in style.css, and FlixScreen for the other half).
     if (isCar) try { window.FlixCar?.immersive(true) } catch { /* an older app */ }
@@ -2133,6 +2195,7 @@ function playView(seriesId, season, label) {
       nb.setAttribute('aria-label', next ? `Next episode: ${name(next)}` : 'No next episode')
       const to = (e) => async () => {
         if (!e) return
+        closeWhy = `${e === prev ? 'previous' : 'next'} episode button`; clog('nav', {}, { via: e === prev ? 'prev' : 'next', to: e.label })
         await Promise.race([report(), new Promise((res) => setTimeout(res, 1200))])
         location.replace(`#/play/${seriesId}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
       }
@@ -2168,6 +2231,8 @@ function playView(seriesId, season, label) {
       try { el.pause(); el.querySelectorAll('track').forEach((t) => t.remove()); el.removeAttribute('src'); el.load() } catch { /* already gone */ }
     }
     cleanup = () => {
+      clog('close', {}, { why: closeWhy, watchedSec: startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0 })
+      if (logPlayer?.pid === pid) logPlayer = null
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
@@ -2186,6 +2251,8 @@ function playView(seriesId, season, label) {
 
     function fail(msg) {
       if (!alive) return
+      // The screen a viewer sees, with everything the player knew: until now this left only the generic sentence behind.
+      clog('fail', {}, { message: String(msg).slice(0, 300), said: friendly(msg, haveFrac >= 1).slice(0, 200), fileRetry, convertPic, tries, recoveries, coldTries, mediaError: v?.error?.code ?? null, mediaMessage: String(v?.error?.message ?? '').slice(0, 200), haveFrac: Math.round(haveFrac * 100) / 100 })
       api('/api/report', { torrentId: play?.torrentId, seriesId: +seriesId, label, kind: 'auto', message: msg }).catch(() => {})
       clearInterval(timer); clearTimeout(subT); hls?.destroy(); hls = null
       $('.mark')?.remove(); restoreWait()
@@ -2288,7 +2355,9 @@ function playView(seriesId, season, label) {
 
     async function begin() {
       try {
+        const askedAt = Date.now()
         play = await api('/api/watch', { seriesId: +seriesId, season: season === 'x' ? null : +season, label, avoid, play: true })
+        clog('watch', {}, { ms: Date.now() - askedAt, position: Math.round(Number(play.position) || 0), playQuality: play.quality ?? null, next: play.next?.label ?? null, avoid })
         if (!alive) return
         // A different episode: the position kept for the last one says nothing about this one.
         held = 0
@@ -2322,9 +2391,11 @@ function playView(seriesId, season, label) {
       const seq = ++infoSeq
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
       const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', convertPic ? 'x=1' : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const infoAskedAt = Date.now()
       const got = await api(`${base}/info${q ? '?' + q : ''}`)
       if (seq !== infoSeq || !alive) return
       info = got
+      clog('info', {}, { ms: Date.now() - infoAskedAt, asked: q.replace(/cv=[^&]*/, '').slice(0, 60), seekable: !!got.seekable, converting: !!got.converting, qualities: got.qualities ?? [], subs: (got.subs ?? []).length, audioTracks: (got.audio ?? []).length })
       // The audio language chosen on this device wins over the file's default track, and with no choice made yet that is
       // English: an anime release's first track is usually Japanese, with the English dub second. Subtitles stay on either way.
       if (!a) {
@@ -2408,6 +2479,7 @@ function playView(seriesId, season, label) {
     }
     function attach(startAt) {
       if (castingOnly) return // the TV has it; nothing plays here
+      selfAt = Date.now()
       /**
        * A source is never swapped UNDER a running pipeline. Destroying the playlist and setting the next one left the
        * element's own audio output carrying the clock of the source that had gone, and picture and sound then ran at
@@ -2452,6 +2524,7 @@ function playView(seriesId, season, label) {
           if (started) return
           started = true
           startedAt = Date.now()
+          clog('firstframe', {}, { ms: startedAt - openedAt })
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
@@ -2499,6 +2572,12 @@ function playView(seriesId, season, label) {
         // The picture coming back must always take the artwork with it: paint() runs on play and pause and wakes while
         // paused, but a play event that finds no pause in between (a resume after a stall, a source swap) would
         // otherwise leave the artwork sitting over a show that is playing again.
+        // Paused or started by anything but the viewer, once the episode is under way: a reload, a stall the browser gave up
+        // on, a TV's own remote, autoplay after a source swap ("it resumes on its own after I pause" is this line).
+        // Only what nobody asked for is written: a pause while the viewer had it playing (not a reload this player started, not
+        // the intro hold), and a play while the viewer had paused it.
+        v.addEventListener('pause', () => { if (alive && started && !holding && !userPaused && !v.ended && !v.seeking && Date.now() - selfAt > 1500 && Date.now() - userActAt > 800) clog('autopause') })
+        v.addEventListener('play', () => { if (alive && started && userPaused && Date.now() - userActAt > 800) clog('autoplay', {}, { whilePausedByViewer: true }) })
         v.addEventListener('play', () => { if (!holding) { userPaused = false; v.autoplay = true }; artRun++; idleArt?.hide(); pl.classList.remove('idle'); armQuiet() })
         let lastT = -1
         v.ontimeupdate = () => {
@@ -2888,6 +2967,7 @@ function playView(seriesId, season, label) {
       const onward = async () => {
         if (moving) return
         moving = true
+        closeWhy = left <= 0 ? 'up next countdown' : 'up next play now'; clog('nav', {}, { via: left <= 0 ? 'countdown' : 'upnext', to: nx.label })
         clearInterval(cdT)
         await Promise.race([report(true), new Promise((r) => setTimeout(r, 1500))])
         location.replace(target)
@@ -2916,6 +2996,7 @@ function playView(seriesId, season, label) {
     }
 
     function onEnded() {
+      closeWhy = 'finished'; clog('ended', {}, { next: play?.next?.label ?? null })
       report(true)
       if (!play.next) return leavePlayer()
       showUpNext()
@@ -3099,6 +3180,7 @@ function stallBlamesLine(stallMs, lateMs) {
         if (qSetting() !== 'auto' || castingOnly || !alive || qSwitching) return
         const next = (info.qualities || []).find((h) => h < (info.quality || Infinity))
         if (!next) return
+        clog('stepdown', {}, { from: info.quality ?? 'original', to: next })
         autoQuality = next
         flashNote(`Slow connection: switched to ${next}p`)
         switchQuality()
@@ -3561,7 +3643,8 @@ function downloadsPanel(data, root) {
       <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)} anyway">${trash}<span>Remove anyway</span></button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
     $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
-      <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>`
+      <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>
+      <div class="dim sm" style="margin-top:8px">The diagnostic log records every play, error and slow moment. <a href="/api/admin/diag/download" download>Download the log</a> to send it on when something goes wrong.</div>`
     wire($('#tinfo'))
     // Shows deleted on purpose. Their cards are off every screen until something new turns up in one, so this is the only
     // place they can be seen -- and the only place to bring one back before then.
@@ -4505,6 +4588,7 @@ async function route() {
   }
   me = st.user
   myState = st
+  if (me && !logHelloSent) { logHelloSent = true; logHello() }
   if (me && !profiles().some((p) => p.name === me.name)) rememberProfile()
   else if (me) syncProfileAvatar()
   renderTop()
@@ -4626,7 +4710,9 @@ function watchStalls(v, getPlay) {
   let waitingSince = 0
   const send = (kind, extra) => {
     const now = Date.now()
-    if (now - last < 1500) return // a stall fires waiting, stalled and suspend in a burst; one report is the story
+    // A stall fires waiting, stalled and suspend in a burst; one report is the story. An error is never the burst: it went
+    // out under the same 1.5 s rule, and an error that came straight after a stall was dropped from the log.
+    if (kind !== 'error' && now - last < 1500) return
     last = now
     const ahead = (() => { try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime && v.currentTime <= v.buffered.end(i)) return Math.round((v.buffered.end(i) - v.currentTime) * 10) / 10; return 0 } catch { return 0 } })()
     api('/api/diag/client', { kind, at: Math.round(v.currentTime * 10) / 10, bufferedAhead: ahead, height: v.videoHeight || null, width: v.videoWidth || null, paused: v.paused, readyState: v.readyState, torrentId: getPlay?.()?.torrentId ?? null, fileIndex: getPlay?.()?.fileIndex ?? null, ...extra }).catch(() => {})
@@ -4634,7 +4720,8 @@ function watchStalls(v, getPlay) {
   v.addEventListener('waiting', () => { waitingSince = Date.now(); send('stall') })
   v.addEventListener('stalled', () => send('stalled'))
   v.addEventListener('seeking', () => send('seek'))
-  v.addEventListener('error', () => send('error', { code: v.error?.code ?? null, message: String(v.error?.message ?? '').slice(0, 120) }))
+  v.addEventListener('error', () => send('error', { code: v.error?.code ?? null, message: String(v.error?.message ?? '').slice(0, 300),
+    ctx: { networkState: v.networkState, src: String(v.currentSrc || '').split('?')[0].split('/').slice(-3).join('/'), duration: Number.isFinite(v.duration) ? Math.round(v.duration) : null, buffered: (() => { try { const r = []; for (let i = 0; i < v.buffered.length && i < 6; i++) r.push(`${v.buffered.start(i).toFixed(1)}-${v.buffered.end(i).toFixed(1)}`); return r } catch { return [] } })() } }))
   v.addEventListener('playing', () => { if (waitingSince && Date.now() - waitingSince > 400) send('recovered', { stalledForMs: Date.now() - waitingSince }); waitingSince = 0 })
   // A resolution the browser settled on well below the file's told us it fell back to a lower rendition.
   let lowest = null

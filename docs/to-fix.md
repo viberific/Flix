@@ -19,6 +19,16 @@ real devices.
       from that moment.
 - [ ] **Previous / next episode pills** (0.3.122): try them on a phone, a computer and the TV remote.
 
+## Reading the log
+
+Since 0.3.126 the log is verbose: Settings → Torrents → **Download the log** gets every file as one `.ndjson`.
+Every player line carries `sid` (one page load) and `pid` (one opening of the player), so filter on a `pid` to read one
+viewing start to end: `open` → `watch` → `info` → `attach` → `firstframe` → … → `close` (with `why`). Look for `fail`
+(the error screen, with everything the player knew), `error`, `jserror`, `autoplay` / `autopause` (playback changing on
+its own), `longtask` (the page frozen for over a second), `apierror` / `slowapi`, and on the server side `http` (failed,
+refused and slow requests, with stack), `play` → `chose how to play` (codec and why), `ffmpeg exited with an error`
+(with ffmpeg's own last lines) and `server` → `crashed`.
+
 ## From the box's log, not fixed yet
 
 - [ ] **"player waited for a segment" (1,366)**: the box is often slow to cut the next piece of an episode. The player now

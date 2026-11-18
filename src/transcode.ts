@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { config } from './config.ts'
-import { hitch, diag } from './diag.ts'
+import { hitch, diag, errInfo, redact } from './diag.ts'
 import { inside } from './folder.ts'
 import { videoEncode, notePace, demoteHardware, type EncodeTarget } from './encode.ts'
 
@@ -243,11 +243,35 @@ const hlsRoot = () => join(config.dataDir, 'hls')
 const NICE = existsSync('/bin/nice') || existsSync('/usr/bin/nice')
 /** The idle disk class as well, where the box has ionice: a copy cut while an episode plays reads the drive the player reads. */
 const IONICE = ['/usr/bin/ionice', '/bin/ionice'].find((p) => existsSync(p))
-const spawnFf = (args: string[], low?: boolean) => (low && NICE
+const spawnRaw = (args: string[], low?: boolean) => (low && NICE
   ? (IONICE
-    ? spawn(IONICE, ['-c3', 'nice', '-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'inherit'] })
-    : spawn('nice', ['-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'inherit'] }))
-  : spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] }))
+    ? spawn(IONICE, ['-c3', 'nice', '-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'pipe'] })
+    : spawn('nice', ['-n', '19', 'ffmpeg', ...args], { stdio: ['ignore', 'ignore', 'pipe'] }))
+  : spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] }))
+/**
+ * ffmpeg, with what it says kept. Its stderr used to go straight to the container's console, so a conversion that died
+ * left "ffmpeg failed" in Flix's log and the reason nowhere anyone looks. The text still goes to the console as before; the
+ * last of it is kept, and an exit with an error is written to the log with the input, the encoder and that tail. A run
+ * this file stopped on purpose (SIGKILL when the viewer moved on) is not an error and is not written.
+ */
+const spawnFf = (args: string[], low?: boolean) => {
+  const proc = spawnRaw(args, low)
+  const started = Date.now()
+  let tail = ''
+  proc.stderr?.on('data', (d: Buffer) => { process.stderr.write(d); tail = (tail + String(d)).slice(-1500) })
+  proc.on('error', (e) => diag('ffmpeg', 'ffmpeg could not start', { ...errInfo(e), low: !!low }, 'error'))
+  proc.on('exit', (code, signal) => {
+    if (signal || code === 0 || code === null) return
+    const after = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null }
+    const input = after('-i')
+    diag('ffmpeg', 'ffmpeg exited with an error', {
+      code, ms: Date.now() - started, low: !!low, input: input ? redact(input.split('/').slice(-2).join('/')).slice(0, 160) : null,
+      video: after('-c:v'), audio: after('-c:a'), seek: after('-ss'), hw: args.includes('-hwaccel') ? after('-hwaccel') : null,
+      said: redact(tail.trim().split('\n').slice(-8).join(' | ')).slice(0, 900),
+    }, 'error')
+  })
+  return proc
+}
 
 /**
  * One job (and folder) per file and chosen audio track, so switching language doesn't disturb anyone else watching.
@@ -622,11 +646,15 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
         // A hardware encode that passed its probe can still stumble on one file. Demote to the CPU and rebuild the
         // flags once instead of failing the play: hardware here is for speed, never a permission to break a stream.
         if (v.rebuild && !v.retried) { v.retried = true; await v.rebuild(); startRun(j, n); startedFor = n; continue }
+        diag('hls', 'gave up on a segment: ffmpeg stopped before it was made', { torrent: torrentId, file: fileIndex, seg: n, made: v.done.size, of: v.count, copy: !!v.copy, encode, maxH, retried: !!v.retried, waitedMs: Date.now() - asked }, 'error')
         throw new Error('ffmpeg failed')
       }
       startRun(j, n); startedFor = n
     }
-    if (Date.now() > deadline) throw new Error('Timed out starting transcode')
+    if (Date.now() > deadline) {
+      diag('hls', 'gave up on a segment after two minutes', { torrent: torrentId, file: fileIndex, seg: n, made: v.done.size, of: v.count, copy: !!v.copy, encode, maxH, running: !!(v.run && !v.run.exited), runFrom: v.run?.from ?? null }, 'error')
+      throw new Error('Timed out starting transcode')
+    }
     await sleep(60)
   }
 }
