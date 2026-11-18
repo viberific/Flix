@@ -133,7 +133,12 @@ async function swap(fn) {
   let ran = false
   const once = () => { if (!ran) { ran = true; fn() } }
   // Not on a television: the cross-fade snapshots the whole screen twice, and on a TV's chip that is a stutter on every page.
-  if (!rmq.matches && !isTv && document.startViewTransition) {
+  // Never into, out of or between episodes either: while a view transition runs the screen is a frozen snapshot of the old
+  // page, and one that stalls (see the guard below) left the controls of a starting episode -- or of the one Up next had
+  // just left -- stuck on screen while a <video> was being torn down and another opened underneath. The player has its own
+  // entrance (the logo), so the cross-fade bought nothing there.
+  const player = location.hash.startsWith('#/play/') || location.hash.startsWith('#/offplay/') || !!document.querySelector('.player')
+  if (!rmq.matches && !isTv && !player && document.startViewTransition) {
     // A view transition can stall (the new page is built but never painted until something else happens), so never wait on one for long.
     const guard = setTimeout(once, 400)
     try { await document.startViewTransition(once).updateCallbackDone } catch { /* fall through */ }
