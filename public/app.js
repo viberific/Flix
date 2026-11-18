@@ -349,13 +349,14 @@ function renderTop() {
     const old = $('.menu'); if (old) return closeMenu(old)
     const m = document.createElement('div'); m.className = 'menu'
     const many = profiles().length > 1 || (profiles().length === 1 && profiles()[0].name !== me.name)
-    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}${canDownload ? '<a href="#/downloads">Downloads</a>' : ''}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}<button id="lo">Sign out</button>`
+    m.innerHTML = `<div class="who">Signed in as <b>${esc(me.name)}</b></div><a href="#/profile">Profile</a>${many ? '<button id="sw">Switch profile</button>' : ''}${canDownload ? '<a href="#/downloads">Downloads</a>' : ''}${me.is_admin ? '<a href="#/settings">Settings</a>' : ''}${!isTv && !isCar && matchMedia('(hover: hover) and (pointer: fine)').matches ? '<button id="keys">Keyboard shortcuts</button>' : ''}<button id="lo">Sign out</button>`
     top.appendChild(m)
     $('#lo').onclick = async () => {
       await api('/api/logout', {}).catch(() => {})
       store.set('profiles', profiles().filter((p) => p.name !== me.name)); me = null
       if (profiles().length) go('#/profiles'); else route()
     }
+    const ks = $('#keys'); if (ks) ks.onclick = () => showShortcuts()
     const sw = $('#sw'); if (sw) sw.onclick = () => { try { sessionStorage.removeItem('flix.picked') } catch { /* ignore */ } go('#/profiles') }
     m.querySelectorAll('a').forEach((a) => a.onclick = () => closeMenu(m))
     // A remote lands on the first entry; Up and Down walk the list (see focusStops); Back closes it.
@@ -466,6 +467,12 @@ const CAN_PLAY = (() => {
 function closeMenu(m) { if (!m || m.classList.contains('out')) return; m.classList.add('out'); setTimeout(() => m.remove(), 150) }
 addEventListener('click', () => { for (const m of document.querySelectorAll('.menu:not(.out)')) closeMenu(m) })
 addEventListener('scroll', () => top.classList.toggle('solid', scrollY > 30), { passive: true })
+// "/" goes to the search field from anywhere outside the player, the way most sites do.
+addEventListener('keydown', (e) => {
+  if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || e.target.isContentEditable) return
+  const q = $('#q'); if (!q || top.hidden || $('.player') || $('.pin-modal')) return
+  e.preventDefault(); q.focus(); q.select()
+})
 
 /* ---------- profiles ("Who's watching?") ---------- */
 // Each profile used on this device keeps its own long-lived sign-in in local storage, so switching never asks for a password.
@@ -561,6 +568,21 @@ function askConfirm({ title, body, confirm }) {
   })
 }
 
+/** The player's keys, in the PIN box's frame (so Escape and a click outside close it). */
+function showShortcuts() {
+  const keys = [['/', 'Search'], ['Space or K', 'Play / pause'], ['← or J', 'Back 10 seconds'], ['→ or L', 'Forward 10 seconds'], ['0 to 9', 'Jump to 0% … 90% of the episode'], ['F', 'Full screen'], ['Z', 'Fill the screen / fit it'], ['Esc', 'Leave the player']]
+  const m = document.createElement('div'); m.className = 'pin-modal'
+  m.innerHTML = `<div class="pin-box keys-box" role="dialog" aria-modal="true" aria-labelledby="kst"><b id="kst">Keyboard shortcuts</b>
+    <dl class="keys">${keys.map(([k, d]) => `<dt>${k.split(' or ').map((x) => `<kbd>${esc(x)}</kbd>`).join(' or ')}</dt><dd>${esc(d)}</dd>`).join('')}</dl>
+    <div class="row-form"><button type="button" class="btn" id="pc">Close</button></div></div>`
+  document.body.appendChild(m)
+  const end = () => m.remove()
+  $('#pc', m).onclick = end
+  m.addEventListener('click', (e) => { if (e.target === m) end() })
+  m.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); end() } })
+  $('#pc', m).focus()
+}
+
 function joinView(token) {
   return () => {
     top.hidden = true
@@ -576,7 +598,7 @@ function authView(needsSetup) {
     app.innerHTML = `<div class="auth-wrap"><form class="auth"><div class="brand">${I.logo}<span>Flix</span></div>
       <h1 style="text-align:center">${needsSetup ? 'Create the admin account' : 'Welcome back'}</h1>
       <input class="field" name="name" placeholder="Username" autocomplete="username" value="${esc(signinHint)}" required>
-      <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password (8+ characters)' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required' : ''}>
+      <input class="field" name="password" type="password" placeholder="${needsSetup ? 'Password' : 'Password (kids leave this empty)'}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" ${needsSetup ? 'required minlength="8" aria-describedby="pwh"' : ''}>${needsSetup ? '<p class="dim sm auth-hint" id="pwh">At least 8 characters. You add the rest of the family after this, in Settings.</p>' : ''}
       <button class="btn primary" style="width:100%">${needsSetup ? 'Create account' : 'Sign in'}</button><div class="err" id="err" role="alert"></div></form></div>`
     // OK on the username moves on to the password rather than submitting half a form (a remote's keyboard ends with OK).
     const nameIn = $('input[name=name]'), passIn = $('input[name=password]')
@@ -648,9 +670,9 @@ function queueHtml(st) {
   const group = (name, cards, k = '', hide = false) => `<section class="qsec"${k ? ` data-k="${k}"` : ''}${hide ? ' hidden' : ''}><h3 class="qg">${name}</h3><div class="grid qgrid"${k ? ` data-k="${k}"` : ''}>${cards.join('')}</div></section>`
   const resume = st.resume.map((c, i) => i ? qcard(contTile(c, i), c.seriesId) : qcard(wideTile(c, i), c.seriesId).replace('class="qcard"', 'class="qcard wide"'))
   const ready = st.ready.map((s, i) => qcard(tile(s, st.resume.length + i), s.id))
-  return `<h2 class="sec queue-h">Queue</h2>${resume.length ? group('Continue', resume) : ''}${ready.length ? group('Ready to Watch', ready) : ''}`
+  return `<h2 class="sec queue-h">Queue</h2><div class="queue-wrap">${resume.length ? group('Continue', resume) : ''}${ready.length ? group('Ready to Watch', ready) : ''}`
     + group('Your list', st.list.map((s, i) => qcard(tile(s, i), s.id, 'list')), 'list')
-    + group(st.title, st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')), 'sugg', !st.sugg.length)
+    + group(st.title, st.sugg.map((s, i) => qcard(tile(s, st.list.length + i), s.id, 'sugg')), 'sugg', !st.sugg.length) + '</div>'
 }
 function wireRows(root) {
   const io = 'IntersectionObserver' in window && !rmq.matches ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target) } }), { rootMargin: '0px 0px -8% 0px' }) : null
@@ -658,7 +680,7 @@ function wireRows(root) {
     const sc = $('.row-scroll', w), l = $('.arrow.l', w), r = $('.arrow.r', w)
     l.onclick = () => sc.scrollBy({ left: -sc.clientWidth * 0.85, behavior: smooth() })
     r.onclick = () => sc.scrollBy({ left: sc.clientWidth * 0.85, behavior: smooth() })
-    const edges = () => { l.classList.toggle('off', sc.scrollLeft < 8); r.classList.toggle('off', sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 8) }
+    const edges = () => { const end = sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 8; l.classList.toggle('off', sc.scrollLeft < 8); r.classList.toggle('off', end); w.classList.toggle('more', !end) }
     sc.addEventListener('scroll', edges, { passive: true }); edges()
     // Rows already on screen use the normal rise; rows further down cascade in when scrolled to.
     if (io && w.getBoundingClientRect().top > innerHeight * 0.9) { w.classList.add('reveal'); io.observe(w); const h = w.previousElementSibling; if (h?.matches('h2.sec')) { h.classList.add('rv'); io.observe(h) } }
@@ -695,7 +717,10 @@ function wireQueue(root, st) {
   // Suggestions fill whole rows: one left alone on a row of its own read as a mistake, so past the first row a part-filled
   // last row is left out. They are only suggestions; adding one brings the next one up.
   const trim = () => {
-    const cards = [...boxes.sugg.children], cols = getComputedStyle(boxes.sugg).gridTemplateColumns.split(' ').filter(Boolean).length || 1
+    // How many fit on a line, measured: the groups wrap as flex rows now (a rail on a phone, where every card is on one line).
+    const cards = [...boxes.sugg.children]
+    cards.forEach((el) => el.classList.remove('qtrim'))
+    const top0 = cards[0]?.offsetTop, cols = cards.filter((el) => el.offsetTop === top0).length || 1
     const keep = cards.length > cols ? cards.length - (cards.length % cols) : cards.length
     cards.forEach((el, i) => el.classList.toggle('qtrim', i >= keep))
   }
@@ -765,7 +790,7 @@ function leavingPrompt(show) {
   if (!show.length) return ''
   return `<section class="lp rise" id="lp" role="group" aria-labelledby="lp-t">
     <div class="lp-head"><h2 id="lp-t">Leaving soon</h2><button class="lp-x" id="lp-x" aria-label="Not now">×</button></div>
-    <p class="lp-sub">Finished and seeded, but ${show.length === 1 ? 'nobody has' : 'nobody here has'} opened ${show.length === 1 ? 'it' : 'them'} yet. Say what you want and it is remembered.</p>
+    <p class="lp-sub">${show.length === 1 ? 'This is' : 'These are'} on the server, but nobody here has opened ${show.length === 1 ? 'it' : 'them'} yet. Keep ${show.length === 1 ? 'it' : 'one'} for later, or let ${show.length === 1 ? 'it' : 'it'} go to free up space.</p>
     <ul class="lp-list">${show.map((l) => `<li data-t="${l.torrentId}">
       <a class="lp-name" href="#/series/${l.seriesId}">${esc(l.series || l.label || 'This download')}${l.season ? ' · S' + l.season : ''}</a>
       <span class="lp-when">${lpDays(l)}</span>
@@ -815,8 +840,8 @@ async function homeView(q, local = false) {
     if (!q && featured) {
       const s = featured
       html += `<section class="hero"><div class="bd" id="hbd"></div><div class="hero-in pad"><div class="eyebrow rise">Featured</div>
-        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><p class="sub rise" style="--i:2">${isTv ? 'Press OK to see episodes' : 'Tap to see episodes'}</p>
-        <div class="actions rise" style="--i:3"><a class="btn primary" href="#/series/${s.id}">${I.play} Watch now</a>
+        <h1 class="rise" style="--i:1">${esc(s.name)}</h1><div class="hmeta rise" id="hmeta" style="--i:2"></div><p class="hov rise" id="hov" style="--i:2"></p>
+        <div class="actions rise" style="--i:3"><a class="btn primary" id="hwatch" href="#/series/${s.id}">${I.play} <span>Watch now</span></a>
         <button class="btn" id="hml" aria-pressed="${listIds.has(s.id)}">${listIds.has(s.id) ? '✓ In My List' : '+ My List'}</button>
         ${isTv ? '' : `<a class="btn" href="#/series/${s.id}">${I.info} Details</a>`}</div></div></section>`
     } else html += '<div class="page-top"></div>'
@@ -841,7 +866,7 @@ async function homeView(q, local = false) {
       const tiles = series.map(tile).join('')
       html += `<h2 class="sec" style="margin-top:0" data-live="${esc(key)}">Results for “${esc(q)}” <span class="dim" style="font-weight:500;font-size:.7em">${series.length ? series.length + (series.length === 1 ? ' show' : ' shows') : ''}</span></h2>` +
         (series.length ? `<div class="grid">${again ? tiles.replaceAll('tile rise"', 'tile"') : tiles}</div>`
-          : `<div class="empty fill">No shows found. Try a different spelling.<br><br><a class="btn" href="#/">Clear search</a></div>`)
+          : `<div class="empty fill">No shows match “${esc(q)}”.<br><span class="dim" style="font-size:14px">Check the spelling, or browse everything Flix has.</span><div class="empty-acts"><a class="btn" href="#/">Clear search</a><a class="btn primary" href="#/" id="tobrowse">Browse all shows</a></div></div>`)
     }
     else {
       for (const [i, sec] of home.sections.entries()) if (!(queue?.used === 'section' && i === 0)) html += `<h2 class="sec">${esc(sec.title)}</h2>${rowOf(sec.series, tile)}`
@@ -890,6 +915,9 @@ async function homeView(q, local = false) {
       }
     if (queue) wireQueue(app, queue)
     wireLeavingPrompt()
+    const tb = $('#tobrowse'); if (tb) tb.onclick = () => { try { sessionStorage.setItem('flix.toDisc', '1') } catch { /* ignore */ } }
+    let toDisc = false; try { toDisc = sessionStorage.getItem('flix.toDisc') === '1'; sessionStorage.removeItem('flix.toDisc') } catch { /* ignore */ }
+    if (!q && toDisc) requestAnimationFrame(() => $('#disc')?.scrollIntoView({ block: 'start', behavior: 'instant' }))
     // A television left alone on the home screen shows the top shows' artwork after a while, one at a time, instead of
     // rows of stills for ever. Any input ends it; it never runs at all with reduced motion turned on.
     artShow?.stop?.()
@@ -904,6 +932,16 @@ async function homeView(q, local = false) {
       const stopTrailer = heroTrailer($('.hero'), hs.id)
       if (stopTrailer) { const prev = cleanup; cleanup = () => { prev?.(); stopTrailer() } }
     }
+    // The billboard's details and its episode come from the show itself, after the page has drawn: the row data has no
+    // summary, and Play should start the same episode the show page's Resume would.
+    if (hs) api('/api/series/' + hs.id).then(({ series: sd, episodes, current }) => {
+      if (!$('#hwatch')) return
+      const bits = [sd.rating && sd.rating !== 'Unrated' ? `<span class="chip">${esc(sd.rating)}</span>` : '', sd.score ? `<span class="star">★ ${esc(sd.score.toFixed(1))}</span>` : '', sd.year ? `<span>${sd.year}</span>` : '', sd.genres?.length ? `<span>${esc(sd.genres.slice(0, 3).join(' · '))}</span>` : '']
+      $('#hmeta').innerHTML = bits.filter(Boolean).join('')
+      $('#hov').textContent = sd.overview || ''
+      const { resume, hero: ep } = nextEpisode(episodes, current)
+      if (ep) { const w = $('#hwatch'); w.href = playHref(hs.id, ep); $('span', w).textContent = `${resume ? 'Resume' : 'Play'} ${epShort(ep)}` }
+    }).catch(() => {})
     const hml = $('#hml'); if (hml) hml.onclick = async () => {
       const on = hml.getAttribute('aria-pressed') !== 'true'
       try { await api('/api/mylist', { seriesId: hs.id, on }); hml.setAttribute('aria-pressed', String(on)); hml.textContent = on ? '✓ In My List' : '+ My List' } catch (e) { flashNote(e.message) }
@@ -1081,6 +1119,20 @@ const ytApi = () => ytLoading ??= new Promise((ok, no) => {
   window.onYouTubeIframeAPIReady = ok
   document.head.append(sc)
 })
+/**
+ * The episode a show opens on: the one this person is in (the server's `current`), else the first available episode not yet
+ * watched. Shared by the show page's Resume and the billboard's Play, so both start the same episode.
+ */
+function nextEpisode(episodes, current) {
+  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available) : null
+  return { resume, hero: resume ?? episodes.find((e) => !e.watched && e.available) }
+}
+/** "S1:E3", or the release's own label when the episode has no number. */
+const epShort = (e) => (e.season != null && e.episode != null ? `S${e.season}:E${e.episode}` : e.label)
+const playHref = (id, e) => `#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`
+/** Minutes left in a part-watched episode, or 0 when it has not been started (or is done). */
+const minsLeft = (e) => (e.position > 30 && !e.watched && e.duration ? Math.max(1, Math.ceil((e.duration - e.position) / 60)) : 0)
+
 async function seriesView(id) {
   const { series, episodes, leavesAt, current } = await api('/api/series/' + id)
   const seasons = new Map()
@@ -1088,10 +1140,9 @@ async function seriesView(id) {
   // The episode this person is on, as the server worked it out: the one played last, or the one after it once that is
   // finished. Not "the first episode with some progress", which brought back an episode abandoned in its credits weeks
   // ago after the ones that followed it had been watched.
-  const resume = current ? episodes.find((e) => e.season === current.season && e.label === current.label && e.available) : null
   // The hero never offers something the order rule forbids. A resume is always allowed (that episode was started);
   // otherwise it is the first episode that may be started and has not been watched, so Play Now cannot dead-end.
-  const hero = resume ?? episodes.find((e) => !e.watched && e.available)
+  const { hero } = nextEpisode(episodes, current)
   const started = episodes.some((e) => e.watched || e.position > 30) // anything already played: Resume (from the episode in progress, else the next unwatched)
   const keys = [...seasons.keys()]
   const wantedN = (list) => list.filter((e) => e.available && !e.watched).length
@@ -1100,7 +1151,7 @@ async function seriesView(id) {
   // otherwise the page fell back to the first unwatched episode, which is season 1 of a long show.
   const curKey = current ? (current.season ?? 'x') : null
   let cur = curKey !== null && seasons.has(curKey) ? curKey : hero ? (hero.season ?? 'x') : keys[keys.length - 1]
-  const go1 = (e) => go(`#/play/${id}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+  const go1 = (e) => go(playHref(id, e))
   const saved = new Set(canDownload ? (await dl.list()).map((m) => m.id) : [])
   return () => {
     
@@ -1109,14 +1160,14 @@ async function seriesView(id) {
       <div class="line rise" style="--i:1"><span class="chip" id="rchip" title="${series.source === 'imdb' ? 'From IMDb' : series.source === 'tmdb' ? 'From TMDB' : 'No rating known'}">${esc(series.rating || 'Unrated')}</span>${series.score ? `<span title="IMDb rating"><span class="star">★ ${esc(series.score.toFixed(1))}</span> IMDb</span>` : ''}${series.year ? `<span>${series.year}</span>` : ''}<span>${episodes.length} episode${episodes.length === 1 ? '' : 's'}</span>${keys.length > 1 ? `<span>${keys.length} seasons</span>` : ''}${series.genres.length ? `<span>${esc(series.genres.slice(0, 3).join(' · '))}</span>` : ''}${leavesAt ? `<span class="chip" title="Others have finished it; it is removed from the server unless you press play">Leaving in ${Math.max(1, Math.ceil((leavesAt - Date.now() / 1000) / 86400))} day${Math.ceil((leavesAt - Date.now() / 1000) / 86400) <= 1 ? '' : 's'}</span>` : ''}
         </div>
       <div class="rise" style="--i:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play Now'}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
+        ${hero ? `<button class="btn primary" id="hp">${I.play} ${started ? 'Resume' : 'Play'} ${esc(epShort(hero))}${minsLeft(hero) ? `<span class="btn-sub">${minsLeft(hero)} min left</span>` : ''}</button>` : `<span class="dim">Nothing is available to play right now.</span>`}
         <button class="btn" id="ml" aria-pressed="${!!series.inList}">${series.inList ? '✓ In My List' : '+ My List'}</button>
         <span class="thumbs" role="group" aria-label="Rate this show"><button class="btn icon-thumb" id="tu" aria-label="Thumbs up" title="I like this" aria-pressed="${series.vote === 1}">${I.up}</button><button class="btn icon-thumb" id="td" aria-label="Thumbs down" title="Not for me" aria-pressed="${series.vote === -1}">${I.down}</button></span>
         </div></div></div></section>
       <div class="pad">${series.overview ? `<p class="summary">${esc(series.overview)}</p>` : ''}
-      ${series.trailerId ? `<h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div>` : ''}
-      ${series.cast.length ? `<h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div>` : ''}
-      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Put every episode of the season you are looking at on the server" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Put every episode on the server so it is ready to play">${I.dl} <span>${'Torrent All'}</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}">${k === 'x' ? 'Episodes' : 'Season ' + k}</button>`).join('')}</div><div class="eps" id="eps"></div></div>`
+      <div class="eps-head"><h2 class="sec">Episodes</h2><span class="hdl-btns">${wanted(episodes) ? `<button class="btn hdl-all" id="hseason" title="Fetch every episode of this season to the server, so each one starts at once" hidden>${I.dl} <span></span></button><button class="btn hdl-all" id="hall" title="Fetch every episode to the server, so each one starts at once">${I.dl} <span>Get all episodes ready</span></button>` : ''}</span></div><div class="pills" role="tablist" aria-label="Seasons">${keys.map((k) => { const list = seasons.get(k), seen = list.every((e) => e.watched || !e.available) && list.some((e) => e.watched), here = curKey !== null && k === curKey && !seen; return `<button class="pill" role="tab" data-k="${k}" aria-selected="${k === cur}"${seen ? ' title="Watched"' : here ? ' title="You are watching this season"' : ''}>${k === 'x' ? 'Episodes' : 'Season ' + k}${seen ? '<span class="pill-ck" aria-label="watched"> ✓</span>' : here ? '<i class="pill-dot" aria-hidden="true"></i>' : ''}</button>` }).join('')}</div><div class="eps" id="eps"></div>
+      ${series.trailerId || series.cast.length ? `<div class="s-extra${series.trailerId && series.cast.length ? ' two' : ''}">${series.trailerId ? `<section><h2 class="sec">Trailer</h2><div class="trailer" id="tr"><button class="tr-play" id="trb" aria-label="Play trailer on YouTube">${series.trailerThumb ? `<img class="tr-thumb fade" src="${esc(series.trailerThumb)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}${I.play}<span>Watch trailer</span></button></div></section>` : ''}
+      ${series.cast.length ? `<section><h2 class="sec">Cast</h2><div class="cast">${series.cast.map((c) => `<div class="actor"${isTv ? ' tabindex="0"' : ''}><span class="ph" style="--h:${hue(c.name)}">${esc(c.name[0])}${c.photo ? `<img class="fade" loading="lazy" src="${esc(c.photo)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}</span><b>${esc(c.name)}</b><small>${esc(c.role)}</small></div>`).join('')}</div></section>` : ''}</div>` : ''}</div>`
     backdrop($('#sbd'), `/api/art/${id}/banner`, `/api/art/${id}/poster`, series.trailerThumb)
     const canSave = (e) => canDownload && e?.available && !(e.isPack && e.episode === null)
     // The ring fills as the episode is saved; tapping it once arms a stop, a second tap cancels.
@@ -1147,7 +1198,7 @@ async function seriesView(id) {
       $('#eps').innerHTML = (seasons.get(cur) ?? []).map((e, i) => `<button class="ep rise" style="--i:${Math.min(i, 14)}" data-i="${i}" ${e.available ? '' : 'disabled'}>
         <span class="thumb">${e.still ? `<img class="fade" loading="lazy" src="${esc(e.still)}" alt="" onload="this.classList.add('in')" onerror="this.remove()">` : ''}<span class="play">${I.play}</span>${e.position > 30 && !e.watched ? `<span class="bar"><b style="width:${pct(e.position, e.duration)}%"></b></span>` : ''}</span>
         <span class="etxt"><span class="en">${e.title ? `${e.episode ?? ''}${e.episode !== null ? '. ' : ''}${esc(e.title)}` : esc(e.label)}</span>
-          <span class="es">${((rest) => (e.title ? `<span class="elab">${esc(e.label)}${rest ? ' · ' : ''}</span>` : '') + rest)([e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · '))}</span>
+          <span class="es">${((rest) => (e.title ? `<span class="elab">${esc(e.label)}${rest ? ' · ' : ''}</span>` : '') + rest)([minsLeft(e) ? `<b class="eleft">${minsLeft(e)} min left</b>` : e.runtime ? e.runtime + ' min' : '', epState(e)].filter(Boolean).join(' · '))}</span>
           ${e.overview ? `<span class="eo">${esc(e.overview)}</span>` : ''}</span>
         <span class="eside">${e.available ? '' : `<span class="lock" aria-label="Not available yet" title="Not available yet">${I.lock}</span>`}${e.watched ? `<span class="tick">${I.check} Watched</span>` : ''}${dlButton(e)}</span></button>`).join('')
       $('#eps').querySelectorAll('.ep').forEach((b) => b.onclick = () => {
@@ -1185,10 +1236,10 @@ async function seriesView(id) {
       b.disabled = true; label.textContent = 'Starting…'
       try {
         const r = await api(`/api/series/${id}/download-all`, body())
-        b.classList.add('done'); b.innerHTML = `${I.saved} <span>${r.episodes ? `Downloading ${r.episodes} episode${r.episodes === 1 ? '' : 's'}` : 'Nothing left to download'}</span>`
+        b.classList.add('done'); b.innerHTML = `${I.saved} <span>${r.episodes ? `Getting ${r.episodes} episode${r.episodes === 1 ? '' : 's'} ready` : 'All episodes are ready'}</span>`
       } catch (e) { b.disabled = false; label.textContent = idle(); flashNote(e.message) }
     }
-    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => 'Torrent All')
+    const hall = $('#hall'); if (hall) torrentBtn(hall, () => ({}), () => 'Get all episodes ready')
     // The season button follows the season pill, and only shows when that season has something left to fetch.
     const hseason = $('#hseason')
     const paintSeasonBtn = () => {
@@ -1196,9 +1247,9 @@ async function seriesView(id) {
       // Shown only when it fetches something the other button would not: this season has something left, and so does another one.
       hseason.hidden = !wanted(seasons.get(cur) ?? []) || wantedN(seasons.get(cur) ?? []) === wantedN(episodes)
       hseason.disabled = false; hseason.classList.remove('done')
-      hseason.innerHTML = `${I.dl} <span>Torrent Season</span>`
+      hseason.innerHTML = `${I.dl} <span>Get season ready</span>`
     }
-    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => `Torrent Season`)
+    if (hseason) torrentBtn(hseason, () => ({ season: cur === 'x' ? null : cur }), () => 'Get season ready')
     paintSeasonBtn()
     const onDl = async () => { for (const m of await dl.list()) saved.add(m.id); if (alive) paintDl() }
     let alive = true
@@ -1631,7 +1682,7 @@ function playView(seriesId, season, label) {
     const waitBtns = () => [...pl.querySelectorAll('#wait a[href], #wait button')].filter((x) => !x.closest('[hidden]') && x.offsetParent !== null && getComputedStyle(x).visibility !== 'hidden')
     const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
     const key = (e) => {
-      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return
+      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || document.querySelector('.pin-modal')) return
       const k = e.key
       // On the black screen the arrows walk its buttons instead of seeking a picture that is not there: on the failure card
       // Right went 10 seconds forward instead of reaching Back. Up from the first one reaches the top bar.
@@ -2111,9 +2162,17 @@ function playView(seriesId, season, label) {
       restoreWait(); $('#msg').textContent = 'Finding a faster source…'
       t0 = Date.now(); begin()
     }
-    $('#rep').onclick = () => {
-      if (tries >= 3) { sendReport('manual', 'Reported with no other source left'); $('#rep').hidden = true; return }
-      sendReport('manual', 'Viewer tapped Something’s wrong'); switchSource('Viewer tapped Something’s wrong')
+    // One tap used to swap the copy at once, so a stray tap reloaded the episode with no word of why. It asks now, and says
+    // what happened.
+    $('#rep').onclick = async () => {
+      const last = tries >= 3
+      const ok = await askConfirm(last
+        ? { title: 'Report a problem?', body: '<p>There is no other copy of this episode to try. Flix will tell the admin this one is not playing well.</p>', confirm: 'Report it' }
+        : { title: 'Try a different copy?', body: '<p>Flix will switch to another copy of this episode, carry on from the same moment, and tell the admin this one had a problem.</p>', confirm: 'Try another copy' })
+      wake()
+      if (!ok || !alive) return
+      if (last) { sendReport('manual', 'Reported with no other source left'); $('#rep').hidden = true; flashNote('Reported. Thanks for letting us know.'); return }
+      sendReport('manual', 'Viewer tapped Something’s wrong'); flashNote('Trying another copy…'); switchSource('Viewer tapped Something’s wrong')
     }
 
     /**
@@ -3196,32 +3255,39 @@ async function settingsView(section = 'torrents') {
   return () => {
     app.innerHTML = `<div class="pad page-top"><h1 class="stitle">Settings</h1>${addressHint()}
       <nav class="snav" aria-label="Settings sections"><div class="pills">${SETTINGS_PILLS.map(([id, l]) => `<a class="pill" href="#/settings/${id}" data-s="${id}">${l}</a>`).join('')}</div></nav>
-      <section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
+      <style id="sshow"></style><section class="ssec" id="s-torrents"></section><section class="ssec" id="s-family"></section><section class="ssec" id="s-conn"></section></div>`
     downloadsPanel(downloads, $('#s-torrents')); familyPanel(family, $('#s-family')); settingsPanel(conns, $('#s-conn'))
+    quietSaves(app)
     const pills = [...app.querySelectorAll('.snav .pill')]
-    const jump = (id, smoothly) => { const el = document.getElementById('s-' + id); if (el) el.scrollIntoView({ block: 'start', behavior: smoothly ? 'smooth' : 'instant' }) }
-    pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); jump(p.dataset.s, !rmq.matches) })
-    // Highlight the section being read: the last one whose top has scrolled up under the pills.
-    const onScroll = () => {
-      // A section is the one being read once its top is within a short reach under the tab bar, measured from the bar itself
-      // (it is taller on a phone), so arriving on a section that settled a little lower still lights its own tab.
-      let cur = SETTINGS_PILLS[0][0], line = (app.querySelector('.snav')?.getBoundingClientRect().bottom ?? 120) + 110
-      let best = -Infinity
-      for (const [id] of SETTINGS_PILLS) { const t = document.getElementById('s-' + id)?.getBoundingClientRect().top; if (t != null && t <= line && t > best) { best = t; cur = id } }
-      // At the foot of the page the last sections can never scroll up to the bar: the one asked for (its tab, or the link
-      // that opened it) stays lit while it is on screen, else the last one.
-      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
-        const asked = location.hash.split('/')[2], at = document.getElementById('s-' + asked)?.getBoundingClientRect()
-        cur = at && at.top < innerHeight && at.bottom > 0 ? asked : SETTINGS_PILLS[SETTINGS_PILLS.length - 1][0]
-      }
-      pills.forEach((p) => { const on = p.dataset.s === cur; p.setAttribute('aria-selected', String(on)); if (on && p.scrollIntoView) { const box = p.parentElement; box.scrollTo({ left: p.offsetLeft - (box.clientWidth - p.offsetWidth) / 2, behavior: 'auto' }) } })
+    /*
+     * A tab shows its own section and nothing else: the page used to stack all eight, 5,000 pixels of them, and the tabs only
+     * scrolled it. Which section is up is a rule in #sshow rather than `hidden` on the sections, because the connection
+     * panels redraw themselves (keepFocus) and a redraw would bring the hidden ones back.
+     */
+    const CONN = ['btn', 'ratings', 'tmdb', 'playback', 'qb', 'subs']
+    const show = (id) => {
+      const ids = id === 'playback' ? ['playback', 'pace'] : [id]
+      $('#sshow').textContent = `#app .ssec { display: none; } ${[...ids, ...(CONN.includes(id) ? ['conn'] : [])].map((x) => `#app #s-${x}`).join(', ')} { display: block; }`
+      pills.forEach((p) => p.setAttribute('aria-selected', String(p.dataset.s === id)))
+      const on = pills.find((p) => p.dataset.s === id), box = on?.parentElement
+      if (on && box) box.scrollTo({ left: on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2, behavior: 'auto' })
     }
-    addEventListener('scroll', onScroll, { passive: true })
-    const prev = cleanup; cleanup = () => { prev?.(); removeEventListener('scroll', onScroll) }
-    if (section !== 'torrents') requestAnimationFrame(() => jump(section, false))
-    onScroll()
+    pills.forEach((p) => p.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/settings/' + p.dataset.s); show(p.dataset.s); window.scrollTo({ top: 0, behavior: 'instant' }) })
+    show(section)
     if (isTv) (pills.find((p) => p.dataset.s === section) || pills[0])?.focus({ preventScroll: true }) // a remote starts on the section bar
   }
+}
+
+/**
+ * Save buttons that have nothing to save are plain buttons: a page of eight glowing primaries had nothing to say which one
+ * mattered. Typing (or ticking, or choosing) in a form lights its own Save up. Delegated, so a panel that redraws keeps it.
+ */
+function quietSaves(root) {
+  const mark = () => root.querySelectorAll('form button.btn.primary:not([type=button])').forEach((b) => { if (!b.closest('form').dataset.dirty) b.classList.add('idle') })
+  mark()
+  root.addEventListener('input', (e) => { const f = e.target.closest?.('form'); if (!f) return; f.dataset.dirty = '1'; f.querySelectorAll('button.btn.primary').forEach((b) => b.classList.remove('idle')) })
+  root.addEventListener('submit', (e) => { const f = e.target; setTimeout(() => { delete f.dataset.dirty; if (f.isConnected) f.querySelectorAll('button.btn.primary:not([type=button])').forEach((b) => b.classList.add('idle')) }, 800) })
+  new MutationObserver(mark).observe(root, { childList: true, subtree: true })
 }
 
 const dur = (sec) => { if (sec == null || sec < 0 || sec >= 8640000) return ''; const mins = Math.round(sec / 60), h = Math.floor(mins / 60), m = mins % 60; return h >= 24 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h ? h + 'h ' + m + 'm' : Math.max(1, m) + 'm' }
@@ -3262,6 +3328,8 @@ function storageChart(el, h) {
   const narrow = W < 520
   const fmt = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
   const first = pts.findIndex((p) => p[1] > 0)
+  // An empty year is a flat line across a 220-pixel box: one sentence says it.
+  if (first === -1) { el.innerHTML = '<p class="dim sm chart-empty">Nothing has been downloaded in the last 12 months.</p>'; return }
   const summary = first === -1 ? 'Nothing has been downloaded in the last 12 months.' : `Now ${unit(pts[pts.length - 1][1])}; the most was ${unit(max)} over the last 12 months.`
   el.innerHTML = `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Space used by downloads over the last 12 months. ${esc(summary)}">
       ${yTicks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="ax" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${unit(v)}</text>`).join('')}
@@ -3496,9 +3564,9 @@ function downloadsPanel(data, root) {
     const act = d.downloads.filter((x) => x.state === 'active'), gone = d.downloads.filter((x) => x.state !== 'active')
     const dl = act.filter((x) => !x.missing && x.left > 0), seed = act.filter((x) => !x.missing && x.left === 0 && !x.seedMet), done = act.filter((x) => !x.missing && x.left === 0 && x.seedMet), miss = act.filter((x) => x.missing)
     storage(d, lastHealth)
-    $('#tsum').innerHTML = [[dl.length, 'downloading'], [seed.length, 'seeding'], [done.length, 'goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('')
+    $('#tsum').innerHTML = act.length ? [[dl.length, 'downloading'], [seed.length, 'seeding'], [done.length, 'goal met']].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('') : ''
     const sec = (title, list, kind) => list.length ? `<div class="sub-h">${title}</div><div class="tgrid">${list.map((x) => card(x, kind)).join('')}</div>` : ''
-    $('#tlist').innerHTML = (act.length ? '' : '<div class="empty">Nothing downloaded yet. Press play on an episode and it will show up here.</div>')
+    $('#tlist').innerHTML = (act.length ? '' : '<p class="dim sm">Nothing downloaded yet. Press play on an episode and it shows up here.</p>')
       + sec('Downloading', dl, 'dl') + sec('Seeding · goal not met yet', seed, 'seed') + sec('Seeding goal met', done, 'seed') + sec('Needs attention', miss, 'dl')
     // The list redraws every 15 seconds; one that was opened to read stays open.
     const histOpen = !!$('#thist details')?.open
@@ -3829,14 +3897,20 @@ function profileView() {
       <h2 class="sec" style="margin-top:0">Your creature</h2>
       <div class="avgrid">${AVATARS.map((id) => `<button class="avpick" data-av="${id}" aria-pressed="${me.avatar === id}" aria-label="${id}">${avSvg(id)}</button>`).join('')}</div>
       <p class="dim" id="avmsg" style="margin:8px 0 0;font-size:14px">Tap one to use it beside your name.</p>
-      <h2 class="sec">Home screen</h2>
-      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', !isTv) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard, on this device. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
+      <h2 class="sec">On this device</h2>
+      <label class="prefrow"><input type="checkbox" id="pprev"${store.get('previews', !isTv) ? ' checked' : ''}><span><b>Play trailer previews</b><span class="dim"> on the Home billboard. They are streamed from YouTube, so turn this off to keep Flix from contacting it.</span></span></label>
+      <label class="prefrow"><input type="checkbox" id="psting"${store.get('sting', true) !== false ? ' checked' : ''}><span><b>Play the Flix sound</b><span class="dim"> when an episode opens.</span></span></label>
       <h2 class="sec">Name</h2>
-      <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn primary">Save name</button><div class="err" id="nerr" role="alert"></div></form>
+      <form id="nform" class="pform"><input class="field" name="name" value="${esc(me.name)}" autocomplete="username" maxlength="32" required><button class="btn">Save name</button><div class="err" id="nerr" role="alert"></div></form>
       <h2 class="sec">Password</h2>
-      <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn primary">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
+      <form id="pform" class="pform">${me.hasPassword === false ? '' : '<input class="field" name="current" type="password" placeholder="Current password" autocomplete="current-password" required>'}<input class="field" name="next" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn">Change password</button><div class="err" id="perr" role="alert"></div><p class="dim" style="font-size:14px;margin:2px 0 0">Changing it signs out every other device.</p></form></div>`
 
     $('#pprev').onchange = (e) => store.set('previews', e.target.checked)
+    $('#psting').onchange = (e) => store.set('sting', e.target.checked)
+    // Save name is only offered once the name is actually different.
+    const nIn = $('#nform input[name=name]'), nBtn = $('#nform button')
+    const nSync = () => { nBtn.disabled = !nIn.value.trim() || nIn.value.trim() === me.name }
+    nIn.addEventListener('input', nSync); nSync()
     const setMsg = (el, text, bad) => { el.textContent = text; el.classList.toggle('ok', !bad) }
     app.querySelectorAll('.avpick').forEach((b) => b.onclick = async () => {
       const before = me.avatar
@@ -3858,7 +3932,7 @@ function profileView() {
         const old = me.name; me = r.user
         rememberProfile(old)
         renderTop()
-        err.textContent = 'Name saved.'; err.classList.add('ok')
+        err.textContent = 'Name saved.'; err.classList.add('ok'); nSync()
       } catch (ex) { err.textContent = ex.message; err.classList.remove('ok') }
     }
     $('#pform').onsubmit = async (e) => {
@@ -4012,7 +4086,7 @@ async function healthBanner() {
   const seen = hbDismissed()
   // banner === false: Settings-only issues (reported problems) never get a strip over the page.
   const bad = (h?.issues ?? []).filter((i) => i.level !== 'info' && i.banner !== false && !seen.has(hbKey(i)))
-  if (!bad.length || $('.player')) return
+  if (!bad.length || $('.player') || location.hash.startsWith('#/settings')) return
   const first = bad[0]
   const el = document.createElement('div')
   el.id = 'hb'; el.className = 'hbanner ' + first.level + (location.hash.startsWith('#/settings') ? ' static' : '')
