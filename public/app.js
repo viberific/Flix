@@ -1374,6 +1374,8 @@ const qAsk = () => { const s = qSetting(); return s === 'auto' ? autoQuality : s
 
 /** "S01E03" reads as "E03" in a short note, the way it is said out loud; anything else is left alone. */
 const ICON = {
+  prevEp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5v14"/><path d="M18 6 9 12l9 6z" fill="currentColor"/></svg>',
+  nextEp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 5v14"/><path d="M6 6l9 6-9 6z" fill="currentColor"/></svg>',
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>',
@@ -1469,8 +1471,9 @@ function playView(seriesId, season, label) {
         <div class="p-ctl" id="pctl">
           ${isCar ? `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>` : ''}
           ${isCar ? '<div class="p-sync" id="psync"><span>Sound delay</span><button class="p-btn" id="psyncm" aria-label="Show the picture sooner">−</button><b id="psyncv"></b><button class="p-btn" id="psyncp" aria-label="Hold the picture back longer">+</button></div>' : ''}
+          ${isCar ? '' : `<div class="p-eps" id="peps" hidden><button class="p-btn p-ep prev" id="pprev" aria-label="Previous episode">${ICON.prevEp}<span></span></button><button class="p-btn p-ep next" id="pnext" aria-label="Next episode"><span class="p-ep-t"><small>Next episode</small><b></b></span>${ICON.nextEp}</button></div>`}
           <div class="p-seek" id="pseek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="p-tip" id="ptip" hidden><i class="p-tipshot" id="ptipimg" aria-hidden="true"></i><b id="ptipt">0:00</b></div><div class="p-rail"><i class="p-have" id="phave"></i><i class="p-buf" id="pbuf"></i><i class="p-fill" id="pprog"></i><i class="p-dot" id="pdot"></i></div></div>
-          <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span></div>
+          <div class="p-row"><div class="p-l"><span class="p-time" id="ptime">0:00</span><span class="p-ends" id="pends"></span></div>
             <div class="p-c"><button class="p-btn" id="pbw" aria-label="Back 10 seconds">${ICON.back10}</button><button class="p-btn big" id="ppp" aria-label="Play">${ICON.play}</button><button class="p-btn" id="pfw" aria-label="Forward 10 seconds">${ICON.fwd10}</button></div>
             <div class="p-r"><span class="p-time" id="pdur">0:00</span>
               <div class="p-menu"><button class="p-btn" id="aud" aria-label="Audio language" aria-haspopup="true" hidden>${ICON.audio}</button></div>
@@ -1894,7 +1897,10 @@ function playView(seriesId, season, label) {
       const d = totalT(), t = nowT(), pct = d ? Math.min(100, (t / d) * 100) : 0
       if (!$('#pprog')) return
       $('#pprog').style.width = pct + '%'; $('#pdot').style.left = pct + '%'
-      $('#ptime').textContent = fmtT(t); $('#pdur').textContent = fmtT(d)
+      $('#ptime').textContent = fmtT(t); $('#pdur').textContent = d ? '−' + fmtT(Math.max(0, d - t)) : '0:00'
+      // When it would finish if it carried on now: worth a glance on a paused show, so it is there whichever state it is in.
+      const ends = d && d - t > 30 ? `Ends ${new Date(Date.now() + (d - t) * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''
+      if ($('#pends') && $('#pends').textContent !== ends) $('#pends').textContent = ends
       $('#pseek').setAttribute('aria-valuenow', String(Math.round(pct)))
       // The range the playhead is in, not the last one: after a seek the last range is somewhere else entirely.
       try {
@@ -2095,6 +2101,35 @@ function playView(seriesId, season, label) {
       if (el) { el.hidden = !rate; el.textContent = rate }
       meta = s
       fillPause()
+      fillEpisodeButtons()
+    }
+    /**
+     * Previous and next episode, above the bar on the right: a quiet pill naming the one before, a white one naming the one
+     * after. Next is the server's own choice (play.next, the same one Up next offers) when it has one, else the following
+     * playable episode in the show's order. Either end of the show greys its button out rather than hiding it, so nothing
+     * moves between episodes. Moving on keeps the place in this episode (it is not marked watched) and replaces it in the
+     * history, so Back still goes to the show.
+     */
+    function fillEpisodeButtons() {
+      const box = $('#peps'); if (!box || !meta?.episodes?.length || !play) return
+      const list = meta.episodes.filter((e) => e.available)
+      const here = meta.episodes.findIndex((e) => e.label === play.title && (e.season ?? null) === (season === 'x' ? null : +season))
+      const prev = here > 0 ? [...meta.episodes.slice(0, here)].reverse().find((e) => e.available) : null
+      const after = here >= 0 ? meta.episodes.slice(here + 1).find((e) => e.available) : null
+      const next = play.next ? meta.episodes.find((e) => e.label === play.next.label && (e.season ?? null) === (play.next.season ?? null)) ?? { ...play.next, available: true } : after
+      box.hidden = list.length < 2
+      const name = (e) => `${epShort(e)}${e.title ? ' · ' + e.title : ''}`
+      const pb = $('#pprev'), nb = $('#pnext')
+      pb.disabled = !prev; $('span', pb).textContent = prev ? epShort(prev) : 'First episode'
+      pb.setAttribute('aria-label', prev ? `Previous episode: ${name(prev)}` : 'No previous episode')
+      nb.disabled = !next; $('b', nb).textContent = next ? name(next) : 'Last episode'
+      nb.setAttribute('aria-label', next ? `Next episode: ${name(next)}` : 'No next episode')
+      const to = (e) => async () => {
+        if (!e) return
+        await Promise.race([report(), new Promise((res) => setTimeout(res, 1200))])
+        location.replace(`#/play/${seriesId}/${e.season ?? 'x'}/${encodeURIComponent(e.label)}`)
+      }
+      pb.onclick = to(prev); nb.onclick = to(next)
     }
     addEventListener('keydown', key)
     // The app was in the background and has been brought back to the front. Android keeps the page exactly as it was, and
@@ -2255,6 +2290,7 @@ function playView(seriesId, season, label) {
         savedPos = Number(play.position) > 5 ? Number(play.position) : 0
         $('#pt').textContent = play.seriesName || label; $('#pe').textContent = label + (play.episodeTitle ? ' · ' + play.episodeTitle : '')
         $('#rep').hidden = false
+        fillEpisodeButtons()
         const qc = $('#q'); qc.textContent = play.quality; qc.hidden = false
         const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
         // The wait screen's numbers, once a second until the picture starts -- and then no more: this used to keep asking
