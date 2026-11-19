@@ -22,7 +22,8 @@ import { config } from './config.ts'
 import { db, now } from './db.ts'
 import { diag } from './diag.ts'
 import { fileInfo } from './streaming.ts'
-import { audioDirect, buildHead, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, playingNow, probe, stopHeadRuns, type ProbeOptions } from './transcode.ts'
+import { existsSync } from 'node:fs'
+import { audioDirect, bestEnglishSub, buildHead, copyPictureFor, directPlay, ensureHls, evictHls, hlsBusy, hlsCacheBytes, keepHls, playingNow, probe, stopHeadRuns, subtitleCachePath, subtitleVtt, type ProbeOptions } from './transcode.ts'
 import { engineFiles } from './wanted.ts'
 import { isVideo } from './btn/parse.ts'
 
@@ -114,7 +115,7 @@ export async function prebuildOne(torrentId: number, fileIndex: number, opts: { 
     // disk instead of being streamed back to us through /raw.
     const source = opts.source ?? (fi ? join(fi.layout.savePath, fi.file.name) : undefined)
     const local = { complete: true, source, savePath: fi?.layout.savePath }
-    const { wanted, copy } = await needsCopy(torrentId, fileIndex, local)
+    const { wanted, copy, p } = await needsCopy(torrentId, fileIndex, local)
     if (!wanted) { setMarker(torrentId, fileIndex); return null }
     if (!copy) { setAside(torrentId, fileIndex); diag('prebuild', 'left for the play: this picture would have to be re-encoded', { torrentId, fileIndex }); return null }
     const size = fi?.file.size ?? 0
@@ -134,12 +135,27 @@ export async function prebuildOne(torrentId: number, fileIndex: number, opts: { 
     // What this pass makes is the plan (the keyframes read, the playlist laid out), not the pieces: those are cut for the
     // next episode only, by prebuildHead, and otherwise where the viewer is.
     diag('prebuild', 'planned an episode ahead of the play', { torrentId, fileIndex, dir: dir.split('/').pop(), mb: Math.round(bytes / 1e6), ms: Date.now() - started })
+    await subtitleAhead(torrentId, fileIndex, p, source)
     return dir
   } catch (e: any) {
     setAside(torrentId, fileIndex)
     diag('prebuild', 'could not copy an episode ahead of the play', { torrentId, fileIndex, why: String(e?.message ?? e).slice(0, 160) })
     return null
   }
+}
+
+/**
+ * The subtitle CC will show, read out of the file now rather than when the episode is first played. Reading one track out of
+ * an MKV is a read of the whole file, and on 2026-11-18 it was the read the first pieces of a cold play were fighting for the
+ * drive (65 s for the subtitle, 34-70 s to the first frame). Done here it is one idle read; the play then finds it on disk.
+ */
+async function subtitleAhead(torrentId: number, fileIndex: number, p: Awaited<ReturnType<typeof probe>>, source?: string) {
+  const sub = bestEnglishSub(p.subs)
+  if (!sub || !source || existsSync(subtitleCachePath(torrentId, fileIndex, sub.n))) return
+  if (playingNow()) return // somebody started watching while the plan was made: the play reads it, after its first pieces
+  const started = Date.now()
+  const { vtt } = await subtitleVtt(torrentId, fileIndex, sub.n, 1, p.duration ?? 0, source, true)
+  diag('prebuild', 'read the subtitle out ahead of the play', { torrentId, fileIndex, track: sub.n, kb: Math.round(vtt.length / 1024), ms: Date.now() - started })
 }
 
 /** How much of the next episode is cut before it is played: enough that pressing play (or the countdown ending) starts at once. */

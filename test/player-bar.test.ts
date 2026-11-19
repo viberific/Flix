@@ -78,7 +78,7 @@ before(async () => {
       '/app.js': ['public/app.js', 'text/javascript'],
       '/style.css': ['public/style.css', 'text/css'],
       '/downloads.js': ['public/downloads.js', 'text/javascript'],
-      '/playclock.js': ['public/playclock.js', 'text/javascript'],
+      '/playclock.js': ['public/playclock.js', 'text/javascript'], '/nativevideo.js': ['public/nativevideo.js', 'text/javascript'],
       '/manifest.webmanifest': ['public/manifest.webmanifest', 'application/manifest+json'],
     }
     const f = files[p]

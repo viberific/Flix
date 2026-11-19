@@ -86,7 +86,7 @@ before(async () => {
     const files: Record<string, [string, string]> = {
       '/': ['public/index.html', 'text/html'], '/index.html': ['public/index.html', 'text/html'],
       '/app.js': ['public/app.js', 'text/javascript'], '/style.css': ['public/style.css', 'text/css'],
-      '/downloads.js': ['public/downloads.js', 'text/javascript'], '/playclock.js': ['public/playclock.js', 'text/javascript'],
+      '/downloads.js': ['public/downloads.js', 'text/javascript'], '/playclock.js': ['public/playclock.js', 'text/javascript'], '/nativevideo.js': ['public/nativevideo.js', 'text/javascript'],
       '/manifest.webmanifest': ['public/manifest.webmanifest', 'application/manifest+json'],
     }
     const f = files[p]

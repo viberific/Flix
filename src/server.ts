@@ -23,7 +23,7 @@ import { bestOnlineSubVtt, findOnlineSubs, forgetOnlineSubs } from './onlinesubs
 import { MP4_CARRY, SUBFILE, audioDirect, beginPlayback, bestEnglishSub, directPlay, dropHls, evictHls, fileSubtitleVtt, guessSubLang, hlsSummary, probe, releaseHls, subtitleVtt, type Probe } from './transcode.ts'
 import { offlineCopy, offlineReadyPath, startOfflineSweeper } from './offline.ts'
 import { noteStall, prebuildHead, startPrebuild } from './prebuild.ts'
-import { copyPictureFor, ensureHls, hlsBuild, hlsLateness, jobDir, keyframes, QUALITIES, qualityOf, touchHls, vodPlaylist, vodSegment } from './transcode.ts'
+import { copyPictureFor, ensureHls, hlsBuild, hlsLateness, jobDir, keyframes, notePlayOpen, QUALITIES, qualityOf, subtitleCachePath, touchHls, vodPlaylist, vodSegment, warming } from './transcode.ts'
 import { spriteMeta, spritePath, startSpriteSweeper } from './sprites.ts'
 import { startExtrasPlanner } from './extras.ts'
 import { creditsAt as measuredCredits } from './credits.ts'
@@ -805,6 +805,7 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
       diag('play', 'could not set up the playlist', { torrent: +t, file: +f, seg, encode, ...errInfo(e) }, 'error')
       throw Object.assign(new Error(e.message), { statusCode: 503 })
     }
+    notePlayOpen(+t, +f, a, false, encode, q) // the first minute of pieces has the drive to itself (see warming)
     chose('hls', { seg, encode, why: force ? 'device could not decode it' : q ? `smaller size ${q}p` : encode ? 'picture must be converted' : 'sound must be converted' })
     const ht = `/api/tv/${token}/${t}/${f}/${seg}`
     const mt = 'application/vnd.apple.mpegurl'
@@ -825,6 +826,9 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const tvType = direct ? await rawType(+t, +f) : 'video/mp4'
   return {
     mode: direct ? 'direct' : 'file', url: `${base}/${path}`, tvUrl: tv, tvType, seekable: true,
+    // Direct only because the device said it takes this sound (AC-3 / E-AC-3 in "cv", which only the TV app's own player
+    // sends): no browser decodes it, so the app must play it with that player, not the page's <video>.
+    native: direct && !audioDirect(p),
     castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: null, duration: p.duration, audioIndex: a, hdr: p.hdr,
     // The HDR playlist went with the other conversions. An HDR episode is repacked with its picture copied and its colour
     // tags kept, and the player falls back to that file when there is no hdrUrl.
@@ -868,7 +872,9 @@ function syncedVtt(reply: any, t: number, f: number, key: string, vtt: string, w
   const row = syncRow(t, f, key)
   const shift = shiftFor(t, f, key)
   const settled = !!row && !needsMeasure(row)
-  if (whole && !settled) startSync(t, f, key, whole.source, whole.duration, vtt)
+  // The measurement decodes the whole sound track, a second read of the whole file: not while the play's first pieces are
+  // being cut from that same drive. "pending" brings the player back in 15 s, and it is started then (see warming).
+  if (whole && !settled && !warming(t, f)) startSync(t, f, key, whole.source, whole.duration, vtt)
   reply.header('x-flix-sync', settled ? 'done' : whole ? 'pending' : 'wait')
   reply.header('x-flix-sub-offset', String(shift.manual))
   return shiftVtt(vtt, shift.offsetMs, shift.scale)
@@ -919,6 +925,16 @@ app.get('/api/stream/:t/:f/subs/:file', guarded, async (req, reply) => {
   const fi = await fileInfo(+t, +f)
   const p = await probe(+t, +f, fi ? { complete: fi.file.progress >= 1, source: join(fi.layout.savePath, fi.file.name), savePath: fi.layout.savePath } : {})
   if (!fi || !p.subs.some((s) => s.n === +m[1])) return reply.code(404).send({ error: 'no such subtitle' })
+  // Reading a track out of a whole file is a read of the whole file. One already read out is on disk and costs nothing;
+  // one that is not waits until the play's first minute of pieces is cut, so the picture is not fighting it for the drive.
+  if (fi.file.progress >= 1 && !existsSync(subtitleCachePath(+t, +f, +m[1]))) {
+    let gone = false
+    req.raw.on('close', () => { gone = true })
+    const waitFrom = Date.now()
+    while (!gone && warming(+t, +f)) await new Promise((r) => setTimeout(r, 500))
+    if (gone) return reply.code(499).send()
+    if (Date.now() - waitFrom > 1000) diag('play', 'read the subtitle out after the first pieces', { torrent: +t, file: +f, track: +m[1], heldMs: Date.now() - waitFrom })
+  }
   const { vtt, complete } = await subtitleVtt(+t, +f, +m[1], fi.file.progress, p.duration ?? 0, join(fi.layout.savePath, fi.file.name))
   reply.type('text/vtt; charset=utf-8').header('cache-control', 'no-store').header('x-flix-complete', complete ? '1' : '0')
   return syncedVtt(reply, +t, +f, `embedded:${m[1]}`, vtt, complete && p.duration ? { source: join(fi.layout.savePath, fi.file.name), duration: p.duration } : null)
@@ -1094,6 +1110,8 @@ async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
     const complete = (fi?.file.progress ?? 0) >= 1
     const p = await probe(+t, +f, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, savePath: fi?.layout.savePath })
     try { await ensureHls(+t, +f, p, a, false, { complete, source: fi ? join(fi.layout.savePath, fi.file.name) : undefined, encode, maxHeight: maxH }) } catch (e: any) { return reply.code(503).send({ error: e.message }) }
+    // A TV's play opens here rather than at /info. A browser fetches the playlist right after /info, which already said so.
+    if (file === 'index.m3u8') notePlayOpen(+t, +f, a, false, encode || maxH > 0, maxH, true)
   }
   const type = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : file.endsWith('.m4s') || file.endsWith('.mp4') ? 'video/mp4' : 'video/mp2t'
   const list = file === 'index.m3u8' ? vodPlaylist(+t, +f, a, false, encode, maxH) : null

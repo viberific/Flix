@@ -231,6 +231,8 @@ interface Job {
   played?: boolean
   /** The opening minutes were cut ahead of the play (buildHead), and how many times ffmpeg was started for that. */
   head?: boolean; headTries?: number
+  /** When a player last opened this file on this job (/info), and the first piece it asked for after that: see warming(). */
+  openedAt?: number; firstAsk?: number
 }
 const jobs = new Map<string, Job>()
 const hlsRoot = () => join(config.dataDir, 'hls')
@@ -622,6 +624,7 @@ export async function vodSegment(torrentId: number, fileIndex: number, file: str
   const m = /^seg(\d{5})\.ts$/.exec(file)
   const n = m ? Number(m[1]) : -1
   if (n < 0 || n >= v.count) return null
+  if (j.openedAt && j.firstAsk === undefined) j.firstAsk = n
   const deadline = Date.now() + 120_000
   let startedFor = -1
   const asked = Date.now()
@@ -705,16 +708,59 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
  * stopped: a cold play is served the pieces as they are made, and hls.js runs out of patience long before a 1080p copy is
  * finished. `made` of `of` pieces, taken from the job furthest along for this file. null: nothing is being made for it.
  */
-export function hlsBuild(torrentId: number, fileIndex: number): { made: number; of: number } | null {
+export function hlsBuild(torrentId: number, fileIndex: number): { made: number; of: number; running: boolean } | null {
   let best: { made: number; of: number } | null = null
+  let running = false
   for (const [key, j] of jobs) {
     if (!j.vod) continue
     const [t, f] = key.split(':')
     if (Number(t) !== torrentId || Number(f) !== fileIndex) continue
     const made = j.vod.done.size, of = j.vod.count
     if (!best || made > best.made) best = { made, of }
+    if (j.vod.run && !j.vod.run.exited && j.vod.run.proc.exitCode === null) running = true
   }
-  return best
+  // `running`: an ffmpeg is cutting this file's pieces right now. The player reads it before it gives up on a start that is
+  // late: a box that is still working is waited for, not asked to begin again (see stuckT in public/app.js).
+  return best ? { ...best, running } : null
+}
+
+/** How many pieces past the first one asked for must be on disk before a play counts as under way: about a minute. */
+export const WARM_PIECES = 15
+/** And never longer than this after the play opened, whatever the pieces say: the gate below must lapse on its own. */
+export const WARM_MAX_MS = 120_000
+
+/**
+ * Whether a play of this file is still waiting for its first minute of pieces.
+ *
+ * Measured on the box 2026-11-18: a never-played 5.1 episode on the USB pool took 34-70 s to its first frame, while one
+ * already played took 7 s. Cutting a piece is ~133 ms on an idle box; what was slow was that three other whole-file reads
+ * started at the same moment as the first piece -- the embedded subtitle read out in full, the subtitle-sync decode of the
+ * whole sound track, and for a file not planned yet the keyframe read -- and on a drive that does ~79 MB/s with a heavy seek
+ * cost, four readers of one file get a fraction each (81% of the time stalled, 26 MB/s). So for as long as this says yes,
+ * the reads that are not the picture wait (see the subtitle routes in server.ts), and the drive belongs to the first pieces.
+ */
+export function warming(torrentId: number, fileIndex: number, now = Date.now()): boolean {
+  for (const [key, j] of jobs) {
+    const [t, f] = key.split(':')
+    if (Number(t) !== torrentId || Number(f) !== fileIndex) continue
+    const v = j.vod
+    if (!v || !j.openedAt || now - j.openedAt > WARM_MAX_MS) continue
+    // Opened, and no piece asked for yet: the playlist and its first piece are on their way, and nothing is known.
+    if (j.firstAsk === undefined) return true
+    try { scanDone(j) } catch { continue }
+    const end = Math.min(v.count, j.firstAsk + WARM_PIECES)
+    for (let n = j.firstAsk; n < end; n++) if (!v.done.has(n)) return true
+  }
+  return false
+}
+
+/** /info opened this file for a player on this job: the warming gate starts again from here. */
+export function notePlayOpen(torrentId: number, fileIndex: number, audio = 0, hdr = false, encode = false, maxH = 0, unlessOpen = false) {
+  const j = jobs.get(jobKey(torrentId, fileIndex, audio, hdr, encode, maxH))
+  if (!j) return
+  if (unlessOpen && j.openedAt && Date.now() - j.openedAt < WARM_MAX_MS) return
+  j.openedAt = Date.now()
+  j.firstAsk = undefined
 }
 
 // ---- keyframes: where a copied picture can be cut ---------------------------------------------------------------
@@ -727,7 +773,7 @@ const kfBusy = new Map<string, Promise<number[] | null>>()
  * on disk, so it is read once per file and survives a restart. `source` is the file on disk when the caller knows it
  * (a plain read is quicker than going through the stream endpoint); otherwise the stream endpoint is used.
  */
-export function keyframes(torrentId: number, fileIndex: number, source?: string, end?: number): Promise<number[] | null> {
+export function keyframes(torrentId: number, fileIndex: number, source?: string, end?: number, low = false): Promise<number[] | null> {
   const key = `${torrentId}-${fileIndex}`
   const file = join(kfRoot(), `${key}.json`)
   // A list that stops well short of the end of the film is a read that was cut off (a killed ffprobe, an endpoint that gave
@@ -738,8 +784,10 @@ export function keyframes(torrentId: number, fileIndex: number, source?: string,
   let p = kfBusy.get(key)
   if (!p) {
     const input = source && existsSync(source) ? source : rawUrl(torrentId, fileIndex)
-    p = execFileP('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,flags', '-of', 'csv=p=0', input],
-      { timeout: 10 * 60_000, maxBuffer: 64 << 20 })
+    // Read in the background (prebuild), it runs niced so that it gives the cores to anything a person is waiting for. Not
+    // in the idle disk class: a play that arrives for this same file joins this read, and must not be starved behind itself.
+    const args = ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,flags', '-of', 'csv=p=0', input]
+    p = (low && NICE ? execFileP('nice', ['-n', '19', 'ffprobe', ...args], { timeout: 10 * 60_000, maxBuffer: 64 << 20 }) : execFileP('ffprobe', args, { timeout: 10 * 60_000, maxBuffer: 64 << 20 }))
       .then(({ stdout }) => {
         const k = [...new Set(stdout.split('\n').filter((l) => /,K/.test(l)).map((l) => Number(l.split(',')[0])).filter(Number.isFinite))].sort((a, b) => a - b)
         if (!k.length) return null
@@ -902,7 +950,13 @@ export async function ensureHls(torrentId: number, fileIndex: number, p: Probe, 
     // A copied picture of a whole file: its keyframes, read once, are where the pieces are cut. Waited for a while, since
     // a playlist that can be seeked is worth a few seconds; a read that takes longer carries on behind and the old
     // forwards-only remux is used this once.
-    const kf = copy && opts.complete && p.duration ? await Promise.race([keyframes(torrentId, fileIndex, opts.source, (p.startTime ?? 0) + p.duration), sleep(20_000).then(() => null)]) : null
+    //
+    // A copy made in the background has nobody waiting, so it waits for the whole read. The 20 s race used to apply to it
+    // too, and a 1.8 GB episode on the household's USB pool takes longer than that to walk: the plan was refused ("the
+    // keyframes of this file are not read yet"), the file set aside for six hours, and the play that came later paid for the
+    // read itself, at the same moment as its first pieces (2026-11-18, `could not copy an episode ahead of the play`, 588).
+    const kfRead = copy && opts.complete && p.duration ? keyframes(torrentId, fileIndex, opts.source, (p.startTime ?? 0) + p.duration, !!opts.lowPriority) : null
+    const kf = kfRead ? await (opts.lowPriority ? kfRead : Promise.race([kfRead, sleep(20_000).then(() => null)])) : null
     const copyPlan = copyPlanFor(kf, p, !!opts.complete)
     if (copy && copyPlan) {
       const b = copyPlan
@@ -1162,7 +1216,7 @@ export function subtitleInput(torrentId: number, fileIndex: number, complete: bo
  * read: we extract the first N seconds (N follows the download, minus a safety margin, in 30 s steps) and the player asks again
  * as the file grows. A finished file is extracted whole, once, and then read from `subsCachePath` for ever after.
  */
-export async function subtitleVtt(torrentId: number, fileIndex: number, n: number, progress: number, duration: number, source?: string): Promise<{ vtt: string; complete: boolean }> {
+export async function subtitleVtt(torrentId: number, fileIndex: number, n: number, progress: number, duration: number, source?: string, low = false): Promise<{ vtt: string; complete: boolean }> {
   const complete = progress >= 1
   if (complete) {
     // Read out already: no ffmpeg, and no read of the episode, on any play after the first.
@@ -1176,7 +1230,12 @@ export async function subtitleVtt(torrentId: number, fileIndex: number, n: numbe
   let p = vttBusy.get(key)
   if (!p) {
     const args = ['-v', 'error', '-i', subtitleInput(torrentId, fileIndex, complete, source), '-map', `0:s:${n}`, ...(complete ? [] : ['-t', String(seconds)]), '-f', 'webvtt', '-']
-    p = execFileP('ffmpeg', args, { timeout: 180_000, maxBuffer: 16 << 20 })
+    // A whole track is a read of the whole episode. Read ahead of the play (prebuild) it is niced and in the idle disk class;
+    // asked for by a player it is niced only, so it gives way on the cores but is never starved off the drive.
+    const run = low && NICE
+      ? (IONICE ? execFileP(IONICE, ['-c3', 'nice', '-n', '19', 'ffmpeg', ...args], { timeout: 600_000, maxBuffer: 16 << 20 }) : execFileP('nice', ['-n', '19', 'ffmpeg', ...args], { timeout: 600_000, maxBuffer: 16 << 20 }))
+      : NICE ? execFileP('nice', ['-n', '10', 'ffmpeg', ...args], { timeout: 300_000, maxBuffer: 16 << 20 }) : execFileP('ffmpeg', args, { timeout: 300_000, maxBuffer: 16 << 20 })
+    p = run
       .then((r) => {
         const vtt = r.stdout || VTT_HEAD
         for (const k of [...vttCache.keys()]) if (k.startsWith(`${torrentId}:${fileIndex}:${n}:`)) vttCache.delete(k)
