@@ -2554,7 +2554,7 @@ function playView(seriesId, season, label) {
           haveFrac = Math.max(haveFrac, Math.min(1, Number(st.fileProgress) || 0))
           // Whether the box is still cutting this file's pieces, and how far it has got: what tells a cold start from a box
           // that has stopped, when the player has run out of its own patience (see coldGrace in attach).
-          buildNow = st.hls && st.hls.made < st.hls.of ? { made: st.hls.made, of: st.hls.of, at: Date.now() } : null
+          buildNow = st.hls && st.hls.made < st.hls.of ? { made: st.hls.made, of: st.hls.of, running: !!st.hls.running, at: Date.now() } : null
           syncBar()
           // Nothing left to ask: the file is all here and no piece of it is still being made.
           if (haveFrac >= 1 && !buildNow) { clearTimeout(haveT); haveT = null }
@@ -2792,14 +2792,28 @@ function playView(seriesId, season, label) {
       if (!userPaused) v.play?.().catch(() => {})
       // A finished file that has not started playing half a minute after it was handed over is stuck, not slow: nothing
       // is being waited for. Ask /info once more (a fresh link, and the box's fresh view of the file) and play that.
+      //
+      // Unless something IS being waited for: the box says an ffmpeg is cutting this file's pieces right now (a cold
+      // playlist on a slow drive). Starting again then threw the wait away and began it once more -- the "plays a few
+      // seconds, freezes, restarts after 30 s" of 2026-11-18. So a box still working gets up to two more half-minutes
+      // (the server gives up on a piece at two minutes anyway), and only a box that has stopped is asked again.
       clearTimeout(stuckT)
-      stuckT = setTimeout(() => {
+      let stuckWaits = 0
+      const stuckCheck = () => {
         if (!alive || started || castingOnly || stuckRetried || !v || haveFrac < 1) return
+        const b = buildNow
+        if (b && b.running && Date.now() - b.at < 12_000 && stuckWaits < 2) {
+          stuckWaits++
+          clog('stuckwait', {}, { made: b.made, of: b.of, waits: stuckWaits })
+          stuckT = setTimeout(stuckCheck, 30_000)
+          return
+        }
         stuckRetried = true
         hls?.destroy(); hls = null
         releaseVideo(v)
         loadInfo(info.audioIndex ?? 0, wantAt() || resumeTarget()).catch((e) => fail(e.message))
-      }, 30_000)
+      }
+      stuckT = setTimeout(stuckCheck, 30_000)
     }
 
     /**

@@ -38,7 +38,8 @@ COPY . .
 ENV NODE_ENV=production \
     DATA_DIR=/data \
     DOWNLOAD_DIR=/downloads \
-    PORT=8096
+    PORT=8096 \
+    UV_THREADPOOL_SIZE=16
 
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/qb-config.mjs /qb-config.mjs
