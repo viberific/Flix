@@ -27,7 +27,12 @@ real devices.
 - [ ] **Stuck controls** (0.3.123): the cross-fade (view transition) is skipped into, out of and between episodes. This was
       an informed guess at the "controls stick" reports, not confirmed by the log. If they still stick, get the log lines
       from that moment.
-- [ ] **Previous / next episode pills** (0.3.122): try them on a phone, a computer and the TV remote.
+- [ ] **Previous / next episode pills** (0.3.122, remote fixed in 0.3.128): try them on a phone, a computer and the TV
+      remote. On the remote: Up from the picture is play/pause, Up again is the next-episode pill, Left reaches previous,
+      Up again goes to the top bar, Down comes back to play/pause.
+- [ ] **Up next waits for the end of the file** (0.3.128): the box still comes up when the credits are thought to begin,
+      but the 15-second countdown only starts with 15 seconds of file left. A show that keeps playing under its credits
+      should play them out; Play now still moves on at once.
 
 ## Reading the log
 

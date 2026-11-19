@@ -498,7 +498,7 @@ html.car .player.car-max .p-top, html.car .player.car-max .p-ctl { animation: ca
   html.car .player:not(.car-max) .p-next, html.car .player:not(.car-max).idle .p-next, html.car .player:not(.car-max).p-quiet .p-next { right: calc(var(--side) + 14px); bottom: 14px; width: min(300px, calc(100vw - var(--side) - 28px)); }
 }
 @media (prefers-reduced-motion: reduce) { html.car .player .p-top, html.car .player .p-ctl { animation: none; } html.car .player #vw, html.car header#top > .search { transition: none; } }
-.cd { height: 3px; border-radius: 2px; background: rgba(255,255,255,.2); margin-top: 14px; overflow: hidden; } .cd i { display: block; height: 100%; width: 100%; background: var(--accent); transform-origin: left; }
+.p-next:not(.counting) .cd { opacity: 0; } .cd { transition: opacity .3s; height: 3px; border-radius: 2px; background: rgba(255,255,255,.2); margin-top: 14px; overflow: hidden; } .cd i { display: block; height: 100%; width: 100%; background: var(--accent); transform-origin: left; }
 
 /* ---------- auth ---------- */
 .auth-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; position: relative; overflow: hidden; }
