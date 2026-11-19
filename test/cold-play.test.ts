@@ -46,6 +46,8 @@ test('a cold play is warming until its first pieces are cut, and the box says it
   if (tc.warming(21, 0)) assert.equal(b.running, true, 'still warming, so an ffmpeg is on it')
   for (let i = 0; i < 400 && tc.warming(21, 0); i++) await new Promise((r) => setTimeout(r, 50))
   assert.equal(tc.warming(21, 0), false, 'the first minute (here the whole short episode) is cut: the play is under way')
+  // ffmpeg writes the last piece a moment before it exits, so "running" follows the pieces rather than matching them at once.
+  for (let i = 0; i < 100 && tc.hlsBuild(21, 0)!.running; i++) await new Promise((r) => setTimeout(r, 50))
   assert.equal(tc.hlsBuild(21, 0)!.running, false, 'and nothing is cutting any more')
 
   // A replay: the pieces are already there, so the moment the first one is asked for the gate is open.
