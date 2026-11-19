@@ -84,4 +84,6 @@ dependencies {
     // Flix on the car screen (Android Auto), see the car/ package. The phone and TV app does not use these.
     implementation 'androidx.car.app:app:1.4.0'
     implementation 'androidx.car.app:app-projected:1.4.0'
+    // The TV's own player (NativeVideo): plays a file's AC-3 / E-AC-3 sound as it is, which a WebView cannot.
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
 }

@@ -7,6 +7,11 @@ What is still open after the polish and playback work of 0.3.118–0.3.125 (2026
 Everything below was tested with the test suite and placeholder shows in a headless browser, never with real episodes on
 real devices.
 
+- [ ] **5.1 on the TV app** (0.3.127): on the TV, an AC-3 / E-AC-3 episode should play through the app's own player:
+      the log's `chose how to play` says mode `direct` with `can` including `ac3,eac3`, the TV or soundbar shows Dolby
+      Digital / Dolby Digital Plus, it starts as fast as an anime episode, and seeking, pause, subtitles, resume and Up next
+      all work as before. If the native player fails, the player falls back to the converted playlist by itself (look for
+      `recover` with `why: "error"` and a `native:` message). Needs the new APK installed on the TV.
 - [ ] **Cold 5.1 episodes** (0.3.127): a never-played AC-3/E-AC-3 episode should reach its first frame in about 15 s or
       less, with no stop-and-restart at 30 s. Look for `stuckwait` (the player waiting on a box that is still cutting
       instead of starting again), `read the subtitle out after the first pieces` (the subtitle held back while the opening

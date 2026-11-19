@@ -37,6 +37,8 @@ import android.widget.Toast;
 
 /**
  * Flix as an app: a full-screen WebView on the Flix server, so it is exactly the web app, with nothing to keep in step.
+ * The one native part is the picture of an episode whose sound a WebView cannot play (AC-3 / E-AC-3): on a TV that goes
+ * to ExoPlayer under the page (NativeVideo), and the page's own controls drive it.
  * The first launch asks for the server's address and remembers it; the Menu key (or a server that cannot be reached)
  * brings that screen back. On a TV the web app is told it is on a TV, so it switches to its remote-friendly layout.
  */
@@ -47,6 +49,7 @@ public class MainActivity extends Activity {
     private FrameLayout root;
     private FrameLayout stage;
     private WebView web;
+    private NativeVideo nativeVideo;
     private View setup, fullscreenView;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
 
@@ -166,6 +169,9 @@ public class MainActivity extends Activity {
             root.addView(stage, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             stage.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             stage.requestApplyInsets(); // the padding above is set the moment the window reports its insets
+            // The TV's own player, for the files a WebView cannot play the sound of (AC-3 / E-AC-3): see NativeVideo.
+            nativeVideo = new NativeVideo(this, root, stage, web, BG, isTv());
+            web.addJavascriptInterface(nativeVideo, "FlixNative");
             web.requestFocus();
         }
         if (state == null || web.restoreState(state) == null) web.loadUrl(url);
@@ -370,6 +376,7 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         CookieManager.getInstance().flush(); // keep the sign-in if the TV kills the app in the background
+        if (nativeVideo != null) nativeVideo.onPause();
         if (web != null) web.onPause();
     }
 
@@ -385,6 +392,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (nativeVideo != null) { nativeVideo.release(); nativeVideo = null; }
         if (web != null) { web.destroy(); web = null; }
         super.onDestroy();
     }

@@ -1,5 +1,6 @@
 import * as dl from '/downloads.js'
 import { isPlaying } from '/playclock.js'
+import { dropNative, makeNative, nativeAudio, nativeOk } from '/nativevideo.js'
 const $ = (s, el = document) => el.querySelector(s)
 const app = $('#app'), top = $('#top')
 const rmq = matchMedia('(prefers-reduced-motion: reduce)')
@@ -2236,7 +2237,7 @@ function playView(seriesId, season, label) {
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
       if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
-      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearTimeout(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearTimeout(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); dropNative(); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
       carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
@@ -2390,7 +2391,7 @@ function playView(seriesId, season, label) {
       // (2026-11-04, four quality recoveries on torrent 2273108), so only the last ask is allowed to fill `info` in.
       const seq = ++infoSeq
       const base = `/api/stream/${play.torrentId}/${play.fileIndex}`
-      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', convertPic ? 'x=1' : '', 'cv=' + CAN_PLAY.join(',')].filter(Boolean).join('&')
+      const q = [a ? 'a=' + a : '', qAsk() ? 'q=' + qAsk() : '', convertPic ? 'x=1' : '', 'cv=' + [...CAN_PLAY, ...nativeAudio()].join(',')].filter(Boolean).join('&')
       const infoAskedAt = Date.now()
       const got = await api(`${base}/info${q ? '?' + q : ''}`)
       if (seq !== infoSeq || !alive) return
@@ -2491,6 +2492,10 @@ function playView(seriesId, season, label) {
       const replacing = !!(hls || (v && (v.getAttribute('src') || v.currentSrc || v.srcObject)))
       hls?.destroy(); hls = null
       if (replacing) releaseVideo(v)
+      // The native player for a file the box marked `native` (its sound only the device's own player decodes), the page's
+      // <video> for everything else. The same element moves between the two when a retry changes which one this file needs.
+      const wantNative = !!(info.native && nativeOk())
+      if (v && !!v.__native !== wantNative) { if (v.__native) v.__unnative(); else makeNative(v) }
       /**
        * Where this source has to land, in precedence order, decided in one place and asked the same way by everything
        * in the player that needs a position. The order is not the order the arguments arrive in, and that is the point:
@@ -2512,6 +2517,9 @@ function playView(seriesId, season, label) {
       if (!v) {
         $('#vw').innerHTML = '<video autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></video>'
         v = $('video')
+        // The TV app's own player, for a file the box sent as it is because this device said it takes the sound (see
+        // nativevideo.js). The element stays the one everything below listens to; only what feeds it changes.
+        if (wantNative) makeNative(v)
         v.autoplay = !userPaused
         if (fill || carMax) v.style.objectFit = 'cover'
         carPic?.mount($('#vw'))

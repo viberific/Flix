@@ -826,6 +826,9 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const tvType = direct ? await rawType(+t, +f) : 'video/mp4'
   return {
     mode: direct ? 'direct' : 'file', url: `${base}/${path}`, tvUrl: tv, tvType, seekable: true,
+    // Direct only because the device said it takes this sound (AC-3 / E-AC-3 in "cv", which only the TV app's own player
+    // sends): no browser decodes it, so the app must play it with that player, not the page's <video>.
+    native: direct && !audioDirect(p),
     castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: null, duration: p.duration, audioIndex: a, hdr: p.hdr,
     // The HDR playlist went with the other conversions. An HDR episode is repacked with its picture copied and its colour
     // tags kept, and the player falls back to that file when there is no hdrUrl.

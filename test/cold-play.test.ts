@@ -80,3 +80,10 @@ test('the subtitle read out ahead of the play is kept on disk for the play to fi
   assert.match(vtt, /Hello there/)
   assert.equal(existsSync(tc.subtitleCachePath(24, 0, sub.n)), true)
 })
+
+test('the TV app saying it takes AC-3 turns this file into a direct play; a browser saying nothing does not', { skip: !hasFfmpeg }, async () => {
+  const p = await tc.probe(21, 0, whole)
+  assert.equal(tc.directPlay(p) && tc.audioDirect(p), false, 'a browser gets the converted playlist')
+  const tvApp = new Set(['h264', 'ac3', 'eac3'])
+  assert.equal(tc.directPlay(p, tvApp) && tc.audioDirect(p, tvApp), true, 'the app\'s own player gets the file as it is')
+})
