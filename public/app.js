@@ -1765,6 +1765,7 @@ function playView(seriesId, season, label) {
     // What a remote can reach on the black screen (Details and Cancel while it waits, Try again and Back when it failed, the
     // casting card's buttons) and in the top bar.
     const waitBtns = () => [...pl.querySelectorAll('#wait a[href], #wait button')].filter((x) => !x.closest('[hidden]') && x.offsetParent !== null && getComputedStyle(x).visibility !== 'hidden')
+    const epBtns = () => [...pl.querySelectorAll('#peps .p-ep')].filter((x) => !x.disabled && !x.closest('[hidden]') && x.offsetParent !== null)
     const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
     const key = (e) => {
       if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || document.querySelector('.pin-modal')) return
@@ -1814,10 +1815,25 @@ function playView(seriesId, season, label) {
       // The bar's buttons are walked with the arrow keys, like on any TV: up from the picture lands on play/pause, left and
       // right move along the row (back 10, play/pause, forward 10, quality, captions, fill), down returns to the picture.
       // Enter presses the highlighted button. With nothing highlighted, left and right still skip 10 seconds.
-      const inBar = e.target.closest?.('#pctl .p-btn') && !e.target.closest('.menu')
+      // The previous/next episode pills are a row of their own above the seek bar: Up from the bar reaches them (next
+      // first), Left and Right walk between them, Up again goes on to the top bar and Down comes back to play/pause. They
+      // used to be counted as the first two buttons of the bar's row, so only Left past back-10 reached them, and a greyed
+      // one at either end of the show stopped the walk dead.
+      const inEps = e.target.closest?.('#peps .p-ep')
+      if (inEps && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+        e.preventDefault()
+        const b = epBtns(), n = b.indexOf(inEps) + (k === 'ArrowRight' ? 1 : -1)
+        if (n >= 0 && n < b.length) b[n].focus()
+        wake()
+        return
+      }
+      if (inEps && k === 'ArrowDown') { e.preventDefault(); ($('#ppp') || e.target).focus(); wake(); return }
+      if (inEps && k === 'ArrowUp') { e.preventDefault(); (topBtns()[0] || e.target).focus(); wake(); return }
+      const inBar = e.target.closest?.('#pctl .p-btn') && !e.target.closest('.menu') && !inEps
+      if (inBar && k === 'ArrowUp' && epBtns().length) { e.preventDefault(); const b = epBtns(); (b.find((x) => x.id === 'pnext') || b[0]).focus(); wake(); return }
       if (inBar && (k === 'ArrowLeft' || k === 'ArrowRight')) {
         e.preventDefault()
-        const b = [...pl.querySelectorAll('#pctl .p-btn')].filter((x) => !x.hidden && !x.closest('.menu'))
+        const b = [...pl.querySelectorAll('#pctl .p-btn')].filter((x) => !x.hidden && !x.disabled && !x.closest('.menu') && !x.closest('#peps') && !x.closest('[hidden]'))
         const i = b.indexOf(e.target.closest('.p-btn'))
         const n = i + (k === 'ArrowRight' ? 1 : -1)
         if (n >= 0 && n < b.length) b[n].focus()
@@ -2976,12 +2992,17 @@ function playView(seriesId, season, label) {
       box.innerHTML = `<small>Up next</small><b>${esc(nx.label)}${nx.title ? ' · ' + esc(nx.title) : ''}</b><div class="actions"><button class="btn primary" id="nn">${I.play} Play now</button><button class="btn" id="nc">Not now</button></div><div class="cd"><i id="cdb"></i></div>`
       pl.appendChild(box)
       upNextBox = box
+      // The box comes up when the credits are thought to begin, but the countdown does not start until the file itself is
+      // about to run out. Where the credits begin is a guess (a measured black card, a chapter, or a share of the runtime),
+      // and a guess that is early cut off the last scene; reality shows also carry on under their credits, and a drama's
+      // credits often roll over a picture that is still playing. So during the credits the box only offers: Play now moves
+      // on at once, Not now puts it away, and otherwise the episode plays out. The fifteen seconds start when there are
+      // fifteen seconds of file left (fewer if the file has already ended), so the move lands as the file ends.
       // The bar starts empty and fills over the countdown, so it reads as time running out rather than time left.
       const bar = $('#cdb'), LEFT = 15
       clearInterval(cdT)
-      let left = LEFT
+      let left = LEFT, counting = false
       bar.style.transition = 'none'; bar.style.transform = 'scaleX(0)'
-      requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }))
       // On to the next one: this episode is finished (the credits are all that is left), so it is written as watched before
       // the next one opens -- otherwise the show stayed "on" this episode at 97% and Resume brought the viewer back to its
       // credits. The move replaces this episode in the history, so Back goes to the show, not into the episode before.
@@ -2994,18 +3015,36 @@ function playView(seriesId, season, label) {
         await Promise.race([report(true), new Promise((r) => setTimeout(r, 1500))])
         location.replace(target)
       }
+      const fileLeft = () => {
+        if (!v || v.ended) return 0
+        const d = knownDuration(info, v)
+        return d > 0 ? Math.max(0, d - v.currentTime) : Infinity
+      }
+      const startCount = () => {
+        counting = true
+        left = Math.max(5, Math.min(LEFT, Math.ceil(fileLeft())))
+        box.classList.add('counting')
+        bar.style.transition = 'none'; bar.style.transform = `scaleX(${(LEFT - left) / LEFT})`
+        requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }))
+      }
       // Paused, the countdown waits too: pausing in the credits to answer the door used to come back to the next episode
       // already playing. The bar stops where it is and runs on for the seconds left when play resumes. The end of the file
       // (paused and ended) and a TV that has the show count as running.
       let frozen = false
-      cdT = setInterval(() => {
+      const tick = () => {
+        if (!counting) {
+          if (castingOnly || fileLeft() <= LEFT) startCount()
+          return
+        }
         if (v && v.paused && !v.ended && !castingOnly) {
           if (!frozen) { frozen = true; bar.style.transition = 'none'; bar.style.transform = `scaleX(${(LEFT - left) / LEFT})` }
           return
         }
         if (frozen) { frozen = false; requestAnimationFrame(() => { bar.style.transition = `transform ${left}s linear`; bar.style.transform = 'scaleX(1)' }) }
         if (--left <= 0) onward()
-      }, 1000)
+      }
+      cdT = setInterval(tick, 1000)
+      if (castingOnly || fileLeft() <= LEFT) startCount()
       const cancel = () => { clearInterval(cdT); if (upNextBox === box) { upNextBox = null; upNextCancel = null } box.classList.add('out'); setTimeout(() => box.remove(), 350) }
       upNextCancel = cancel
       const dismiss = () => { upNextMuted = true; cancel() }
