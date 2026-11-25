@@ -1357,6 +1357,7 @@ html.native-video, html.native-video body, html.native-video main#app, html.nati
 .rm-btn.busy { color: transparent !important; pointer-events: none; }
 .rm-btn.busy > * { visibility: hidden; }
 .rm-btn.busy::before { content: ''; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; animation: spin .7s linear infinite; }
+.rm-btn.busy:not(.danger)::before { border-color: color-mix(in srgb, var(--fg) 25%, transparent); border-top-color: var(--fg); }
 @keyframes rmArm { 0% { transform: scale(.9); } 60% { transform: scale(1.05); } 100% { transform: none; } }
 @keyframes rmCount { to { transform: scaleX(0); } }
 .fg-ep, .fg-show, .fg-season, .trow { transition: max-height .28s var(--ease), opacity .22s, transform .28s var(--ease), padding .28s, margin .28s; }
