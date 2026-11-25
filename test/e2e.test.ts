@@ -326,22 +326,21 @@ test('downloads: an MKV is converted to one MP4 for the device', async () => {
   assert.equal(body.subarray(4, 8).toString(), 'ftyp')
 })
 
-test('casting: a finished episode goes to the TV as one seekable file, not a playlist built forwards', async () => {
+test('TV links: a finished episode goes to the TV as one seekable file, not a playlist built forwards', async () => {
   // A plain MP4 as it is: the whole length is known from the first byte.
   const one = await playAndFetch(1000)
-  const direct: any = await jget(`/api/stream/1000/${one.fileIndex}/info?cast=1`)
+  const direct: any = await jget(`/api/stream/1000/${one.fileIndex}/info`)
   assert.equal(direct.seekable, true)
   assert.match(direct.tvUrl, /\/raw$/)
   assert.equal(direct.tvType, 'video/mp4')
-  // An MKV goes over as the single repacked MP4, picture copied and never re-encoded. A cast receiver keeps whatever
+  // An MKV goes over as the single repacked MP4, picture copied and never re-encoded. A TV keeps whatever
   // timeline it is handed, so it gets one file and no playlist at all.
   const two = await playAndFetch(1001)
   await offlineReady(1001, two.fileIndex)
-  const info: any = await jget(`/api/stream/1001/${two.fileIndex}/info?cast=1`)
+  const info: any = await jget(`/api/stream/1001/${two.fileIndex}/info`)
   assert.equal(info.seekable, true)
   assert.match(info.tvUrl, /\/offline\/file$/)
   assert.equal(info.tvType, 'video/mp4')
-  assert.equal(info.castFallbackUrl, null)
   // Fetched the way the TV does -- the token in the path, no cookie -- a range comes back with the whole episode's length
   // in it, which is what the scrubber is drawn from.
   const part = await api(info.tvUrl, { headers: { range: 'bytes=0-1023' } })

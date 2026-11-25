@@ -36,12 +36,11 @@ test('the car strip is Flix\'s header on pages and the Flix logo alone, as Back,
   assert.doesNotMatch(screen, /root\.setPadding\(l, t, r, b\)/)
   for (const what of ['back', 'home', 'search', 'menu']) assert.match(app, new RegExp(`what === '${what}'`))
   assert.match(app, /if \(isCar\) window\.__flixCar = /)
-  assert.match(app, /me\.cast && !isTv && !isCar/)
   // The player: maximize takes the picture to the whole screen, with the rating alone at the top left.
   assert.match(app, /\$\('#pfull'\)\.onclick = \(\) => \{ if \(carWide\(\)\) setCarMax\(!carMax\)/)
   assert.match(css, /html\.car \.player\.car-max #pback, html\.car \.player\.car-max \.p-mark \{ display: none; \}/)
   assert.match(app, /if \(v\) v\.style\.objectFit = on \|\| fill \? 'cover' : ''/)
-  assert.match(css, /html\.car \.player #cast, html\.car \.player #rep \{ display: none; \}/)
+  assert.match(css, /html\.car \.player #rep \{ display: none; \}/)
 })
 
 test('the car picture shows a frame only once the sound delay has passed', async () => {

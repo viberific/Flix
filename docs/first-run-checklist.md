@@ -26,7 +26,7 @@ If nothing appears after ~10 minutes, check step 1 (key / IP), then the Flix log
 - Create a family member (Family → add), then **Sign-in link** → open it on their phone. They should land on Flix signed in, with no password.
 - On that phone: add to home screen (needs the trusted HTTPS address from the README; the account menu has **Install app**).
 - Open Flix from the home-screen icon on a device with two profiles: it should ask **Who's watching?**.
-- A TV browser: arrow keys should move between tiles and Back should go back. A cast button shows only if the TV and Flix are on the same network.
+- A TV browser: arrow keys should move between tiles and Back should go back.
 
 ## 5. Seeding (the BTN rule)
 BTN needs each torrent seeded for 130 hours **or** a 1:1 ratio. The 130 hours always works. The ratio needs other people to be able

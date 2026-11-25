@@ -102,7 +102,7 @@ export function redeemInvite(token: string): { session: string; userId: number }
 }
 
 // ---- cookie-free stream links (casting, TVs) ----------------------------------------------------------
-// A TV or cast device fetches the video itself and has no cookie, so it gets a signed link whose token sits in the path
+// A TV fetches the video itself and has no cookie, so it gets a signed link whose token sits in the path
 // (the HLS playlist's relative segment URLs keep it). Valid 12 hours. The signing key is kept in the settings table rather
 // than made up at start-up: a restart (which is what an update does) used to invalidate every link a page or a device was
 // already holding, and the only way back from that was force-closing the app.

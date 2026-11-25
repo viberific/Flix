@@ -182,7 +182,8 @@ addEventListener('resize', () => centerFills())
 async function swap(fn) {
   window.scrollTo({ top: 0, behavior: 'instant' }) // html has smooth scrolling; a jump here must not animate
   let ran = false
-  const once = () => { if (!ran) { ran = true; fn() } }
+  const mine = navToken // a view transition paints on the next frame: a page asked for since must not be painted over by this one
+  const once = () => { if (!ran) { ran = true; if (mine === navToken) fn() } }
   // Not on a television: the cross-fade snapshots the whole screen twice, and on a TV's chip that is a stutter on every page.
   // Never into, out of or between episodes either: while a view transition runs the screen is a frozen snapshot of the old
   // page, and one that stalls (see the guard below) left the controls of a starting episode -- or of the one Up next had
@@ -216,115 +217,6 @@ function skeleton(kind) {
   return `<div class="skeleton"><div class="skel" style="height:min(${isTv ? 52 : 66}vh,${isTv ? 440 : 560}px);border-radius:0;position:relative"><div class="pad" style="position:absolute;left:0;right:0;bottom:40px;display:grid;gap:14px">${bar('34%', 46, 1, 'background:rgba(255,255,255,.07)')}${bar('18%', 16, 2, 'background:rgba(255,255,255,.07)')}<div style="display:flex;gap:12px">${bar('150px', 46, 3, 'border-radius:999px;background:rgba(255,255,255,.1)')}${bar('130px', 46, 4, 'border-radius:999px;background:rgba(255,255,255,.07)')}</div></div></div><div class="pad">${row(0)}${row(2)}</div></div>`
 }
 
-/* ---------- casting ----------
-   The phone only picks the TV and hands it a link. A Chromecast or Google TV fetches the video itself, so what it
-   gets is the signed HLS URL built on the box's LAN address (castUrl, made in the player), never the tailnet name
-   the page itself was loaded from: a TV cannot resolve that. Tap the cast button once to pick the TV, then
-   anything started plays there. */
-const CAST_APP = 'CC1AD845' // Google's Default Media Receiver: plays an HLS link without an app of its own
-const casting = { connected: false, device: '', headerOff: null }
-const castSubs = new Set()
-function castEmit() { for (const fn of castSubs) { try { fn() } catch { /* one stale header bar is not worth a crash */ } } }
-/** Run fn now and on every casting change; the returned function stops it (the header replaces its bar on each render). */
-function onCast(fn) { castSubs.add(fn); fn(); return () => castSubs.delete(fn) }
-function castCtx() { return window.cast?.framework ? cast.framework.CastContext.getInstance() : null }
-function castNote(msg) {
-  const n = document.createElement('div')
-  n.className = 'castnote'; n.textContent = msg; n.setAttribute('role', 'status')
-  ;(document.querySelector('.player') || document.body).append(n)
-  setTimeout(() => n.remove(), 7000)
-}
-
-let castSdk = null
-/** The sender SDK comes from Google's CDN (not bundled), so it is fetched the first time casting is asked for. */
-function loadCastSdk() {
-  if (window.cast?.framework) return Promise.resolve()
-  if (!castSdk) castSdk = new Promise((ok, no) => {
-    const fail = () => no(new Error('cast unavailable'))
-    window.__onGCastApiAvailable = (yes) => {
-      if (!yes || !window.cast?.framework) return fail()
-      const ctx = cast.framework.CastContext.getInstance()
-      ctx.setOptions({ receiverApplicationId: CAST_APP, autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED })
-      ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
-        const live = e.castState === cast.framework.CastState.CONNECTED
-        casting.connected = live
-        casting.device = live ? (ctx.getCurrentSession()?.getCastDevice()?.friendlyName || 'the TV') : ''
-        if (!live) clearInterval(castTick)
-        castEmit()
-      })
-      ok()
-    }
-    const s = document.createElement('script')
-    s.src = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1'
-    s.onerror = fail
-    document.head.append(s)
-    setTimeout(fail, 12000) // gstatic blocked: the button must say so rather than do nothing
-  })
-  return castSdk
-}
-// Chrome (the only browser that casts) rejoins a TV it was casting to as soon as the SDK is up, so load it at the start, not when the cast button is first tapped.
-if (/Chrome\//.test(navigator.userAgent)) loadCastSdk().catch(() => {})
-
-/** Connect to a TV (asking which one when none is picked yet). Rejects with code 'cancel' if they close the picker. */
-async function castConnect() {
-  await loadCastSdk()
-  const ctx = castCtx()
-  if (!ctx) throw new Error('cast unavailable')
-  let session = ctx.getCurrentSession()
-  if (!session) session = await ctx.requestSession()
-  if (!session) throw new Error('no TV picked')
-  casting.connected = true
-  casting.device = session.getCastDevice()?.friendlyName || 'the TV'
-  castEmit()
-  return session
-}
-
-let castTick = null
-/** Put one episode on the TV, from `at` seconds in. Rejects when the TV cannot open the link. */
-async function castSend(url, title, at = 0, torrentId, fileIndex, duration, type = 'application/vnd.apple.mpegurl', fallbackUrl = null) {
-  if (!url) throw new Error('no LAN address for the TV')
-  const session = await castConnect()
-  const media = new chrome.cast.media.MediaInfo(url, type)
-  media.streamType = chrome.cast.media.StreamType.BUFFERED
-  if (duration) media.duration = duration
-  const md = new chrome.cast.media.GenericMediaMetadata()
-  md.title = title || 'Flix'
-  media.metadata = md
-  const req = new chrome.cast.media.LoadRequest(media)
-  req.currentTime = Math.max(0, (at || 0) - 3) // a few seconds back, so it does not open mid-sentence
-  let player
-  try {
-    player = await session.loadMedia(req)
-  } catch (e) {
-    // The receiver would not take the file. The playlist plays forwards, which is worse than a timeline and better than
-    // nothing on the TV; anything else is a real failure and is reported as one.
-    if (!fallbackUrl || url === fallbackUrl) throw e
-    return castSend(fallbackUrl, title, at, torrentId, fileIndex, duration, 'application/vnd.apple.mpegurl', null)
-  }
-  castTrack(player, { torrentId, fileIndex, duration })
-  return player
-}
-
-/** The TV is playing it now, so the phone stops counting: watch state (and the 60% next-episode rule) comes from the TV. */
-function castTrack(player, ids) {
-  clearInterval(castTick)
-  const report = (ended) => {
-    const duration = player.media?.duration || ids.duration || 0
-    const position = ended ? duration : (player.getCurrentTime?.() || 0)
-    if (!(position > 0) && !ended) return
-    api('/api/progress', { torrentId: ids.torrentId, fileIndex: ids.fileIndex, position, duration, ended }).catch(() => {})
-  }
-  report(false) // straight away, so the show is under continue-watching on the phone
-  castTick = setInterval(() => {
-    if (!castCtx()?.getCurrentSession()) { clearInterval(castTick); return }
-    const idle = player.playerState === chrome.cast.media.PlayerState.IDLE
-    if (idle && player.idleReason === 'ERROR') { clearInterval(castTick); castNote('The TV could not play it. Check the TV is on the same network as this box.'); return }
-    const done = idle && player.idleReason === 'FINISHED'
-    report(done)
-    if (done) clearInterval(castTick)
-  }, 30000)
-}
-
 /* ---------- top bar ---------- */
 /** Set when typing in the search field opened the results page: the new header picks up the field where the old one left off. */
 let keepSearch = false
@@ -335,25 +227,7 @@ function renderTop() {
   keepSearch = false
   top.innerHTML = `<a class="brand" href="#/" aria-label="Flix home">${I.logo}<span>Flix</span></a>
     <form class="search" id="sf" role="search">${I.search}<input id="q" type="search" placeholder="Search shows" aria-label="Search shows" autocomplete="off" enterkeyhint="search"></form>
-    <div class="hact">${me.cast && !isTv && !isCar ? `<button class="cast-btn" id="tc" aria-label="Cast to a TV" aria-pressed="false" title="Cast to a TV">${ICON.cast}</button>` : ''}<button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
-    // The cast button sits between the search bar and the profile: tap it once to pick the TV, then anything
-    // started plays there. Tapping it again stops the session.
-    casting.headerOff?.()
-    casting.headerOff = onCast(() => {
-      const tb = $('#tc')
-      if (!tb) return
-      tb.classList.toggle('on', casting.connected)
-      tb.setAttribute('aria-pressed', casting.connected ? 'true' : 'false')
-      tb.title = casting.connected ? `Casting to ${casting.device} · tap to stop` : 'Cast to a TV'
-    })
-    const tc = $('#tc')
-    if (tc) tc.onclick = async () => {
-      if (casting.connected) { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* already gone */ } return }
-      try { await castConnect(); castNote(`Casting to ${casting.device}`) } catch (err) {
-        if (err?.code === 'cancel') return // they closed the device picker
-        castNote('No TV found. Check the TV is on and on the same network as this box.')
-      }
-    }
+    <div class="hact"><button class="avatar${me.avatar ? ' has-art' : ''}" id="av" aria-label="Account menu" aria-haspopup="true">${avSvg(me.avatar) || esc(me.name[0].toUpperCase())}</button></div>`
   // The logo always means home. When the address is already `#/` (or a live search has rewritten it), a plain link would not
   // fire hashchange, so the tap did nothing: go there explicitly, clear the search and return to the top.
   $('.brand').onclick = (e) => {
@@ -480,7 +354,7 @@ function flixSting() {
 }
 /* ---------- platform ---------- */
 // Declared before anything can render, because the header and the account menu both ask "is this a television?"
-// (a TV is the one place with no install button and no cast button: it is the thing a phone casts to).
+// (a TV is the one place with no install button).
 const isTv = /SMART-?TV|Tizen|Web0S|WebOS|AFT[A-Z]|Android TV|GoogleTV|BRAVIA|CrKey/i.test(navigator.userAgent)
 if (isTv) document.documentElement.classList.add('tv')
 // The car screen of the Android app (Android Auto, android/.../car/FlixScreen.java): the same pages on a wide, short screen
@@ -1436,7 +1310,6 @@ const ICON = {
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>',
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>',
   flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></svg>',
-  cast: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/><path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5M3 20h.01"/></svg>',
   play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6a.9.9 0 0 0 1.37.77l10.6-6.8a.9.9 0 0 0 0-1.54L9.37 4.43A.9.9 0 0 0 8 5.2Z"/></svg>',
   pause: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.4" y="4.8" width="4" height="14.4" rx="1.5"/><rect x="13.6" y="4.8" width="4" height="14.4" rx="1.5"/></svg>',
   fill: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5H3.5V9M15 3.5h5.5V9M9 20.5H3.5V15M15 20.5h5.5V15"/></svg>',
@@ -1518,7 +1391,6 @@ function playView(seriesId, season, label) {
       <div class="p-top"><button class="icon-btn" id="pback" aria-label="Back">${I.back}</button>
         <span class="p-mark" aria-hidden="true">${I.logo}</span><span class="p-rate" id="prate" hidden></span>
         ${isCar ? '' : `<div class="p-title"><b id="pt">${esc(label)}</b><span id="pe"></span></div>`}<span class="sp"></span>
-        <button class="icon-btn" id="cast" aria-label="Play on a TV" hidden>${ICON.cast}</button>
         <button class="icon-btn p-report" id="rep" aria-label="Something’s wrong with this" title="Something’s wrong? Try another source" hidden>${ICON.flag}</button>
         <span class="chip" id="q" style="color:#fff;border-color:rgba(255,255,255,.3)" hidden></span></div>
       <div id="vw"></div>
@@ -1562,7 +1434,7 @@ function playView(seriesId, season, label) {
       series: +seriesId, season, label, torrent: play?.torrentId ?? null, file: play?.fileIndex ?? null, mode: info?.mode ?? null, family: sourceFamily(),
       quality: info?.quality ?? null, convert: convertPic, t: v ? Math.round(v.currentTime * 10) / 10 : null, dur: v && Number.isFinite(v.duration) ? Math.round(v.duration) : null,
       rs: v?.readyState ?? null, ns: v?.networkState ?? null, paused: v ? v.paused : null, ahead: v ? bufAhead() : null, started, holding, userPaused,
-      casting: castingOnly, sinceOpenMs: Date.now() - openedAt, hidden: document.hidden,
+      sinceOpenMs: Date.now() - openedAt, hidden: document.hidden,
     }) }
     clog('open', {}, { from: (playerOrigin || '').slice(0, 60) })
     // In the car the player takes the whole screen, the corner under the car's own buttons included: the picture stays clear
@@ -1589,7 +1461,6 @@ function playView(seriesId, season, label) {
     // An element whose source is taken away on purpose reports an error for it: that one is ours, not playback's.
     let ignoreError = false
     // While the TV has the show the phone must stay silent: no local player, no local play keys.
-    let castingOnly = false
     function revealWait(settled = false) {
       const layer = $('#wait')
       layer.classList.add('gone')
@@ -1611,7 +1482,7 @@ function playView(seriesId, season, label) {
     const liveWatch = setInterval(() => {
       if (!alive || !pl.isConnected) { clearInterval(liveWatch); return }
       const layer = $('#wait')
-      if (!layer || !v || castingOnly || layer.classList.contains('settled')) return
+      if (!layer || !v || layer.classList.contains('settled')) return
       // The picture is running when the element says it is playing and holds data at its playhead. A clock that went
       // FORWARD is not the test: a seek in a copied picture moves the clock backwards, and the old rule (t > seenT + 0.2)
       // then never fired again -- the logo sat over a playing episode for good (Single Ladies, 19:12).
@@ -1640,11 +1511,11 @@ function playView(seriesId, season, label) {
       if (run === artRun) idleArt?.start()
     }
     // The idle timer is for the show being stopped, not merely untouched: the artwork only belongs up while nothing is
-    // playing (paused, or cast to the TV with the phone just the remote). The old check asked the opposite -- "is it
+    // playing (paused). The old check asked the opposite -- "is it
     // playing?" -- so the artwork slid over a show that was playing and had simply not been touched for three seconds.
     // `started` keeps it away during the loading screen, and paint() (which wakes while paused) keeps re-arming this
     // timer for as long as the show is stopped, so the artwork still arrives on a paused show left alone.
-    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && (v.paused || castingOnly)) { pl.classList.add('idle'); startIdleArt() } }, 60000); armQuiet() }
+    const wake = () => { pl.classList.remove('idle'); artRun++; idleArt?.hide(); clearTimeout(idleT); idleT = setTimeout(() => { if (v && v.paused) { pl.classList.add('idle'); startIdleArt() } }, 60000); armQuiet() }
     // The bar goes away while the show plays: five seconds with no input and the top bar and the control bar fade out with
     // the cursor, and any pointer move, tap, key or remote press brings them straight back and starts the five again.
     // A class of its own -- NOT `idle`, whose timer arms the paused-state artwork slideshow: hiding the bar in the middle
@@ -1667,7 +1538,7 @@ function playView(seriesId, season, label) {
     const showBar = () => pl.classList.remove('p-quiet')
     /** The picture is really running. Not `started`, which stays true while it is paused, and not `v.paused` alone, which is
         true of a show that has not opened yet. */
-    const runningNow = () => !!v && !v.paused && !castingOnly && started
+    const runningNow = () => !!v && !v.paused && started
     /** The viewer did something. With `show` left on the bar comes back; input on the picture itself passes false, because
         a tap there is the show/hide toggle and must not be undone by the bar reappearing under it. */
     const quietTouch = (show) => { quietFrom = Date.now(); if (show !== false) showBar() }
@@ -1762,8 +1633,7 @@ function playView(seriesId, season, label) {
       const b = isTv && e.target.closest?.('.p-menu > button')
       if (b) setTimeout(() => { const m = b.parentElement.querySelector('.menu'); (m?.querySelector('button[aria-current]') || m?.querySelector('button'))?.focus() }, 0)
     })
-    // What a remote can reach on the black screen (Details and Cancel while it waits, Try again and Back when it failed, the
-    // casting card's buttons) and in the top bar.
+    // What a remote can reach on the black screen (Details and Cancel while it waits, Try again and Back when it failed) and in the top bar.
     const waitBtns = () => [...pl.querySelectorAll('#wait a[href], #wait button')].filter((x) => !x.closest('[hidden]') && x.offsetParent !== null && getComputedStyle(x).visibility !== 'hidden')
     const epBtns = () => [...pl.querySelectorAll('#peps .p-ep')].filter((x) => !x.disabled && !x.closest('[hidden]') && x.offsetParent !== null)
     const topBtns = () => [...pl.querySelectorAll('.p-top a, .p-top button')].filter((x) => !x.closest('[hidden]') && !x.closest('.menu'))
@@ -1859,7 +1729,7 @@ function playView(seriesId, season, label) {
       if (k === 'ArrowDown' && !e.target.closest?.('a, button, .menu') && !$('#wait').classList.contains('gone') && waitBtns()[0]) { e.preventDefault(); waitBtns()[0].focus(); wake(); return }
       // Before there is a picture (the episode is still being found) or while a TV has it, there is nothing here to play,
       // pause or seek: only Back, which leaves.
-      if (!v || castingOnly) {
+      if (!v) {
         if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack') { e.preventDefault(); leavePlayer() }
         return
       }
@@ -1924,15 +1794,12 @@ function playView(seriesId, season, label) {
       const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60
       return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(sec).padStart(2, '0')
     }
-    // While the TV has the show, the phone is only its remote: the bar shows and drives the TV's player (see enterCastMode).
-    let rem = null, haveFrac = 0
-    const remoteOn = () => castingOnly && !!rem
+    let haveFrac = 0
     // A playlist's own length can be only the part made so far (a copy still being remuxed as it downloads), so the
     // episode's length as the server probed it wins there: the bar is the whole episode, and half of it is half of it.
-    const totalT = () => (remoteOn() && rem.p.duration > 0 ? rem.p.duration
-      : info?.mode === 'hls' && Number(info?.duration) > 0 ? Number(info.duration)
+    const totalT = () => (info?.mode === 'hls' && Number(info?.duration) > 0 ? Number(info.duration)
       : v && isFinite(v.duration) && v.duration > 0 ? v.duration : Number(info?.duration) || 0)
-    const nowT = () => (remoteOn() ? rem.p.currentTime || 0 : v?.currentTime || 0)
+    const nowT = () => (v?.currentTime || 0)
     // The viewer moved the picture on purpose: from here on its position is theirs, resume point or not (see report()).
     let userSeeked = false
     const setT = (t) => {
@@ -1942,7 +1809,7 @@ function playView(seriesId, season, label) {
       // The viewer's own move is the position from now on, including backwards: a recovery must not haul them forward again.
       held = t
       if (savedPos > t) savedPos = t
-      if (remoteOn()) { rem.p.currentTime = t; rem.c.seek() } else if (v) { const was = !v.paused; v.currentTime = t; guardSeek(t, was) }
+      if (v) { const was = !v.paused; v.currentTime = t; guardSeek(t, was) }
     }
     /**
      * A seek on a TV's WebView sometimes lands and then sits there: the picture frozen, or paused with nobody having pressed
@@ -1952,7 +1819,7 @@ function playView(seriesId, season, label) {
     let seekGuard = 0
     function guardSeek(t, wasPlaying) {
       const id = ++seekGuard, el = v
-      const live = () => id === seekGuard && alive && v === el && !castingOnly
+      const live = () => id === seekGuard && alive && v === el
       // Playing on from the place it was sent to is proof enough, whatever readyState says: a TV's WebView can play a whole
       // episode at HAVE_CURRENT_DATA (2), and asking for 3 here started a perfectly good picture over ten seconds after
       // every seek, with the spinner back up for the reload.
@@ -1990,7 +1857,7 @@ function playView(seriesId, season, label) {
       $('#pseek').setAttribute('aria-valuenow', String(Math.round(pct)))
       // The range the playhead is in, not the last one: after a seek the last range is somewhere else entirely.
       try {
-        const b = remoteOn() ? null : v?.buffered
+        const b = v?.buffered
         if (b?.length && d) { let end = t; for (let i = 0; i < b.length; i++) if (b.start(i) <= t + 0.5 && b.end(i) >= end) end = b.end(i); $('#pbuf').style.width = Math.min(100, (end / d) * 100) + '%' }
       } catch { /* nothing buffered yet */ }
       // How much of the file is on the box. A finished episode has all of it, so the whole bar is open to seek in.
@@ -1999,24 +1866,23 @@ function playView(seriesId, season, label) {
     }
     /** Playing or paused: which button to show, and whether the pause panel and the dimmed frame are up. */
     function paint() {
-      const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
-      pl.classList.toggle('paused', paused && !castingOnly) // the paused art would sit under the "playing on the TV" card
-      pl.classList.toggle('casting', castingOnly)
+      const paused = (!v || v.paused) && !holding
+      pl.classList.toggle('paused', paused)
       $('#ppp').innerHTML = paused ? ICON.play : ICON.pause
       $('#ppp').setAttribute('aria-label', paused ? 'Play' : 'Pause')
       $('#pfull').setAttribute('aria-pressed', String(carWide() ? carMax : fill))
-      if (paused || castingOnly) { wake(); if (bigScreen()) warmArt() }
+      if (paused) { wake(); if (bigScreen()) warmArt() }
       fillPause()
       syncBar()
     }
     /** What you are watching, centre-left over the dimmed frame while paused: the episode's title with its age
         rating beside it, the episode's own description under that, then the cast. Only once playback has really
-        started -- the loading screen and the cast handshake must never show it. */
+        started -- the loading screen must never show it. */
     function fillPause() {
       const card = $('#pinfo')
       if (!card) return
-      const paused = remoteOn() ? rem.p.isPaused : (!v || v.paused) && !holding
-      const show = paused && !castingOnly && started
+      const paused = (!v || v.paused) && !holding
+      const show = paused && started
       card.hidden = !show
       // While this card is up it says what is playing, so the top bar's own title steps aside rather than say it twice.
       pl.classList.toggle('pinfo-up', show)
@@ -2104,7 +1970,7 @@ function playView(seriesId, season, label) {
       // where the finger lets go.
       let dragT = 0, liveAt = 0
       const liveSeek = (t) => {
-        if (!v || remoteOn() || v.seeking || Date.now() - liveAt < 120) return
+        if (!v || v.seeking || Date.now() - liveAt < 120) return
         if (!(info?.mode === 'file' || (info?.mode === 'direct' && haveFrac >= 1))) return
         liveAt = Date.now()
         if (typeof v.fastSeek === 'function') v.fastSeek(t); else v.currentTime = t
@@ -2128,7 +1994,7 @@ function playView(seriesId, season, label) {
         hideTip()
       }
       bar.addEventListener('pointerdown', (e) => {
-        if (!v && !remoteOn()) return
+        if (!v) return
         e.preventDefault(); bar.classList.add('on')
         try { bar.setPointerCapture(e.pointerId) } catch { /* older webview */ }
         onMove(e)
@@ -2136,7 +2002,7 @@ function playView(seriesId, season, label) {
       bar.addEventListener('pointermove', (e) => {
         if (bar.classList.contains('on')) return onMove(e)
         // Hovering with a mouse shows where a click would land, and its picture, as a scrubber on a desktop does.
-        if (e.pointerType === 'mouse' && (v || remoteOn())) showTip(at(e))
+        if (e.pointerType === 'mouse' && v) showTip(at(e))
       })
       bar.addEventListener('pointerleave', () => { if (!bar.classList.contains('on')) hideTip() })
       bar.addEventListener('pointerup', () => endDrag(true))
@@ -2146,7 +2012,7 @@ function playView(seriesId, season, label) {
       // (and, on a playlist, a fetch) for every repeat.
       let nudgeT = 0
       nudge = (d) => {
-        if (!v && !remoteOn()) return
+        if (!v) return
         const d0 = totalT() || 1e9
         pendingT = Math.max(0, Math.min(d0 - 0.4, (pendingT ?? nowT()) + d))
         dragT = pendingT
@@ -2156,12 +2022,12 @@ function playView(seriesId, season, label) {
         nudgeT = setTimeout(() => { const t = pendingT; pendingT = null; if (t != null) setT(t); syncBar() }, 450)
       }
       bar.addEventListener('keydown', (e) => {
-        if ((!v && !remoteOn()) || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+        if (!v || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
         e.preventDefault(); e.stopPropagation() // the window handler would move the same skip twice
         nudge(e.key === 'ArrowRight' ? 15 : -15)
         wake()
       })
-      $('#ppp').onclick = () => { if (remoteOn()) rem.c.playOrPause(); else if (v && !castingOnly) { if (v.paused) userPlay().catch(() => {}); else userPause() }; wake() }
+      $('#ppp').onclick = () => { if (v) { if (v.paused) userPlay().catch(() => {}); else userPause() }; wake() }
       $('#pbw').onclick = () => { nudge(-10); wake() }
       $('#pfw').onclick = () => { nudge(10); wake() }
       $('#pfull').onclick = () => { if (carWide()) setCarMax(!carMax); else setFill(!fill); paint() }
@@ -2225,7 +2091,7 @@ function playView(seriesId, season, label) {
     // the app. If the picture is in an error state, or has a source and no data at all, ask /info again and carry on from
     // where the viewer was. A fresh answer also carries a fresh link.
     const revive = () => {
-      if (!alive || !v || !info || castingOnly) return
+      if (!alive || !v || !info) return
       if (!v.error && !(v.currentSrc && v.readyState === 0 && !v.paused)) return
       fileRetry = false
       noteRecover('revive', heldPos(), v.currentTime)
@@ -2233,7 +2099,7 @@ function playView(seriesId, season, label) {
     }
     // Named, so leaving the player really removes it: the old arrow function could never be taken off again, and every
     // episode ever opened left one more listener behind.
-    const onVisible = () => { if (document.hidden) { if (v && play && !castingOnly && canReport()) report(); return lostFull() }; if (!document.fullscreenElement) { landscape = false; goLandscape() } revive() }
+    const onVisible = () => { if (document.hidden) { if (v && play && canReport()) report(); return lostFull() }; if (!document.fullscreenElement) { landscape = false; goLandscape() } revive() }
     addEventListener('visibilitychange', onVisible)
     /**
      * Let go of the picture for good. Taking a <video> off the page does NOT stop it: it keeps its decoder and its open
@@ -2252,8 +2118,8 @@ function playView(seriesId, season, label) {
       if (logPlayer?.pid === pid) logPlayer = null
       // Where the viewer stopped, written now rather than at the next ten-second tick that will never come. Left in the
       // credits, the episode is finished, and the show moves on to the next one.
-      if (v && play && !castingOnly && canReport()) report(creditAt != null && v.currentTime >= creditAt)
-      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearTimeout(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); stopOff?.(); hls?.destroy(); hls = null; releaseVideo(v); dropNative(); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
+      if (v && play && canReport()) report(creditAt != null && v.currentTime >= creditAt)
+      alive = false; removeEventListener('visibilitychange', onVisible); document.removeEventListener('fullscreenchange', lostFull); if (play && info?.mode === 'hls') fetch(`/api/stream/${play.torrentId}/${play.fileIndex}/stop`, { method: 'POST', keepalive: true }).catch(() => {}); clearInterval(timer); clearTimeout(haveT); clearInterval(cdT); clearTimeout(subT); clearTimeout(idleT); clearInterval(quietT); clearTimeout(holdT); clearTimeout(stuckT); idleArt?.stop(); hls?.destroy(); hls = null; releaseVideo(v); dropNative(); removeEventListener('keydown', key); document.removeEventListener('keydown', onQuietKey, true); top.hidden = !me; try { screen.orientation?.unlock?.() } catch { /* unsupported */ } if (document.fullscreenElement) document.exitFullscreen?.()
       carPic?.stop(); if (isCar) try { window.FlixCar?.immersive(false) } catch { /* an older app */ }
       if (window.__flixBack === onBack) window.__flixBack = pageBack
     }
@@ -2419,13 +2285,9 @@ function playView(seriesId, season, label) {
         const i = pickAudio(info.audio, store.get('audio', null) || 'eng')
         if (i > 0) return loadInfo(i, startAt)
       }
-      // A TV that is already connected gets the episode: casting stays on until it is stopped, so every
-      // show tapped from now on follows it there.
-      if (!casting.connected && info.castUrl) await Promise.race([loadCastSdk().catch(() => {}), new Promise((r) => setTimeout(r, 2500))]) // a TV from earlier is only known once the SDK has rejoined it
       if (!alive) return
-      if (casting.connected && info.castUrl) return castInstead(startAt)
       attach(startAt)
-      wireSubs(); wireSubMenu(); wireNudge(); wireAudio(); wireQuality(); wireExtras()
+      wireSubs(); wireSubMenu(); wireNudge(); wireAudio(); wireQuality()
     }
 
     /** Which rendition /info has just handed the player: a copied picture, a converted one, a smaller one, or a file. */
@@ -2451,7 +2313,7 @@ function playView(seriesId, season, label) {
      * relative to the first ten seconds of THIS source: that difference is the drift, and past 150 ms a person hears it.
      * Once a second, one line only when it is over, never more than one per ten seconds -- this must cost the picture
      * nothing, which is also why there is no Web Audio tap: routing the sound through an AudioContext to measure it
-     * would change the very pipeline being measured, and break a television and a cast receiver.
+     * would change the very pipeline being measured, and break a television.
      */
     let driftT = null, frameMt = null, rvfcOn = false, skewBase = [], driftOver = 0, driftSentAt = 0, resyncAt = 0
     const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1] }
@@ -2495,8 +2357,7 @@ function playView(seriesId, season, label) {
         torrentId: play?.torrentId ?? null, fileIndex: play?.fileIndex ?? null }).catch(() => {})
     }
     function attach(startAt) {
-      if (castingOnly) return // the TV has it; nothing plays here
-      selfAt = Date.now()
+            selfAt = Date.now()
       /**
        * A source is never swapped UNDER a running pipeline. Destroying the playlist and setting the next one left the
        * element's own audio output carrying the clock of the source that had gone, and picture and sound then ran at
@@ -2552,16 +2413,19 @@ function playView(seriesId, season, label) {
           clearTimeout(stuckT)
           // The picture waits on its first frame behind the logo; the show starts at the moment the logo begins to fade (4 seconds after opening).
           const left = INTRO_MS - (Date.now() - introAt)
-          const reveal = () => { holding = false; if (castingOnly) return; revealWait(); $('#cnc').hidden = true; if (!userPaused) v.play().catch(() => {}); wake() }
-          if (left > 0 && !castingOnly) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
+          const reveal = () => { holding = false; revealWait(); $('#cnc').hidden = true; if (!userPaused) v.play().catch(() => {}); wake() }
+          if (left > 0) { holding = true; v.pause(); holdT = setTimeout(reveal, left) } else reveal()
         }
         v.addEventListener('playing', firstFrame, { once: true })
         // A play that gets going clears the one-retry latch, so a later failure on the same episode is not swallowed: the
         // retry above was only ever allowed once, for the life of the element.
-        v.addEventListener('playing', () => { fileRetry = false; if (started && !holding && !castingOnly) revealWait(true) })
+        v.addEventListener('playing', () => { fileRetry = false; if (started && !holding) revealWait(true) })
         watchQuality(v)
         for (const ev of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata', 'canplay']) v.addEventListener(ev, syncBar)
-        for (const ev of ['play', 'pause', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
+        for (const ev of ['play', 'playing', 'pause', 'ended', 'emptied', 'volumechange', 'waiting']) v.addEventListener(ev, paint)
+        // The dimmed "paused" frame must never outlive a picture that is moving: a source swap, a hold that ended or a browser that
+        // skips 'play' can leave the class on while the video runs, so the clock is also checked against it.
+        v.addEventListener('timeupdate', () => { if (pl.classList.contains('paused') && !v.paused && !holding) paint() })
         // A seek into a part of the file that has not arrived yet leaves the picture frozen with nothing to say why. The ring
         // is shown while the element is waiting for data (and not before the first frame, where the loading mark is up).
         const spin = (on) => { const el = $('#pspin'); if (el) el.hidden = !(on && started) }
@@ -2612,10 +2476,10 @@ function playView(seriesId, season, label) {
           // resume point to a stream that opens again.
           if (resumeOwed && v.currentTime >= resumeOwed - 5) resumeOwed = 0
           if (v.currentTime > 1 && v.currentTime > held) held = v.currentTime
-          if (moving && !castingOnly) firstFrame()
+          if (moving) firstFrame()
           // The logo comes down when the first frame is revealed, but that happens once per element. If anything put it
           // back up since (a hand-over from the TV, a source swap) and the picture is now plainly playing, take it down.
-          if (started && !holding && !castingOnly && isPlaying(v)) revealWait(true)
+          if (started && !holding && isPlaying(v)) revealWait(true)
           if (Date.now() - lastSave > 10000) { lastSave = Date.now(); report() }
           // Is this the credits? Reading a chapter list once a second is enough -- timeupdate fires four times a second on a
           // desktop and the moment is a whole minute wide, so this is answered on a throttle rather than on every tick.
@@ -2691,10 +2555,9 @@ function playView(seriesId, season, label) {
       let canHdr = !!(info.hdrUrl && !info.useHdrOff && window.MediaSource && ['hvc1.2.4.L153.B0', 'hvc1.1.6.L153.B0', 'hev1.1.6.L153.B0', 'hvc1.1.6.L150.B0']
         .some((c) => MediaSource.isTypeSupported(`video/mp4; codecs="${c}"`)))
       info.useHdr = canHdr
-      // Casting needs a link the TV can open on its own (no cookie), so plain playback uses the signed one where the browser can cast.
       const src = canHdr ? info.hdrUrl : info.url
       // A single-file ("file") play is the page's own origin, so a TV's WebView already carries the session cookie the
-      // signed path in a cast link stands in for: it gets the same URL as everyone else.
+      // signed path stands in for: it gets the same URL as everyone else.
       const url = viaHls || info.mode === 'file' ? src : 'remote' in v ? (canHdr ? info.hdrTvUrl : info.tvUrl) : src
       ignoreError = false // a source is about to be set: from here on an error is a real one
       resumeAt = resumeTarget()
@@ -2824,7 +2687,7 @@ function playView(seriesId, season, label) {
       clearTimeout(stuckT)
       let stuckWaits = 0
       const stuckCheck = () => {
-        if (!alive || started || castingOnly || stuckRetried || !v || haveFrac < 1) return
+        if (!alive || started || stuckRetried || !v || haveFrac < 1) return
         const b = buildNow
         if (b && b.running && Date.now() - b.at < 12_000 && stuckWaits < 2) {
           stuckWaits++
@@ -2896,7 +2759,7 @@ function playView(seriesId, season, label) {
      */
     let coldTries = 0, coldFrom = 0
     const coldGrace = (resume) => {
-      if (coldTries >= 4 || castingOnly) return false
+      if (coldTries >= 4) return false
       const t = Date.now()
       if (!coldFrom) coldFrom = t
       if (t - coldFrom > 90_000) return false
@@ -2935,7 +2798,7 @@ function playView(seriesId, season, label) {
     /* ---------- up next ----------
        The next episode is offered while the credits are still running, not after the file has stopped, so the handover is
        like a streaming service's rather than a wait on a black screen. One function draws the box for every trigger: the
-       credits check on timeupdate, the video's own `ended`, and the cast finishing on the TV. */
+       credits check on timeupdate, the video's own `ended`. */
 
     /** When the credits begin, in seconds, or null while nothing at all is known about the runtime.
         Three answers, in order of trust: a chapter named for the credits is exact; then the moment Flix measured with
@@ -3033,10 +2896,10 @@ function playView(seriesId, season, label) {
       let frozen = false
       const tick = () => {
         if (!counting) {
-          if (castingOnly || fileLeft() <= LEFT) startCount()
+          if (fileLeft() <= LEFT) startCount()
           return
         }
-        if (v && v.paused && !v.ended && !castingOnly) {
+        if (v && v.paused && !v.ended) {
           if (!frozen) { frozen = true; bar.style.transition = 'none'; bar.style.transform = `scaleX(${(LEFT - left) / LEFT})` }
           return
         }
@@ -3044,7 +2907,7 @@ function playView(seriesId, season, label) {
         if (--left <= 0) onward()
       }
       cdT = setInterval(tick, 1000)
-      if (castingOnly || fileLeft() <= LEFT) startCount()
+      if (fileLeft() <= LEFT) startCount()
       const cancel = () => { clearInterval(cdT); if (upNextBox === box) { upNextBox = null; upNextCancel = null } box.classList.add('out'); setTimeout(() => box.remove(), 350) }
       upNextCancel = cancel
       const dismiss = () => { upNextMuted = true; cancel() }
@@ -3238,7 +3101,7 @@ function stallBlamesLine(stallMs, lateMs) {
 /* stall-end */
       const stepDown = () => {
         clearTimeout(longT); stalls = []
-        if (qSetting() !== 'auto' || castingOnly || !alive || qSwitching) return
+        if (qSetting() !== 'auto' || !alive || qSwitching) return
         const next = (info.qualities || []).find((h) => h < (info.quality || Infinity))
         if (!next) return
         clog('stepdown', {}, { from: info.quality ?? 'original', to: next })
@@ -3369,103 +3232,6 @@ function stallBlamesLine(stallMs, lateMs) {
         btn.setAttribute('aria-pressed', String(subPick != null))
         dropFocus(); armQuiet()
       }
-    }
-
-    let castWired = false
-    const castTitle = () => `${play?.seriesName || label}${play?.episodeTitle ? ' · ' + play.episodeTitle : ''}`
-    /** Send this episode to the connected TV; its progress is reported from there (see castTrack). */
-    async function castHere(at) {
-      // A TV keeps whatever timeline it was handed when it loaded, so an episode that is not yet one file is worth waiting
-      // for: this asks the server to finish the single MP4 first. The cast splash is already on screen, so it reads as the
-      // TV taking a moment. If it still cannot be had, the playlist is cast and plays forwards as before.
-      if (!info.seekable) {
-        const where = $('#msg .cs-where')
-        if (where) where.textContent = `Getting the whole episode for ${casting.device}…`
-        try {
-          const q = `cast=1${info.audioIndex ? '&a=' + info.audioIndex : ''}`
-          const fresh = await api(`/api/stream/${play.torrentId}/${play.fileIndex}/info?${q}`)
-          if (fresh) info = { ...info, ...fresh }
-        } catch { /* keep what we have */ }
-      }
-      await castSend(info.castUrl, castTitle(), at || 0, play.torrentId, play.fileIndex, info.duration, info.castType, info.castFallbackUrl)
-    }
-    function wireExtras() {
-      if (castWired) return
-      castWired = true
-      // No LAN address configured means the TV could not reach the media anyway,
-      // so the button stays away rather than failing at the last step.
-      // A television is the thing being cast to, so the button is for phones and computers only.
-      if (!info?.castUrl || isTv) return
-      $('#cast').hidden = false
-      $('#cast').onclick = async () => {
-        try {
-          if (!casting.connected) await castConnect()
-          await castHere(v?.currentTime || 0)
-          enterCastMode()
-        } catch (err) {
-          if (err?.code === 'cancel') return // they closed the device picker
-          castNote('Could not start on the TV. Check the TV is on the same network as this box.')
-        }
-      }
-    }
-    /**
-     * The TV has the show. The phone stops loading and playing it and becomes the TV's remote: the same bar, driving the TV's player,
-     * until the cast is stopped (from here or from the TV), when "Play on this phone" carries on from where the TV got to.
-     */
-    function enterCastMode() {
-      castingOnly = true
-      clearTimeout(holdT); clearInterval(timer); clearTimeout(subT); clearInterval(cdT)
-      holding = false
-      hls?.destroy(); hls = null
-      if (v) { v.onpause = null; v.pause(); v.removeAttribute('src'); v.load() }
-      restoreWait(); $('.mark')?.remove()
-      pl.classList.remove('idle')
-      try {
-        const p = new cast.framework.RemotePlayer(), c = new cast.framework.RemotePlayerController(p)
-        rem = { p, c }
-        let finished = false
-        c.addEventListener(cast.framework.RemotePlayerEventType.ANY_CHANGE, () => {
-          if (!castingOnly) return
-          paint()
-          const ms = castCtx()?.getCurrentSession()?.getMediaSession?.()
-          if (!finished && ms?.playerState === 'IDLE' && ms.idleReason === 'FINISHED') { finished = true; onEnded() }
-        })
-      } catch { rem = null }
-      paint()
-      showCastCard('Playing on ' + casting.device, true)
-      castNote(`Playing on ${casting.device}`)
-      stopOff = onCast(() => { if (castingOnly && !casting.connected) { saveRemote(); rem = null; showCastCard('Casting stopped', true, true); paint() } })
-    }
-    let stopOff = null
-    const saveRemote = () => {
-      const t = rem?.p.currentTime
-      if (t > 0 && play) api('/api/progress', { torrentId: play.torrentId, fileIndex: play.fileIndex, position: t, duration: totalT(), ended: false }).catch(() => {})
-    }
-    function showCastCard(where, withButtons, stopped) {
-      $('#msg').innerHTML = `<div class="cast-splash done"><span class="cs-mark"></span><span class="cs-where">${esc(where)}</span><div style="display:flex;gap:10px;justify-content:center;margin-top:18px"><button class="btn" id="cstop">${stopped ? 'Play on this phone' : 'Stop casting'}</button><a class="btn" href="#/series/${seriesId}">Back</a></div></div>`
-      $('#cstop').focus({ preventScroll: true }) // something for a keyboard or remote to press
-      // Stopping the cast brings the show back on the phone, from where the TV was.
-      $('#cstop').onclick = () => {
-        saveRemote()
-        if (!stopped) { try { castCtx().getCurrentSession()?.endSession(true) } catch { /* already gone */ } }
-        stopOff?.()
-        casting.connected = false; casting.device = ''
-        setTimeout(route, 350)
-      }
-    }
-    /** A connected TV gets the episode instead of the phone; if that fails it plays here as usual. */
-    async function castInstead(at) {
-      try {
-        castingOnly = true // from here the phone shows the hand-over, never the episode
-        clearInterval(timer) // no local progress polling, the TV reports its own
-        restoreWait(); $('.mark')?.remove()
-        // The Flix mark, then the show starts on the TV.
-        $('#msg').innerHTML = `<div class="cast-splash"><span class="cs-mark"></span><span class="cs-where">Casting to ${esc(casting.device)}</span></div>`
-        await castHere(at)
-        await new Promise((r) => setTimeout(r, 1600))
-        if (!alive) return
-        enterCastMode()
-      } catch { castingOnly = false; attach(at) }
     }
 
     begin()
@@ -3649,13 +3415,12 @@ function downloadsPanel(data, root) {
     const groups = d.finished ?? []
     const gKey = (g, season) => `${g.seriesId ?? g.series}|${season == null ? '' : season}`
     const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`)
-    const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
     const chev = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
     // Show > season > episode, one line each. The Remove beside a show or a season takes only what everybody has watched
     // (and that has met BTN's seeding goal); Delete show takes the lot, behind a confirmation dialog.
     const gdel = (g, season, n, size, label) => `<button class="rm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}" title="${label}: ${eps(n)}, ${gb(size)}" aria-label="${label}: ${eps(n)}, ${gb(size)}">${trash}<span>${label}</span></button>`
     const meta = (parts) => parts.filter(Boolean).join(' · ')
-    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b><span class="dim sm">${it.heldFor.length ? `Not watched yet by ${esc(it.heldFor.join(', '))}` : 'Watched'}</span></span>
+    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b><span class="dim sm">${it.partway?.length ? `${esc(it.partway.join(', '))} is partway through it` : it.heldFor.length ? `Not watched yet by ${esc(it.heldFor.join(', '))}` : 'Watched'}</span></span>
       <span class="fg-size">${gb(it.size)}</span><button class="rm-btn icon" data-rm="${it.torrentId}" title="Remove ${esc(it.label)}" aria-label="Remove ${esc(it.label)}">${trash}</button></li>`
     const seasonRow = (g, s) => {
       const k = gKey(g, s.season), open = openSeasons.has(k)
@@ -3699,9 +3464,9 @@ function downloadsPanel(data, root) {
           <span class="tacts">${finished ? `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)}">${trash}<span>Remove</span></button>` : ''}</span></li>`
       }).join('')}</ul>` : ''
     const fc = chartData?.fullInDays
-    const heldSpace = heldForOthers.length ? `<div class="sub-h">Finished by you, not yet by everyone</div>
-      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">BTN's seeding goal is met on these, so BTN is satisfied. Nothing here is deleted on its own, because someone in the house has not finished it. Removing one frees the space now, and it has to be downloaded again if they do watch it.</p>
-      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Held for ${esc(x.notWatched.join(', '))} — not finished` : 'Held for a viewer who has not finished it', btn: `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)} anyway">${trash}<span>Remove anyway</span></button>` })).join('')}</ul>` : ''
+    const heldSpace = heldForOthers.length ? `<div class="sub-h">Seeding done, still kept</div>
+      <p class="dim sm" style="margin:0 0 8px;max-width:66ch">BTN's seeding goal is met on these, so BTN is satisfied. Nothing here is deleted on its own, because someone in the house has not watched it yet (it may be you, or it may be something not watched at all). Removing one frees the space now, and it has to be downloaded again if they do watch it.</p>
+      <ul class="trows">${heldForOthers.map((x) => row(x, { note: x.notWatched?.length ? `Not watched yet by ${esc(x.notWatched.join(', '))}` : (x.reasons?.length ? esc(x.reasons.join('; ')) : 'Kept for a viewer who has not watched it'), btn: `<button class="rm-btn" data-rm="${x.torrent_id}" aria-label="Remove ${esc(x.series)} anyway">${trash}<span>Remove anyway</span></button>` })).join('')}</ul>` : ''
     const forecast = fc == null ? '' : `<div class="dim sm" style="margin:6px 0">At the pace of the last two weeks, there is room for about <b>${fc} more day${fc === 1 ? '' : 's'}</b> of downloads before new shows are refused.</div>`
     $('#tinfo').innerHTML = `${forecast}${space}${heldSpace}${using}<div class="sub-h">Health</div>${issues ? `<ul class="issues">${issues}</ul>` : '<div class="dim sm">Everything looks healthy.</div>'}
       <div class="dim sm">${d.folder ? `Downloads folder: <code>${esc(d.folder)}</code>. Flix keeps its torrents here, takes over matching ones you download here yourself, and removes only what it put here.` : ''}${h?.backup ? `<br>Latest backup of accounts and watch history: ${esc(h.backup.replace(/^flix-|\.db$/g, ''))}` : ''}</div>
@@ -3719,17 +3484,33 @@ function downloadsPanel(data, root) {
   // Deleting, and the second press that confirms it, in one place. Every render makes new buttons -- this area is rebuilt
   // when the chart arrives, and again on every 15-second refresh -- so wire() attaches the handlers after each render
   // rather than once, which is why the buttons here used to go dead after the chart loaded.
+  const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
   const openShows = new Set(), openSeasons = new Set()
+  /** Take a row out with a short collapse, so the list closes up instead of jumping. */
+  const leave = (el) => new Promise((done) => {
+    if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches) return done()
+    el.style.maxHeight = el.offsetHeight + 'px'
+    void el.offsetHeight
+    el.classList.add('leaving')
+    setTimeout(done, 280)
+  })
+  /** The first press arms a button (it turns red and counts down); `revert` puts it back if nobody presses again. */
+  function arm(b, html, ms) {
+    const was = b.innerHTML
+    b.dataset.sure = '1'; b.classList.add('danger', 'armed'); b.style.setProperty('--arm', ms + 'ms')
+    b.innerHTML = html
+    setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger', 'armed') } }, ms)
+  }
+  const busy = (b, on) => { b.disabled = on; b.classList.toggle('busy', on); if (on) b.classList.remove('armed') }
   async function onRemove(b) {
     // Deleting a download is not undone by anything, so a second press confirms it, as everywhere else in Settings.
     if (b.dataset.sure !== '1') {
-      const was = b.innerHTML
-      b.dataset.sure = '1'; b.classList.add('danger')
-      if (b.classList.contains('rm-btn')) b.innerHTML = '<span>Remove?</span>'; else b.textContent = 'Press again to remove'
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 4000)
+      if (b.classList.contains('rm-btn')) arm(b, '<span>Remove?</span>', 4000)
+      else { arm(b, 'Press again to remove', 4000) }
       return
     }
-    try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
+    busy(b, true)
+    try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); await leave(b.closest('li')); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { busy(b, false); b.classList.remove('danger'); b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
   }
   /**
    * Remove watched, beside a show or a season: only the episodes everyone has watched. The second press says how many and
@@ -3737,17 +3518,14 @@ function downloadsPanel(data, root) {
    */
   async function onGroupRemove(b) {
     const n = Number(b.dataset.count) || 0, size = b.dataset.size || ''
-    if (b.dataset.sure !== '1') {
-      const was = b.innerHTML
-      b.dataset.sure = '1'; b.innerHTML = `<span>Remove ${n}?</span><span class="rm-size"> · ${size}</span>`; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 6000)
-      return
-    }
+    if (b.dataset.sure !== '1') { arm(b, `${trash}<span>Remove ${n}?</span><span class="rm-size"> · ${size}</span>`, 6000); return }
+    busy(b, true)
     try {
       const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gdel), season: b.dataset.season === '' ? null : Number(b.dataset.season), mode: 'watched' })
-      flashNote(`Removed ${r.removed} watched episode${r.removed === 1 ? '' : 's'}${r.kept?.length ? `; kept ${r.kept.length} not watched by everyone yet` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
+      const why = (r.kept ?? []).slice(0, 3).map((k) => `${k.label} (${k.note})`).join(', ')
+      flashNote(`Removed ${r.removed} watched episode${r.removed === 1 ? '' : 's'}${r.kept?.length ? `; kept ${r.kept.length}: ${why}${r.kept.length > 3 ? '…' : ''}` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
       draw(await api('/api/admin/downloads')); loadChart()
-    } catch (e) { b.textContent = 'Nothing removed'; b.disabled = true; flashNote(e.message) }
+    } catch (e) { busy(b, false); b.classList.remove('danger'); b.innerHTML = `${trash}<span>Remove watched</span>`; flashNote(e.message) }
   }
   /** Delete show: everything of it, watched or not, once the dialog is confirmed. */
   async function onShowDelete(b) {
@@ -3758,11 +3536,13 @@ function downloadsPanel(data, root) {
       confirm: 'Delete show',
     })
     if (!ok) { b.focus({ preventScroll: true }); return }
+    busy(b, true)
     try {
       const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gall), season: null, mode: 'all' })
       flashNote(`Deleted ${r.removed} episode${r.removed === 1 ? '' : 's'}${r.queued ? `; ${r.queued} more go${r.queued === 1 ? 'es' : ''} once seeded` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}` + (r.hidden ? `. ${b.dataset.name} is hidden until a new episode turns up — Restore it any time under Settings → Torrents → Hidden shows` : ''))
+      await leave(b.closest('.fg-show'))
       draw(await api('/api/admin/downloads')); loadChart()
-    } catch (e) { flashNote(e.message) }
+    } catch (e) { busy(b, false); flashNote(e.message) }
   }
   /** Opening a show or a season. Kept in this page rather than the element, so a refresh does not close what is open. */
   function onToggle(b) {

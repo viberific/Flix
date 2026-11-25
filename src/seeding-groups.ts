@@ -49,6 +49,8 @@ export interface FinishedRow {
   ratio?: number
   seedHours?: number
   notWatched?: string[]
+  /** People partway through it: Remove watched leaves it alone while someone is. */
+  watching?: string[]
 }
 
 export interface FinishedItem {
@@ -59,6 +61,8 @@ export interface FinishedItem {
   seedHours: number
   /** Who in the house has not finished it yet. Deleting it means they have to download it again if they do. */
   heldFor: string[]
+  /** Who is partway through it, so a started episode is not counted as one Remove watched can take. */
+  partway: string[]
 }
 
 export interface StillItem { torrentId: number; label: string; note: string }
@@ -150,9 +154,9 @@ export function groupFinished(rows: FinishedRow[]): FinishedShow[] {
       let size = 0, watched = 0, watchedSize = 0
       for (const r of list) {
         if (isFinished(r)) {
-          items.push({ torrentId: r.torrent_id, label: episodeLabel(r), size: r.size ?? 0, ratio: r.ratio ?? 0, seedHours: r.seedHours ?? 0, heldFor: r.notWatched ?? [] })
+          items.push({ torrentId: r.torrent_id, label: episodeLabel(r), size: r.size ?? 0, ratio: r.ratio ?? 0, seedHours: r.seedHours ?? 0, heldFor: r.notWatched ?? [], partway: r.watching ?? [] })
           size += r.size ?? 0
-          if (!(r.notWatched ?? []).length) { watched++; watchedSize += r.size ?? 0 }
+          if (!(r.notWatched ?? []).length && !(r.watching ?? []).length) { watched++; watchedSize += r.size ?? 0 }
           for (const n of r.notWatched ?? []) held.add(n)
         } else {
           const s = stillItem(r)
@@ -185,7 +189,7 @@ export interface GroupTarget { seriesId: number | null; season?: number | null }
 export type GroupMode = 'watched' | 'all'
 
 /** A member of a group as the route reads it: the engine's numbers plus who has not finished it and who is partway. */
-export interface GroupRow extends FinishedRow { watching?: string[] }
+export type GroupRow = FinishedRow
 
 export interface GroupPlan {
   ok: boolean

@@ -56,7 +56,7 @@ const BRIDGE = `(() => {
 
 const WATCH = { torrentId: 9001, fileIndex: 1, seriesName: 'Test Show', episodeTitle: 'Pilot', label: 'S01E01', quality: '1080p', position: 0, next: null }
 const SUB = { n: 0, lang: 'eng', label: 'English', forced: false, default: true, url: '/api/stream/9001/1/subs/0.vtt', sync: 'embedded:0', offset: 0 }
-const NATIVE = { url: '/api/stream/9001/1/raw', tvUrl: '/api/tv/tok/9001/1/raw', mode: 'direct', native: true, duration: 1400, seekable: true, castUrl: null,
+const NATIVE = { url: '/api/stream/9001/1/raw', tvUrl: '/api/tv/tok/9001/1/raw', mode: 'direct', native: true, duration: 1400, seekable: true,
   audio: [{ n: 0, label: 'English · 5.1', lang: 'eng', channels: 6 }], audioIndex: 0, subs: [SUB], qualities: [], quality: null }
 const WEB = { ...NATIVE, native: false, mode: 'file', url: '/api/stream/9001/1/offline/file', tvUrl: '/api/tv/tok/9001/1/offline/file' }
 const VTT = 'WEBVTT\n\n00:00:00.000 --> 00:00:50.000\nHello from the native layer.\n\n00:10:00.000 --> 00:10:05.000\nLater line.\n'
@@ -72,7 +72,7 @@ before(async () => {
     const send = (type: string, body: string | Buffer) => { res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body) }
     const json = (v: unknown) => send('application/json', JSON.stringify(v))
     if (p.startsWith('/api/')) {
-      if (p === '/api/me') return json({ user: { id: 1, name: 'Viewer', is_admin: 0, avatar: null, cast: false }, needsSetup: false })
+      if (p === '/api/me') return json({ user: { id: 1, name: 'Viewer', is_admin: 0, avatar: null }, needsSetup: false })
       if (p === '/api/device-token') return json({ token: 'stub' })
       if (p === '/api/home') return json({ sections: [], myList: [], ready: [], picked: [], because: null, hero: null, listIds: [] })
       if (p === '/api/continue' || p === '/api/leaving') return json({ items: [] })

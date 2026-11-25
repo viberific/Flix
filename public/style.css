@@ -39,15 +39,9 @@ header#top > .search { flex: 1; }
   header#top > .brand { justify-self: start; }
   header#top > .avatar, header#top > .hact { justify-self: end; }
 }
-/* The cast button and the profile make one group at the end of the header, so the cast icon sits immediately left of
-   the avatar and both stay put when the search bar grows. */
+/* The profile group at the end of the header: it stays put when the search bar grows. */
 .hact { display: flex; align-items: center; gap: 8px; flex: none; }
-.cast-btn { width: 40px; height: 40px; border-radius: 50%; border: 0; background: none; color: var(--fg); display: grid; place-items: center; cursor: pointer; transition: background .2s, color .2s, transform .25s var(--ease); }
-.cast-btn svg { width: 22px; height: 22px; }
-.cast-btn:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
-.cast-btn:active { transform: scale(.94); }
-.cast-btn.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
-@media (max-width: 380px) { .hact { gap: 2px; } .cast-btn, .avatar { width: 36px; height: 36px; } }
+@media (max-width: 380px) { .hact { gap: 2px; } .avatar { width: 36px; height: 36px; } }
 @media (max-width: 480px) { header#top { gap: 10px; } .brand span { display: none; } }
 .search svg { flex: none; width: 20px; height: 20px; margin: 0 12px; color: var(--dim); }
 .search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--fg); font: inherit; outline: none; padding-right: 14px; }
@@ -280,11 +274,7 @@ html.tv .disc-lb { font-size: 13px; }
 .p-more[hidden] { display: none; }
 .p-stats { font-size: 12px; color: rgba(255,255,255,.55); font-variant-numeric: tabular-nums; }
 .p-stats[hidden] { display: none; }
-/* A casting splash owns #msg, so the bar has no business sitting under it. */
-.p-wait:has(.cast-splash) #pnow { display: none; }
 .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin 1s linear infinite; }
-/* A short, self-clearing line for a casting hiccup (the full error card is for playback itself). */
-.castnote { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 60; max-width: min(420px, 86vw); padding: 10px 14px; border-radius: 10px; background: rgba(12,14,18,.94); border: 1px solid var(--border); color: var(--text); font-size: 13px; line-height: 1.45; text-align: center; }
 .p-next { position: absolute; z-index: 6; right: var(--gutter-r); bottom: max(124px, calc(env(safe-area-inset-bottom, 0px) + 100px)); width: min(340px, calc(100vw - 36px)); padding: 18px; border-radius: 16px; color: #fff;
   background: rgba(18,20,27,.82); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); box-shadow: var(--shadow); animation: rise .5s var(--ease); transition: bottom .35s var(--ease); }
 /* Clear of the player's own bar. The bar is ~110px tall (10px padding, 24px seek, 4px gap, a 60px button, 12px below), so
@@ -410,7 +400,6 @@ html.tv .player #pfull { display: none; }
   box-shadow: 0 2px 10px rgba(0,0,0,.35); animation: subvIn .18s var(--ease) both; }
 @keyframes subvIn { from { opacity: 0; transform: translate(-50%, 4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .p-btn[hidden] { display: none; }
-.player.casting #pfull, .player.casting #pcc, .player.casting #pq, .player.casting #aud, .player.casting #cast, .player.casting #rep { display: none; } /* those act on the phone's own picture; the TV is driven from the bar */
 .p-ctl .p-menu .menu { top: auto; bottom: 54px; right: 0; background: rgba(20,22,30,.97); color: #fff; max-height: 46vh; overflow: auto; }
 
 /* ---------- paused: what you are watching, over the frame you stopped on ----------
@@ -456,9 +445,8 @@ html.car header#top.car-find > .search { opacity: 1; transform: none; pointer-ev
 .p-sync { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 6px; font-size: 13px; color: var(--dim); }
 .p-sync b { min-width: 52px; text-align: center; color: var(--fg); font-variant-numeric: tabular-nums; }
 .p-sync .p-btn { width: 36px; height: 36px; font-size: 22px; line-height: 1; background: rgba(255,255,255,.1); }
-.player.casting .p-sync { display: none; }
 /* Neither is for the car: it is not where a phone casts from, and a report is a phone's job. */
-html.car .player #cast, html.car .player #rep { display: none; }
+html.car .player #rep { display: none; }
 html.car .p-ctl .p-title { min-width: 0; margin-bottom: 8px; }
 html.car .p-ctl .p-title b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -.01em; }
 html.car .p-ctl .p-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -592,11 +580,6 @@ a.pill { display: inline-block; }
 @keyframes breathe { 50% { transform: scale(.94); opacity: .8; } }
 
 /* Handing the show to a TV: the Flix mark, then the episode starts on the TV and not here. */
-.cast-splash { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
-.cs-mark { width: 96px; height: 96px; border-radius: 22px; background: url(/icon.svg) center / cover; box-shadow: 0 18px 44px -10px color-mix(in srgb, var(--accent-2) 60%, transparent); animation: castpop .9s var(--ease) both, breathe 2.4s ease-in-out 1s infinite; }
-.cast-splash.done .cs-mark { animation: castpop .9s var(--ease) both; }
-.cs-where { font-size: 15px; font-weight: 600; color: #fff; letter-spacing: .01em; }
-@keyframes castpop { from { transform: scale(.7) translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* ---------- show page: summary, trailer, cast ---------- */
 .summary { max-width: 70ch; font-size: 17px; line-height: 1.55; margin: 26px 0 0; color: color-mix(in srgb, var(--fg) 85%, transparent); }
@@ -1036,12 +1019,6 @@ html.tv .p-wait .btn:focus, html.tv .p-wait .btn:focus-visible { outline: none; 
 html.tv .p-ctl .p-menu .menu button, html.tv .p-top .p-menu .menu button { padding: 12px 16px; font-size: 17px; }
 html.tv .p-seek:focus-visible .p-rail, html.tv .p-seek:focus .p-rail { box-shadow: 0 0 0 3px #fff; height: 8px; }
 
-/* ---------- casting screens ---------- */
-.castnote { animation: rise .3s var(--ease); }
-.cast-splash .btn:focus-visible, html.tv .cast-splash .btn:focus { outline: none; box-shadow: 0 0 0 3px #fff; transform: scale(1.06); }
-@media (min-width: 1100px) { .cs-where { font-size: 18px; } .cs-mark { width: 120px; height: 120px; border-radius: 26px; } }
-html.tv .castnote { font-size: 18px; padding: 14px 20px; bottom: 120px; }
-@media (prefers-reduced-motion: reduce) { .cs-mark, .castnote { animation: none; } }
 
 /* ---------- search results on a television ---------- */
 html.tv .grid { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 34px 24px; }
@@ -1349,7 +1326,6 @@ form.person .rcell, form.person > * { padding-left: 0; grid-column: auto; grid-r
 .p-btn.p-ep:disabled { opacity: .38; cursor: default; }
 .p-btn.p-ep:focus-visible, html.tv .p-btn.p-ep:focus { transform: scale(1.06); outline: 3px solid var(--accent); outline-offset: 3px; }
 html.tv .p-btn.p-ep.prev:focus { background: #fff; color: #111; }
-.player.casting .p-eps { display: none; }
 /* Play / pause: a solid white circle, the one thing on the bar that is never missed. */
 .p-btn.big { background: #fff; color: #111; backdrop-filter: none; opacity: 1; }
 .p-btn.big:hover { background: #f0f1f4; }
@@ -1372,3 +1348,20 @@ html.native-video, html.native-video body, html.native-video main#app, html.nati
 .player video.n-native::cue { color: transparent; background: transparent; text-shadow: none; }
 .player .n-cues { position: absolute; left: 6%; right: 6%; bottom: 8%; z-index: 2; text-align: center; pointer-events: none; color: #fff; font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Display", "Segoe UI", Inter, Roboto, sans-serif; font-weight: 600; font-size: clamp(18px, 3.4vh, 44px); line-height: 1.3;
   text-shadow: 1.5px 0 0 rgba(0,0,0,.55), -1.5px 0 0 rgba(0,0,0,.55), 0 1.5px 0 rgba(0,0,0,.55), 0 -1.5px 0 rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.55); }
+
+/* Remove buttons: arming pops the button and counts down, a press in flight shows a spinner, and a removed row closes up. */
+.rm-btn { position: relative; overflow: hidden; transition: color .15s, background .2s, border-color .15s, transform .2s var(--ease), box-shadow .2s; }
+.rm-btn:active:not(:disabled) { transform: scale(.95); }
+.rm-btn.armed { animation: rmArm .32s var(--ease) both; box-shadow: 0 6px 18px -6px rgba(198,40,40,.6); }
+.rm-btn.armed::after { content: ''; position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: rgba(255,255,255,.7); transform-origin: left; animation: rmCount var(--arm, 4s) linear forwards; }
+.rm-btn.busy { color: transparent !important; pointer-events: none; }
+.rm-btn.busy > * { visibility: hidden; }
+.rm-btn.busy::before { content: ''; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; animation: spin .7s linear infinite; }
+.rm-btn.busy:not(.danger)::before { border-color: color-mix(in srgb, var(--fg) 25%, transparent); border-top-color: var(--fg); }
+@keyframes rmArm { 0% { transform: scale(.9); } 60% { transform: scale(1.05); } 100% { transform: none; } }
+@keyframes rmCount { to { transform: scaleX(0); } }
+.fg-ep, .fg-show, .fg-season, .trow { transition: max-height .28s var(--ease), opacity .22s, transform .28s var(--ease), padding .28s, margin .28s; }
+.leaving { max-height: 0 !important; opacity: 0; transform: translateX(14px); padding-top: 0 !important; padding-bottom: 0 !important; margin: 0 !important; overflow: hidden; border-color: transparent !important; }
+.fg-eps, .fg-seasons { animation: fgOpen .26s var(--ease) both; transform-origin: top; }
+@keyframes fgOpen { from { opacity: 0; transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .rm-btn.armed, .rm-btn.armed::after, .fg-eps, .fg-seasons { animation: none; } .leaving { transition: none; } }
