@@ -43,7 +43,7 @@ const MEDIA = `(() => {
 
 const WATCH = { torrentId: 9001, fileIndex: 1, seriesName: 'Test Show', episodeTitle: 'Pilot', label: 'S01E01', quality: '1080p', position: 0, next: null }
 const INFO = {
-  url: '/media.mp4', mode: 'direct', duration: 1400, seekable: true, castUrl: null,
+  url: '/media.mp4', mode: 'direct', duration: 1400, seekable: true,
   audio: [{ n: 0, label: 'English', lang: 'en' }], audioIndex: 0, subs: [], qualities: [1080], quality: 1080,
 }
 const SERIES = {
@@ -73,7 +73,7 @@ before(async () => {
     const send = (type: string, body: string | Buffer) => { res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body) }
     const json = (v: unknown) => send('application/json', JSON.stringify(v))
     if (p.startsWith('/api/')) {
-      if (p === '/api/me') return json({ user: { id: 1, name: 'Viewer', is_admin: 0, avatar: null, cast: false }, needsSetup: false, profiles: [] })
+      if (p === '/api/me') return json({ user: { id: 1, name: 'Viewer', is_admin: 0, avatar: null }, needsSetup: false, profiles: [] })
       if (p === '/api/device-token') return json({ token: 'stub' })
       if (p === '/api/home') return json(HOME)
       if (p === '/api/discover') return json({ total: 0, page: 0, per: 60, sort: 'trending', genre: null, genres: [], series: [] })

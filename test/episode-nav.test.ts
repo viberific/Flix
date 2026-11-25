@@ -41,7 +41,7 @@ const MEDIA = `(() => {
 // the quality list is), which together are the two lists a viewer opens over the picture.
 const WATCH = { torrentId: 9001, fileIndex: 1, seriesName: 'Test Show', episodeTitle: 'Middle', title: 'S01E02', label: 'S01E02', quality: '1080p', position: 0, next: { label: 'S01E03', season: 1, title: 'Last' } }
 const INFO = {
-  url: '/media.mp4', mode: 'direct', duration: 1400, seekable: true, castUrl: null,
+  url: '/media.mp4', mode: 'direct', duration: 1400, seekable: true,
   audio: [{ n: 0, label: 'English', lang: 'en' }, { n: 1, label: 'French', lang: 'fr' }], audioIndex: 0,
   subs: [], qualities: [1080, 720], quality: 1080, creditsAt: 1200,
 }
@@ -60,7 +60,7 @@ before(async () => {
     const send = (type: string, body: string | Buffer) => { res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body) }
     const json = (v: unknown) => send('application/json', JSON.stringify(v))
     if (p.startsWith('/api/')) {
-      if (p === '/api/me') return json({ user: { id: 1, name: 'Viewer', is_admin: 0, avatar: null, cast: false }, needsSetup: false })
+      if (p === '/api/me') return json({ user: { id: 1, name: 'Viewer', is_admin: 0, avatar: null }, needsSetup: false })
       if (p === '/api/device-token') return json({ token: 'stub' })
       if (p === '/api/home') return json({ sections: [], myList: [], ready: [], picked: [], because: null, hero: null, listIds: [] })
       if (p === '/api/continue') return json({ items: [] })

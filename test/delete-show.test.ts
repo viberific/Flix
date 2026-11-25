@@ -37,7 +37,7 @@ before(async () => {
     const json = (v: unknown) => send('application/json', JSON.stringify(v))
     if (p.startsWith('/api/')) {
       if (req.method === 'POST') { let b = ''; for await (const c of req) b += c; posted.push({ path: p, body: b ? JSON.parse(b) : null }) }
-      if (p === '/api/me') return json({ user: { id: 1, name: 'Admin', is_admin: 1, avatar: null, cast: false }, needsSetup: false })
+      if (p === '/api/me') return json({ user: { id: 1, name: 'Admin', is_admin: 1, avatar: null }, needsSetup: false })
       if (p === '/api/device-token') return json({ token: 'stub' })
       if (p === '/api/home') return json({ sections: [], myList: [], ready: [], picked: [], because: null, hero: null, listIds: [] })
       if (p === '/api/continue' || p === '/api/leaving') return json({ items: [] })

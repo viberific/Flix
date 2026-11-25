@@ -67,7 +67,7 @@ export const config = {
   // The one address Flix should be reached at, e.g. https://umbrel-1.tail16900.ts.net:9443.
   // Empty (the default) means no redirect: every address serves Flix as before.
   publicUrl: (env.PUBLIC_URL ?? '').replace(/\/$/, ''),
-  // The address a TV or cast device should fetch media from. Those devices are on the LAN and cannot resolve a
+  // The address a TV should fetch media from. A TV is on the LAN and cannot resolve a
   // Tailscale name, so this is usually the box's plain-HTTP LAN address (http://10.0.0.247:8096). Empty means
   // "same address as the page", which only works when the page itself is reachable from the TV.
   lanUrl: (env.LAN_URL ?? '').replace(/\/$/, ''),

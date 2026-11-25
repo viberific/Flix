@@ -130,7 +130,7 @@ if (config.publicUrl) {
     // The home network: http://10.0.0.247:8096 and http://umbrel.local:8096 serve Flix themselves, so the TV
     // needs no Tailscale. Tailscale keeps working exactly as before: its name and its 100.x address still redirect here.
     if (isLanHost(name)) return
-    // A TV or cast device fetches the media itself and cannot resolve the tailnet name, so the signed stream links
+    // A TV fetches the media itself and cannot resolve the tailnet name, so the signed stream links
     // are served on whatever address the device used. They carry an unguessable token in the path, never a cookie.
     if (req.url.startsWith('/api/tv/')) return
     // 307 so a POST keeps its method and body; only a stale cached shell sends one here.
@@ -144,14 +144,12 @@ await app.register(fastifyStatic, { root: join(root, 'public') })
 await app.register(fastifyStatic, { root: join(root, 'node_modules/hls.js/dist'), prefix: '/vendor/', decorateReply: false })
 
 // ---- auth -----------------------------------------------------------------
-// `cast` tells the app a TV on the same network could reach the media at all (LAN_URL is set), so the header
-// button only appears where casting can actually work.
 app.get('/api/me', async (req) => {
   const u = userFor(req)
   // Where this server answers. The home-network address is what a TV uses when it cannot install Tailscale, and the
   // tailnet one is the trustworthily-certificated address; both are shown under Settings so nobody has to guess.
   const addresses = { lan: config.lanUrl || null, tailnet: config.publicUrl || null }
-  return { user: u ? { ...u, cast: !!config.lanUrl, hasPassword: hasPassword(u.id) } : u, needsSetup: userCount() === 0, addresses }
+  return { user: u ? { ...u, hasPassword: hasPassword(u.id) } : u, needsSetup: userCount() === 0, addresses }
 })
 
 /** A person changing their own account: the name shown, their picture, their password. */
@@ -740,9 +738,6 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   const t0 = Date.now()
   const { t, f } = req.params as any
   const a = audioIdx((req.query as any).a)
-  // A cast is about to be handed to a TV, and a receiver keeps whatever timeline it was given when it loaded: it needs the
-  // one file, not a stream still being made. So a cast waits longer for the repack, while an ordinary play starts at once.
-  const cast = (req.query as any).cast === '1'
   // What the player says it can decode ("cv", from canPlayType in the browser) and no guess from the box: only the device
   // knows whether the screen behind it has an HEVC or AV1 decoder. Absent, the box's own list decides.
   const can = new Set(String((req.query as any).cv ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
@@ -781,15 +776,14 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
   // How this play was decided, written once per ask: the file as the box sees it, what the player said it decodes, and which
   // way it went -- the line that turns "it would not play on the TV" into a codec, a profile and a choice.
   const chose = (mode: string, extra: Record<string, unknown> = {}) => diag('play', 'chose how to play', {
-    torrent: +t, file: +f, user: req.user!.id, mode, ...extra, a, q, force, cast, complete,
+    torrent: +t, file: +f, user: req.user!.id, mode, ...extra, a, q, force, complete,
     video: p.videoCodec ?? null, audio: p.audioCodec ?? null, audioTrack: p.audio?.[a]?.lang ?? null, channels: p.audio?.[a]?.channels ?? null, container: p.container ?? null, height: p.height ?? null, pixFmt: p.pixFmt ?? null,
     tenBit: !!p.tenBit, hdr: p.hdr, fps: p.fps ?? null, kbps: p.srcBitrate ? Math.round(p.srcBitrate / 1000) : null,
     can: [...can].join(','), directOk: directPlay(p, can), audioOk: audioDirect(p, can), copyOk: !!copyFor, ms: Date.now() - t0,
   })
-  // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there. Only a cast
-  // makes one and waits for it: a TV needs one file to seek in, while the player here seeks a playlist just as well now.
+  // The one-MP4 repack of a finished episode (picture copied, sound in AAC) is used when it is already there.
   const remux = !direct && !q && !force && a === 0 && copyFor
-    ? (cast ? await remuxPlayback(+t, +f, p, () => closed, CAST_WAIT_MS) : !!offlineReadyPath(+t, +f))
+    ? !!offlineReadyPath(+t, +f)
     : false
   if (!direct && !remux) {
     // 0.3.56: nothing is refused any more. Only copies that play as they are get downloaded, so this is the exception, and
@@ -811,14 +805,13 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     const mt = 'application/vnd.apple.mpegurl'
     return {
       mode: 'hls', url: `${base}/${seg}/index.m3u8`, tvUrl: `${ht}/index.m3u8`, tvType: mt, seekable: complete || encode, converting: encode,
-      castUrl: config.lanUrl ? config.lanUrl + `${ht}/index.m3u8` : null, castType: mt, castFallbackUrl: null,
-      duration: p.duration, audioIndex: a, hdr: p.hdr, hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
+      duration: p.duration, audioIndex: a, hdr: p.hdr, hdrUrl: null, hdrTvUrl: null,
       creditsAt: measuredCredits(+t, +f, p.duration ?? 0), audio: p.audio, chapters: p.chapters, subs: subsList, quality: q || null, qualities,
     }
   }
   const path = direct ? 'raw' : 'offline/file'
   chose(direct ? 'direct' : 'file', { why: direct ? 'plays as it is' : 'the repacked file is ready' })
-  // A TV or cast device has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
+  // A TV has no cookie, so it gets a link with a signed token in the path instead. A finished episode goes
   // to it as one file served by byte range -- the plain MP4 as it is, anything else as the repacked MP4 -- because only a
   // file carries its whole length at once. A direct file still arriving is served as raw bytes as it always was.
   const tv = `/api/tv/${token}/${t}/${f}/${path}`
@@ -829,10 +822,10 @@ app.get('/api/stream/:t/:f/info', guarded, async (req, reply) => {
     // Direct only because the device said it takes this sound (AC-3 / E-AC-3 in "cv", which only the TV app's own player
     // sends): no browser decodes it, so the app must play it with that player, not the page's <video>.
     native: direct && !audioDirect(p),
-    castUrl: config.lanUrl ? config.lanUrl + tv : null, castType: tvType, castFallbackUrl: null, duration: p.duration, audioIndex: a, hdr: p.hdr,
+    duration: p.duration, audioIndex: a, hdr: p.hdr,
     // The HDR playlist went with the other conversions. An HDR episode is repacked with its picture copied and its colour
     // tags kept, and the player falls back to that file when there is no hdrUrl.
-    hdrUrl: null, hdrTvUrl: null, hdrCastUrl: null,
+    hdrUrl: null, hdrTvUrl: null,
     // Where the credits begin, measured once in the background after the file finished downloading (see planExtras);
     // null when there is no marker yet, and the player then estimates from the runtime.
     creditsAt: measuredCredits(+t, +f, p.duration ?? 0),
@@ -957,8 +950,6 @@ app.post('/api/sub/offset', guarded, async (req, reply) => {
 // ---- downloads to a device ----------------------------------------------------
 /** How long /info waits for a remux before letting the play start on HLS instead. It carries on in the background. */
 const REMUX_WAIT_MS = Number(process.env.REMUX_WAIT_MS ?? 12_000)
-/** How long a cast waits for it instead. Longer: the TV cannot be given a longer timeline later, the phone can. */
-const CAST_WAIT_MS = Number(process.env.CAST_WAIT_MS ?? 60_000)
 
 /**
  * One MP4 of a fully downloaded episode, the picture copied rather than re-encoded, so the whole episode can be seeked
@@ -979,8 +970,6 @@ async function remuxPlayback(t: number, f: number, p: Probe, closed: () => boole
   if (first.state === 'ready') return true
   // Only a job this call started is worth waiting for. One already in flight was started by an earlier /info, and the
   // 12 s spent waiting on it again is 12 s on every later play of the same episode, for a picture that is coming anyway.
-  // A cast is the exception: its wait is the long one, and it has nowhere else to get a timeline from, so it waits even
-  // for a remux someone else started.
   if (first.state !== 'working') return false
   if (!first.started && waitMs <= REMUX_WAIT_MS) return false
   const deadline = Date.now() + waitMs
@@ -1104,7 +1093,7 @@ async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
   if (!/^(index\.m3u8|init\.mp4|seg\d{5}\.(ts|m4s))$/.test(file)) return reply.code(400).send({ error: 'bad file' })
   if (hdr) return reply.code(409).send({ error: CONVERT_OFF })
   if (file === 'index.m3u8' || !touchHls(+t, +f, a, false, encode, maxH)) {
-    // A TV or a cast device comes straight here, with no /info before it: this is its play, and it takes the box too.
+    // A TV comes straight here, with no /info before it: this is its play, and it takes the box too.
     beginPlayback(+t, +f)
     const fi = await fileInfo(+t, +f)
     const complete = (fi?.file.progress ?? 0) >= 1
@@ -1126,12 +1115,12 @@ async function hlsHandler(req: any, reply: any, hdr = false, encode = false) {
   return reply.type(type).header('cache-control', 'no-store').send(createReadStream(path))
 }
 
-/** The same video routes twice: with the login cookie, and with a signed token in the path for TVs and cast devices. */
+/** The same video routes twice: with the login cookie, and with a signed token in the path for TVs. */
 const tvAuth = async (req: any, reply: any) => {
   const u = userForTvToken(String(req.params?.token ?? ''))
   if (!u) return reply.code(401).send({ error: 'This link has expired' })
   req.user = u
-  // A cast receiver fetches the playlist and every segment from its own origin, so it needs CORS.
+  // A TV's player fetches the playlist and every segment from its own origin, so it needs CORS.
   reply.header('access-control-allow-origin', '*').header('access-control-expose-headers', 'content-length, content-range')
 }
 // Ranges (and anything else a receiver asks with) need a preflight answered before the media is fetched.
@@ -1140,7 +1129,7 @@ app.options('/api/tv/*', async (_req, reply) =>
     .header('access-control-allow-headers', 'range, origin, content-type').header('access-control-max-age', '86400').code(204).send())
 for (const [prefix, pre] of [['/api/stream', [requireUser, torrentGuard]], ['/api/tv/:token', [tvAuth, torrentGuard]]] as const) {
   app.get(`${prefix}/:t/:f/raw`, { preHandler: pre as any }, rawHandler)
-  // The one file of a finished episode, behind the TV's token: a cast receiver fetches it by byte range, which is what
+  // The one file of a finished episode, behind the TV's token: a TV fetches it by byte range, which is what
   // gives it the whole episode to seek in. MIME names it, and rawType is declared below with MIME itself.
   app.get(`${prefix}/:t/:f/offline/file`, { preHandler: pre as any }, offlineFileHandler)
   app.get(`${prefix}/:t/:f/hls/:file`, { preHandler: pre as any }, hlsHandler)

@@ -58,14 +58,14 @@ test('TV playback settles the wait layer only after the picture advances', () =>
   // The picture has to be PLAYING to settle it -- not merely reported as a clock that moved on. Since the Single Ladies
   // stall the rule is a running element holding data at its playhead (public/playclock.js), so a copy plan that re-seeks
   // backwards still takes the wait screen down.
-  assert.match(app, /if \(started && !holding && !castingOnly && isPlaying\(v\)\) revealWait\(true\)/)
+  assert.match(app, /if \(started && !holding && isPlaying\(v\)\) revealWait\(true\)/)
   // A WebView that never fires 'playing' still gets the show: the clock moving starts it.
   assert.match(app, /v\.addEventListener\('playing', firstFrame, \{ once: true \}\)/)
-  assert.match(app, /if \(moving && !castingOnly\) firstFrame\(\)/)
+  assert.match(app, /if \(moving\) firstFrame\(\)/)
   assert.match(app, /const firstFrame = \(\) => \{\s*if \(started\) return/)
   assert.match(app, /function restoreWait\(\)\s*\{[\s\S]*?remove\('gone', 'settled'\)/)
   assert.doesNotMatch(app, /waitHideT/)
-  assert.match(app, /const reveal = \(\) => \{ holding = false; if \(castingOnly\) return; revealWait\(\);/)
+  assert.match(app, /const reveal = \(\) => \{ holding = false; revealWait\(\);/)
 })
 
 test('settling cancels the delayed visibility transition in Chromium', { skip: !existsSync(process.env.CHROMIUM_PATH ?? '/usr/bin/chromium') }, async () => {
@@ -168,7 +168,7 @@ test('a show that is playing takes the wait screen down even mid-hold, at HAVE_C
   assert.match(read('public/playclock.js'), /export function isPlaying\(v\) \{[^}]*!v\.paused && !v\.ended && v\.readyState >= 2 && holdsDataAt\(v, v\.currentTime\)/)
   assert.match(app, /if \(holding\) \{ clearTimeout\(holdT\); holding = false;/)
   // Every later 'playing' (after a stall, a retry, a reload) takes it down too, not only the first.
-  assert.match(app, /v\.addEventListener\('playing', \(\) => \{ fileRetry = false; if \(started && !holding && !castingOnly\) revealWait\(true\) \}\)/)
+  assert.match(app, /v\.addEventListener\('playing', \(\) => \{ fileRetry = false; if \(started && !holding\) revealWait\(true\) \}\)/)
   // A new source drops the old one's hold.
   assert.match(app, /started = false\n[^\n]*\n[^\n]*\n\s*clearTimeout\(holdT\); holding = false/)
 })
