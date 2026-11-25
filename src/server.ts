@@ -1208,7 +1208,7 @@ app.get('/api/admin/downloads', admin, async () => {
     const w = await wantedBytes(d.torrent_id).catch(() => null)
     out.push({ ...d, progress: w ? w.progress : t.progress, size: w ? w.wanted : t.total_size, held: w ? w.held : t.size * t.progress, total: t.total_size, uploaded: t.uploaded, dlspeed: t.dlspeed, upspeed: t.upspeed, seeds: t.num_seeds, peers: t.num_leechs,
       engineState: t.state, eta: t.eta ?? null, left: w ? w.left : t.amount_left,
-      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, seedNote: seedNote(k.seed), deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id), windowPassed: k.windowPassed, notWatched: k.notWatched })
+      ratio: k.seed.ratio, seedHours: k.seed.hours, seedMet: k.seed.met, seedNote: seedNote(k.seed), deletable: k.deletable, reasons: k.reasons, waitingFor: k.pending, holders: holdersOf(d.torrent_id), windowPassed: k.windowPassed, notWatched: k.notWatched, watching: pendingViewers(d.torrent_id) })
   }
   // The finished-seeding view itself: only torrents that hold the whole thing and have met BTN's seeding goal are in it.
   return { requirements: config.seed, downloads: out, finished: groupFinished(out), disk: diskInfo(), minFreeGb: config.minFreeGb, minFreePct: config.minFreePct, warnFreePct: config.warnFreePct, autoPausePct: config.auto.pausePct, folder: config.downloadDir, hidden: hiddenList() }

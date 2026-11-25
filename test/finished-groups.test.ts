@@ -66,12 +66,12 @@ function engine(hash: string, o: { sizeGb: number; hours: number; ratio: number;
 }
 
 /** A row as GET /api/admin/downloads hands it to the page. */
-function row(o: { id: number; seriesId: number; series: string; season: number; episode: number | null; sizeGb: number; finished: boolean; pack?: boolean; notWatched?: string[] }) {
+function row(o: { id: number; seriesId: number; series: string; season: number; episode: number | null; sizeGb: number; finished: boolean; pack?: boolean; notWatched?: string[]; watching?: string[] }) {
   return {
     torrent_id: o.id, series_id: o.seriesId, series: o.series, season: o.season, episode: o.episode, episode_end: o.episode,
     is_pack: o.pack ?? false, label: o.pack ? `Season ${o.season}` : `S0${o.season}E0${o.episode}`, state: 'active', missing: false,
     left: 0, size: o.sizeGb * GB, seedMet: o.finished, ratio: o.finished ? 1.4 : 0.3, seedHours: o.finished ? 140 : 20,
-    notWatched: o.notWatched ?? [],
+    notWatched: o.notWatched ?? [], watching: o.watching ?? [],
   }
 }
 
@@ -138,6 +138,15 @@ test('the grouping counts what Remove watched would take', () => {
   assert.equal(shows[0].watched, 1)
   assert.equal(shows[0].watchedSize, 2 * GB)
   assert.equal(shows[0].seasons[0].watched, 1)
+})
+
+test('an episode someone is partway through is not counted as removable, matching what the server takes', () => {
+  const rows = [
+    row({ id: 43, seriesId: 502, series: 'Low Tide', season: 1, episode: 1, sizeGb: 2, finished: true }),
+    row({ id: 44, seriesId: 502, series: 'Low Tide', season: 1, episode: 2, sizeGb: 2, finished: true, watching: ['Me'] }),
+  ] as any[]
+  assert.equal(groupFinished(rows)[0].watched, 1)
+  assert.deepEqual(groupDeletePlan(rows, { seriesId: 502, season: 1 }).torrentIds, [43])
 })
 
 test('a group of another show is never touched', () => {

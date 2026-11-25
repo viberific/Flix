@@ -3415,13 +3415,12 @@ function downloadsPanel(data, root) {
     const groups = d.finished ?? []
     const gKey = (g, season) => `${g.seriesId ?? g.series}|${season == null ? '' : season}`
     const tposter = (id) => (id == null ? '<span class="tpost"></span>' : `<img class="tpost" src="/api/art/${id}/poster" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`)
-    const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
     const chev = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
     // Show > season > episode, one line each. The Remove beside a show or a season takes only what everybody has watched
     // (and that has met BTN's seeding goal); Delete show takes the lot, behind a confirmation dialog.
     const gdel = (g, season, n, size, label) => `<button class="rm-btn" data-gdel="${g.seriesId}" data-season="${season == null ? '' : season}" data-count="${n}" data-size="${gb(size)}" title="${label}: ${eps(n)}, ${gb(size)}" aria-label="${label}: ${eps(n)}, ${gb(size)}">${trash}<span>${label}</span></button>`
     const meta = (parts) => parts.filter(Boolean).join(' · ')
-    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b><span class="dim sm">${it.heldFor.length ? `Not watched yet by ${esc(it.heldFor.join(', '))}` : 'Watched'}</span></span>
+    const epRow = (it) => `<li class="fg-ep"><span class="fg-ep-name"><b>${esc(it.label)}</b><span class="dim sm">${it.partway?.length ? `${esc(it.partway.join(', '))} is partway through it` : it.heldFor.length ? `Not watched yet by ${esc(it.heldFor.join(', '))}` : 'Watched'}</span></span>
       <span class="fg-size">${gb(it.size)}</span><button class="rm-btn icon" data-rm="${it.torrentId}" title="Remove ${esc(it.label)}" aria-label="Remove ${esc(it.label)}">${trash}</button></li>`
     const seasonRow = (g, s) => {
       const k = gKey(g, s.season), open = openSeasons.has(k)
@@ -3485,17 +3484,33 @@ function downloadsPanel(data, root) {
   // Deleting, and the second press that confirms it, in one place. Every render makes new buttons -- this area is rebuilt
   // when the chart arrives, and again on every 15-second refresh -- so wire() attaches the handlers after each render
   // rather than once, which is why the buttons here used to go dead after the chart loaded.
+  const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
   const openShows = new Set(), openSeasons = new Set()
+  /** Take a row out with a short collapse, so the list closes up instead of jumping. */
+  const leave = (el) => new Promise((done) => {
+    if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches) return done()
+    el.style.maxHeight = el.offsetHeight + 'px'
+    void el.offsetHeight
+    el.classList.add('leaving')
+    setTimeout(done, 280)
+  })
+  /** The first press arms a button (it turns red and counts down); `revert` puts it back if nobody presses again. */
+  function arm(b, html, ms) {
+    const was = b.innerHTML
+    b.dataset.sure = '1'; b.classList.add('danger', 'armed'); b.style.setProperty('--arm', ms + 'ms')
+    b.innerHTML = html
+    setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger', 'armed') } }, ms)
+  }
+  const busy = (b, on) => { b.disabled = on; b.classList.toggle('busy', on); if (on) b.classList.remove('armed') }
   async function onRemove(b) {
     // Deleting a download is not undone by anything, so a second press confirms it, as everywhere else in Settings.
     if (b.dataset.sure !== '1') {
-      const was = b.innerHTML
-      b.dataset.sure = '1'; b.classList.add('danger')
-      if (b.classList.contains('rm-btn')) b.innerHTML = '<span>Remove?</span>'; else b.textContent = 'Press again to remove'
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 4000)
+      if (b.classList.contains('rm-btn')) arm(b, '<span>Remove?</span>', 4000)
+      else { arm(b, 'Press again to remove', 4000) }
       return
     }
-    try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
+    busy(b, true)
+    try { await api('/api/admin/downloads/' + b.dataset.rm, null, 'DELETE'); await leave(b.closest('li')); draw(await api('/api/admin/downloads')); loadChart() } catch (e) { busy(b, false); b.classList.remove('danger'); b.textContent = e.message.includes('requirement') ? 'Not until goal met' : 'Failed'; b.disabled = true }
   }
   /**
    * Remove watched, beside a show or a season: only the episodes everyone has watched. The second press says how many and
@@ -3503,17 +3518,14 @@ function downloadsPanel(data, root) {
    */
   async function onGroupRemove(b) {
     const n = Number(b.dataset.count) || 0, size = b.dataset.size || ''
-    if (b.dataset.sure !== '1') {
-      const was = b.innerHTML
-      b.dataset.sure = '1'; b.innerHTML = `<span>Remove ${n}?</span><span class="rm-size"> · ${size}</span>`; b.classList.add('danger')
-      setTimeout(() => { if (b.isConnected && b.dataset.sure === '1') { b.dataset.sure = ''; b.innerHTML = was; b.classList.remove('danger') } }, 6000)
-      return
-    }
+    if (b.dataset.sure !== '1') { arm(b, `${trash}<span>Remove ${n}?</span><span class="rm-size"> · ${size}</span>`, 6000); return }
+    busy(b, true)
     try {
       const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gdel), season: b.dataset.season === '' ? null : Number(b.dataset.season), mode: 'watched' })
-      flashNote(`Removed ${r.removed} watched episode${r.removed === 1 ? '' : 's'}${r.kept?.length ? `; kept ${r.kept.length} not watched by everyone yet` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
+      const why = (r.kept ?? []).slice(0, 3).map((k) => `${k.label} (${k.note})`).join(', ')
+      flashNote(`Removed ${r.removed} watched episode${r.removed === 1 ? '' : 's'}${r.kept?.length ? `; kept ${r.kept.length}: ${why}${r.kept.length > 3 ? '…' : ''}` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}`)
       draw(await api('/api/admin/downloads')); loadChart()
-    } catch (e) { b.textContent = 'Nothing removed'; b.disabled = true; flashNote(e.message) }
+    } catch (e) { busy(b, false); b.classList.remove('danger'); b.innerHTML = `${trash}<span>Remove watched</span>`; flashNote(e.message) }
   }
   /** Delete show: everything of it, watched or not, once the dialog is confirmed. */
   async function onShowDelete(b) {
@@ -3524,11 +3536,13 @@ function downloadsPanel(data, root) {
       confirm: 'Delete show',
     })
     if (!ok) { b.focus({ preventScroll: true }); return }
+    busy(b, true)
     try {
       const r = await api('/api/admin/downloads/group-delete', { seriesId: Number(b.dataset.gall), season: null, mode: 'all' })
       flashNote(`Deleted ${r.removed} episode${r.removed === 1 ? '' : 's'}${r.queued ? `; ${r.queued} more go${r.queued === 1 ? 'es' : ''} once seeded` : ''}${r.failed?.length ? `; ${r.failed.length} could not be removed` : ''}` + (r.hidden ? `. ${b.dataset.name} is hidden until a new episode turns up — Restore it any time under Settings → Torrents → Hidden shows` : ''))
+      await leave(b.closest('.fg-show'))
       draw(await api('/api/admin/downloads')); loadChart()
-    } catch (e) { flashNote(e.message) }
+    } catch (e) { busy(b, false); flashNote(e.message) }
   }
   /** Opening a show or a season. Kept in this page rather than the element, so a refresh does not close what is open. */
   function onToggle(b) {
